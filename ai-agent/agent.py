@@ -413,6 +413,8 @@ DEFAULT_QUERY = """
 def map_natural_language_to_sql(question: str) -> str:
     """Map a natural language question to SQL (simplified for demo)."""
     question_lower = question.lower().strip()
+    if not question_lower:
+        return DEFAULT_QUERY
     for pattern, sql in QUERY_MAPPINGS.items():
         if pattern in question_lower or question_lower in pattern:
             return sql
