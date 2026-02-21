@@ -1,0 +1,187 @@
+###############################################################################
+# AgentGateway Configuration
+#
+# Replaces the custom Go identity-gateway with the open-source AgentGateway
+# (https://github.com/agentgateway/agentgateway) - a Rust-based proxy for
+# AI agent connectivity supporting MCP and A2A protocols.
+#
+# This configuration:
+#   - Listens for agent connections via MCP (SSE) and HTTP
+#   - Routes to upstream tool servers (token-exchange, database-tools)
+#   - Authenticates agents via OIDC (Keycloak) and SPIFFE
+#   - Applies RBAC policies per target
+#   - Provides observability and audit logging
+###############################################################################
+
+# Admin API for health checks and metrics
+admin:
+  address: 0.0.0.0:19000
+
+# Listeners define how agents connect to the gateway
+listeners:
+  # MCP listener for AI agent tool connections
+  - name: mcp-agent-listener
+    address: 0.0.0.0:8080
+    protocol: MCP
+    sse:
+      enabled: true
+      endpoint: /mcp/sse
+    streamable_http:
+      enabled: true
+      endpoint: /mcp/message
+
+  # HTTP listener for REST API delegation requests (backward-compatible)
+  - name: http-api-listener
+    address: 0.0.0.0:9080
+    protocol: HTTP
+
+# Authentication configuration
+auth:
+  # OIDC authentication via Keycloak
+  oidc:
+    issuer_url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
+    audience: "ai-agent-service"
+    jwks_cache_ttl: 300
+    required_claims:
+      - groups
+      - may_act
+
+  # SPIFFE/mTLS authentication for workload identity
+  spiffe:
+    trust_domain: "demo.local"
+    workload_api_socket: "${SPIRE_AGENT_SOCKET:-/tmp/spire-agent/public/api.sock}"
+
+  # API key authentication (for service-to-service)
+  api_key:
+    enabled: true
+    header: "X-Gateway-Key"
+
+# RBAC policies
+rbac:
+  roles:
+    - name: data-analyst
+      permissions:
+        - target: token-exchange
+          actions: ["delegate", "exchange"]
+          scopes: ["readonly", "db:read", "db:query"]
+        - target: database-tools
+          actions: ["read"]
+
+    - name: data-engineer
+      permissions:
+        - target: token-exchange
+          actions: ["delegate", "exchange"]
+          scopes: ["readonly", "readwrite", "db:read", "db:write", "db:query"]
+        - target: database-tools
+          actions: ["read", "write"]
+
+    - name: sub-agent
+      permissions:
+        - target: token-exchange
+          actions: ["exchange"]
+          scopes: ["readonly", "db:read"]
+        - target: database-tools
+          actions: ["read"]
+
+  # Map OIDC groups to RBAC roles
+  group_mappings:
+    data-analysts: data-analyst
+    trading-team: data-analyst
+    engineering: data-engineer
+
+  # Map SPIFFE IDs to roles
+  spiffe_mappings:
+    "spiffe://demo.local/agent/query-agent": data-analyst
+    "spiffe://demo.local/agent/analysis-agent": data-analyst
+    "spiffe://demo.local/agent/write-agent": data-engineer
+    "spiffe://demo.local/subagent/sql-executor": sub-agent
+    "spiffe://demo.local/subagent/result-formatter": sub-agent
+
+# Targets define upstream services the gateway routes to
+targets:
+  # Token Exchange Service - handles RFC 8693 delegation flows
+  - name: token-exchange
+    address: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
+    protocol: HTTP
+    health_check:
+      path: /health
+      interval: 10s
+    routes:
+      - path: /v1/delegate
+        methods: [POST]
+      - path: /v1/token/exchange
+        methods: [POST]
+      - path: /v1/token/revoke
+        methods: [POST]
+      - path: /v1/delegation/chain
+        methods: [GET, POST]
+
+  # MCP tool server for database operations
+  - name: database-tools
+    address: "${DB_TOOLS_URL:-http://token-exchange:8090}"
+    protocol: MCP
+    tools:
+      - name: query_database
+        description: "Execute a read-only SQL query on the delegated database"
+        input_schema:
+          type: object
+          properties:
+            question:
+              type: string
+              description: "Natural language question about the data"
+            scope:
+              type: string
+              enum: ["readonly", "readwrite"]
+              default: "readonly"
+          required: ["question"]
+
+      - name: get_delegation_status
+        description: "Check the status of the current delegation session"
+        input_schema:
+          type: object
+          properties:
+            session_id:
+              type: string
+          required: ["session_id"]
+
+      - name: revoke_credentials
+        description: "Revoke dynamic database credentials"
+        input_schema:
+          type: object
+          properties:
+            lease_id:
+              type: string
+          required: ["lease_id"]
+
+# Rate limiting
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  burst: 10
+  per_identity: true
+
+# Observability
+observability:
+  logging:
+    level: info
+    format: json
+    include_request_body: false
+    include_response_body: false
+  metrics:
+    enabled: true
+    endpoint: /metrics
+    port: 9090
+  tracing:
+    enabled: false
+
+# Security headers
+security:
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_methods: ["GET", "POST", "OPTIONS"]
+    allow_headers: ["Authorization", "Content-Type", "X-Request-ID", "X-Gateway-Key"]
+  headers:
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    Strict-Transport-Security: "max-age=31536000; includeSubDomains"

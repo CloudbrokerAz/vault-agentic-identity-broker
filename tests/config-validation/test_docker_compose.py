@@ -29,12 +29,13 @@ class TestDockerCompose(unittest.TestCase):
         expected = {
             "spire-server", "spire-agent", "keycloak", "vault",
             "opa", "postgresql", "identity-gateway", "ai-agent",
+            "agentgateway", "token-exchange",
         }
         actual = set(self.config["services"].keys())
         self.assertEqual(expected, actual)
 
     def test_service_count(self):
-        self.assertEqual(len(self.config["services"]), 8)
+        self.assertEqual(len(self.config["services"]), 10)
 
     # ─── Network Configuration ───────────────────────────────────────
 
@@ -270,7 +271,7 @@ class TestDockerCompose(unittest.TestCase):
     def test_agent_depends_on_gateway(self):
         svc = self.config["services"]["ai-agent"]
         deps = svc.get("depends_on", {})
-        self.assertIn("identity-gateway", deps)
+        self.assertIn("token-exchange", deps)
 
     def test_agent_depends_on_postgresql(self):
         svc = self.config["services"]["ai-agent"]

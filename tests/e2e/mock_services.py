@@ -51,11 +51,22 @@ USERS = {
 
 # OPA delegation policy data (mirrors opa/policies/data.json)
 OPA_CONFIG = {
-    "trusted_issuers": ["http://127.0.0.1:8080/realms/demo"],
+    "trusted_issuers": [
+        "http://127.0.0.1:8080/realms/demo",
+        "http://localhost:8080/realms/demo",
+        "http://keycloak:8080/realms/demo",
+    ],
     "registered_agents": [
         "spiffe://demo.local/agent/query-agent",
+        "spiffe://demo.local/agent/analysis-agent",
+        "spiffe://demo.local/agent/write-agent",
         "spiffe://demo.local/gateway/identity-gateway",
     ],
+    "registered_subagents": [
+        "spiffe://demo.local/subagent/sql-executor",
+        "spiffe://demo.local/subagent/result-formatter",
+    ],
+    "max_delegation_depth": 3,
     "group_permissions": {
         "data-analysts": ["readonly", "db:read", "db:query"],
         "trading-team": ["readonly", "db:read", "db:query"],
@@ -87,16 +98,22 @@ class KeycloakHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress request logging
 
+    def _issuer_base(self):
+        """Return the base URL using the Host header to support both 127.0.0.1 and localhost."""
+        host = self.headers.get("Host", f"127.0.0.1:{KEYCLOAK_PORT}")
+        return f"http://{host}"
+
     def do_GET(self):
         if self.path == "/health/ready":
             self._json_response(200, {"status": "UP"})
         elif self.path == "/realms/demo/.well-known/openid-configuration":
+            base = self._issuer_base()
             self._json_response(200, {
-                "issuer": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo",
-                "authorization_endpoint": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo/protocol/openid-connect/auth",
-                "token_endpoint": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo/protocol/openid-connect/token",
-                "userinfo_endpoint": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo/protocol/openid-connect/userinfo",
-                "jwks_uri": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo/protocol/openid-connect/certs",
+                "issuer": f"{base}/realms/demo",
+                "authorization_endpoint": f"{base}/realms/demo/protocol/openid-connect/auth",
+                "token_endpoint": f"{base}/realms/demo/protocol/openid-connect/token",
+                "userinfo_endpoint": f"{base}/realms/demo/protocol/openid-connect/userinfo",
+                "jwks_uri": f"{base}/realms/demo/protocol/openid-connect/certs",
             })
         elif self.path == "/realms/demo/protocol/openid-connect/userinfo":
             auth = self.headers.get("Authorization", "")
@@ -142,12 +159,13 @@ class KeycloakHandler(BaseHTTPRequestHandler):
                 return
 
             now = int(time.time())
+            base = self._issuer_base()
             token_claims = {
                 "sub": user["email"].split("@")[0] + "-uuid",
                 "email": user["email"],
                 "groups": user["groups"],
                 "may_act": {"sub": "agent:query-agent-v2", "client_id": "ai-agent-service"},
-                "iss": f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo",
+                "iss": f"{base}/realms/demo",
                 "aud": "demo-cli",
                 "exp": now + 300,
                 "iat": now,
@@ -176,11 +194,18 @@ class KeycloakHandler(BaseHTTPRequestHandler):
 
 
 def evaluate_opa_policy(input_data):
-    """Evaluate delegation policy (mirrors opa/policies/delegation.rego)."""
+    """Evaluate delegation policy (mirrors opa/policies/delegation.rego).
+
+    Supports token exchange / sub-agent delegation via:
+      - delegation_depth: current depth of the delegation chain
+      - parent_agent_spiffe_id: the SPIFFE ID of the delegating (parent) agent
+    """
     human_token = input_data.get("human_token", {})
     agent_spiffe_id = input_data.get("agent_spiffe_id", "")
     requested_scope = input_data.get("requested_scope", "")
     current_time = input_data.get("current_time", int(time.time()))
+    delegation_depth = input_data.get("delegation_depth", 0)
+    parent_agent_spiffe_id = input_data.get("parent_agent_spiffe_id", "")
 
     # valid_human_token
     if not human_token.get("sub"):
@@ -190,11 +215,27 @@ def evaluate_opa_policy(input_data):
     if human_token.get("iss") not in OPA_CONFIG["trusted_issuers"]:
         return False, "invalid_human_token"
 
-    # valid_agent_identity
+    # delegation_depth_check — enforce max_delegation_depth
+    max_depth = OPA_CONFIG.get("max_delegation_depth", 3)
+    if delegation_depth > max_depth:
+        return False, "delegation_depth_exceeded"
+
+    # valid_agent_identity — agents and sub-agents have separate registries
     if not agent_spiffe_id.startswith("spiffe://demo.local/"):
         return False, "invalid_agent_identity"
-    if agent_spiffe_id not in OPA_CONFIG["registered_agents"]:
-        return False, "invalid_agent_identity"
+
+    is_subagent = "/subagent/" in agent_spiffe_id
+    if is_subagent:
+        # Sub-agents must appear in the registered_subagents list
+        if agent_spiffe_id not in OPA_CONFIG.get("registered_subagents", []):
+            return False, "invalid_subagent_identity"
+        # Sub-agent delegation requires a valid parent agent
+        if delegation_depth > 0 and parent_agent_spiffe_id:
+            if parent_agent_spiffe_id not in OPA_CONFIG["registered_agents"]:
+                return False, "invalid_parent_agent"
+    else:
+        if agent_spiffe_id not in OPA_CONFIG["registered_agents"]:
+            return False, "invalid_agent_identity"
 
     # authorized_delegation
     may_act = human_token.get("may_act", {})
@@ -237,15 +278,18 @@ class OPAHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/v1/data/delegation/decision":
             allowed, reason = evaluate_opa_policy(input_data)
-            self._json_response(200, {
-                "result": {
-                    "allowed": allowed,
-                    "human": input_data.get("human_token", {}).get("sub", ""),
-                    "agent": input_data.get("agent_spiffe_id", ""),
-                    "scope": input_data.get("requested_scope", ""),
-                    "reason": reason,
-                }
-            })
+            result = {
+                "allowed": allowed,
+                "human": input_data.get("human_token", {}).get("sub", ""),
+                "agent": input_data.get("agent_spiffe_id", ""),
+                "scope": input_data.get("requested_scope", ""),
+                "reason": reason,
+                "delegation_depth": input_data.get("delegation_depth", 0),
+                "max_delegation_depth": OPA_CONFIG.get("max_delegation_depth", 3),
+            }
+            if input_data.get("parent_agent_spiffe_id"):
+                result["parent_agent"] = input_data["parent_agent_spiffe_id"]
+            self._json_response(200, {"result": result})
         else:
             self._json_response(404, {"error": "not found"})
 
@@ -348,14 +392,27 @@ class VaultHandler(BaseHTTPRequestHandler):
         elif self.path.startswith("/v1/database/creds/"):
             if not self._check_token():
                 return
-            role = self.path.split("/")[-1]
+            role = self.path.split("?")[0].split("/")[-1]
             lease_id = f"database/creds/{role}/{''.join(secrets.choice(string.ascii_lowercase) for _ in range(10))}"
             username = f"v-token-{role[:10]}-{''.join(secrets.choice(string.ascii_lowercase) for _ in range(6))}"
             password = _random_password()
 
             _create_pg_role(role, username, password)
 
-            VAULT_LEASES[lease_id] = {"username": username, "role": role}
+            # Track delegation metadata alongside the lease
+            delegation_metadata = {
+                "human_sub": self.headers.get("X-Delegation-Human", ""),
+                "agent_spiffe_id": self.headers.get("X-Delegation-Agent", ""),
+                "delegation_depth": int(self.headers.get("X-Delegation-Depth", "0")),
+                "parent_agent": self.headers.get("X-Delegation-Parent-Agent", ""),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+            VAULT_LEASES[lease_id] = {
+                "username": username,
+                "role": role,
+                "delegation": delegation_metadata,
+            }
 
             self._json_response(200, {
                 "request_id": secrets.token_hex(8),
@@ -366,6 +423,9 @@ class VaultHandler(BaseHTTPRequestHandler):
                     "username": username,
                     "password": password,
                 },
+                "wrap_info": None,
+                "warnings": None,
+                "auth": None,
             })
 
         elif self.path == "/v1/auth/token/lookup-self":

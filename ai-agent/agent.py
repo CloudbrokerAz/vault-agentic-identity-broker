@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-AI Agent with SPIFFE Identity and Delegated Database Access
+AI Agent with SPIFFE Identity, Token Exchange (RFC 8693), and Sub-Agent Delegation
 
-This agent demonstrates the full identity delegation chain:
+This agent demonstrates the full identity delegation chain with token exchange:
 1. Obtains a SPIFFE SVID from the local SPIRE agent
-2. Receives a human's OIDC token (simulating delegation)
-3. Presents both to the Identity Gateway for policy evaluation
+2. Authenticates the human via Keycloak OIDC
+3. Performs RFC 8693 token exchange (human token + agent SPIFFE → delegation token)
 4. Receives short-lived database credentials from Vault
-5. Queries PostgreSQL with the dynamic credentials
-6. Credentials auto-expire after 5 minutes
+5. Optionally delegates to sub-agents via delegation chain extension
+6. Queries PostgreSQL with the dynamic credentials
+7. Credentials auto-expire after 5 minutes
 
-The full audit trail is preserved at every step.
+The full audit trail and delegation chain is preserved at every step.
 """
 
 import json
@@ -40,7 +41,8 @@ logger = logging.getLogger("ai-agent")
 class AgentConfig:
     """Configuration for the AI agent."""
     spire_socket_path: str = "/tmp/spire-agent/public/api.sock"
-    gateway_url: str = "http://identity-gateway:8080"
+    gateway_url: str = "http://token-exchange:8090"
+    token_exchange_url: str = "http://token-exchange:8090"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "demo"
     trust_domain: str = "demo.local"
@@ -54,6 +56,7 @@ class AgentConfig:
         return cls(
             spire_socket_path=os.getenv("SPIRE_AGENT_SOCKET", cls.spire_socket_path),
             gateway_url=os.getenv("GATEWAY_URL", cls.gateway_url),
+            token_exchange_url=os.getenv("TOKEN_EXCHANGE_URL", cls.token_exchange_url),
             keycloak_url=os.getenv("KEYCLOAK_URL", cls.keycloak_url),
             keycloak_realm=os.getenv("KEYCLOAK_REALM", cls.keycloak_realm),
             trust_domain=os.getenv("TRUST_DOMAIN", cls.trust_domain),
@@ -77,6 +80,8 @@ class DelegationSession:
     db_name: str
     lease_id: str
     ttl_seconds: int
+    delegation_token: str = ""
+    delegation_chain: list = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -101,19 +106,12 @@ class SPIFFEIdentity:
         self.config = config
         self._jwt_svid: Optional[str] = None
 
-    def fetch_jwt_svid(self, audience: str = "identity-gateway") -> str:
-        """
-        Fetch a JWT-SVID from the SPIRE Workload API.
-
-        In a full deployment, this uses the go-spiffe or py-spiffe library
-        to connect to the SPIRE agent's Unix domain socket and request a
-        JWT-SVID for the given audience.
-        """
+    def fetch_jwt_svid(self, audience: str = "token-exchange") -> str:
+        """Fetch a JWT-SVID from the SPIRE Workload API."""
         logger.info("Fetching JWT-SVID from SPIRE agent...")
 
         try:
             from spiffe import WorkloadApiClient
-
             client = WorkloadApiClient(
                 spiffe_socket=f"unix://{self.config.spire_socket_path}"
             )
@@ -122,11 +120,7 @@ class SPIFFEIdentity:
                 hint=self.config.agent_spiffe_id,
             )
             self._jwt_svid = jwt_svid.token
-            logger.info(
-                "JWT-SVID obtained: spiffe_id=%s, audience=%s",
-                jwt_svid.spiffe_id,
-                audience,
-            )
+            logger.info("JWT-SVID obtained: spiffe_id=%s", jwt_svid.spiffe_id)
             return self._jwt_svid
         except Exception as e:
             logger.warning("SPIRE Workload API unavailable (%s), using demo SVID", e)
@@ -140,10 +134,8 @@ class SPIFFEIdentity:
             "aud": [audience],
             "exp": now + 3600,
             "iat": now,
-            "delegated_identity": "",
             "client_type": "ai_agent",
         }
-        # In demo mode, create an unsigned token for illustration
         token = pyjwt.encode(claims, "demo-secret", algorithm="HS256")
         self._jwt_svid = token
         logger.info("Demo JWT-SVID generated for %s", self.config.agent_spiffe_id)
@@ -165,11 +157,7 @@ class HumanAuthenticator:
         )
 
     def authenticate(self, username: str, password: str) -> str:
-        """
-        Authenticate a human user via Keycloak's direct access grant.
-
-        Returns the OIDC access token.
-        """
+        """Authenticate a human user via Keycloak's direct access grant."""
         logger.info("Authenticating human user: %s", username)
 
         try:
@@ -188,10 +176,7 @@ class HumanAuthenticator:
             token_data = resp.json()
             access_token = token_data["access_token"]
 
-            # Decode for logging (without verification for display)
-            claims = pyjwt.decode(
-                access_token, options={"verify_signature": False}
-            )
+            claims = pyjwt.decode(access_token, options={"verify_signature": False})
             logger.info(
                 "Human authenticated: sub=%s, groups=%s",
                 claims.get("email", claims.get("sub")),
@@ -204,16 +189,85 @@ class HumanAuthenticator:
             raise RuntimeError(f"Human authentication failed: {e}") from e
 
 
-class IdentityGatewayClient:
-    """Client for the Identity Gateway delegation service."""
+class TokenExchangeClient:
+    """
+    Client for the Token Exchange Service (RFC 8693).
+
+    Replaces the direct identity-gateway delegation with
+    standard OAuth 2.0 Token Exchange.
+    """
 
     def __init__(self, config: AgentConfig):
         self.config = config
-        self.delegate_url = f"{config.gateway_url}/v1/delegate"
-        self.health_url = f"{config.gateway_url}/v1/health"
-        self.audit_url = f"{config.gateway_url}/v1/audit"
+        self.exchange_url = f"{config.token_exchange_url}/v1/token/exchange"
+        self.delegate_url = f"{config.token_exchange_url}/v1/delegate"
+        self.revoke_url = f"{config.token_exchange_url}/v1/token/revoke"
+        self.chain_url = f"{config.token_exchange_url}/v1/delegation/chain"
+        self.health_url = f"{config.token_exchange_url}/health"
 
-    def request_delegation(
+    def exchange_token(
+        self,
+        human_token: str,
+        agent_jwt_svid: str,
+        requested_scope: str = "readonly",
+        audience: str = "database",
+    ) -> DelegationSession:
+        """
+        Perform RFC 8693 Token Exchange.
+
+        Exchanges the human's OIDC token + agent's SPIFFE SVID
+        for a delegated token with database credentials.
+        """
+        logger.info("Performing RFC 8693 token exchange: scope=%s", requested_scope)
+
+        payload = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": human_token,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "actor_token": agent_jwt_svid,
+            "actor_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "scope": requested_scope,
+            "audience": audience,
+        }
+
+        try:
+            resp = requests.post(self.exchange_url, json=payload, timeout=15)
+            data = resp.json()
+
+            if "error" in data:
+                raise RuntimeError(
+                    f"Token exchange failed: {data['error']} - "
+                    f"{data.get('error_description', '')}"
+                )
+
+            db_cred = data.get("db_credential", {})
+            chain = data.get("delegation_chain", [])
+
+            session = DelegationSession(
+                session_id=data["session_id"],
+                human_subject=chain[0]["subject"] if chain else "unknown",
+                scope=requested_scope,
+                db_username=db_cred.get("username", ""),
+                db_password=db_cred.get("password", ""),
+                db_host=db_cred.get("host", self.config.db_host),
+                db_port=db_cred.get("port", self.config.db_port),
+                db_name=db_cred.get("database", self.config.db_name),
+                lease_id=db_cred.get("lease_id", ""),
+                ttl_seconds=data.get("expires_in", 300),
+                delegation_token=data["access_token"],
+                delegation_chain=chain,
+            )
+
+            logger.info(
+                "Token exchange successful: session=%s, db_user=%s, chain_depth=%d",
+                session.session_id, session.db_username, len(chain),
+            )
+            return session
+
+        except requests.RequestException as e:
+            raise RuntimeError(f"Token exchange request failed: {e}") from e
+
+    def delegate_legacy(
         self,
         human_token: str,
         agent_spiffe_id: str,
@@ -221,20 +275,10 @@ class IdentityGatewayClient:
         requested_scope: str = "readonly",
     ) -> DelegationSession:
         """
-        Request delegated database access through the Identity Gateway.
-
-        The gateway validates:
-        1. Human OIDC token (against Keycloak)
-        2. Agent SPIFFE identity (against SPIRE trust domain)
-        3. OPA delegation policy (scope + group permissions)
-
-        Then brokers Vault access to get dynamic DB credentials.
+        Legacy delegation API (backward-compatible).
+        Internally uses RFC 8693 token exchange.
         """
-        logger.info(
-            "Requesting delegation: agent=%s, scope=%s",
-            agent_spiffe_id,
-            requested_scope,
-        )
+        logger.info("Requesting delegation (legacy API): scope=%s", requested_scope)
 
         payload = {
             "human_token": human_token,
@@ -249,51 +293,63 @@ class IdentityGatewayClient:
                 error_data = resp.json()
                 raise RuntimeError(
                     f"Delegation failed ({resp.status_code}): "
-                    f"{error_data.get('error', 'unknown')}"
+                    f"{error_data.get('error', error_data.get('error_description', 'unknown'))}"
                 )
 
             data = resp.json()
-            db_cred = data["db_credential"]
+            db_cred = data.get("db_credential", {})
 
             session = DelegationSession(
                 session_id=data["session_id"],
-                human_subject=data["metadata"]["delegating_human"],
+                human_subject=data.get("metadata", {}).get("delegating_human", "unknown"),
                 scope=requested_scope,
-                db_username=db_cred["username"],
-                db_password=db_cred["password"],
+                db_username=db_cred.get("username", ""),
+                db_password=db_cred.get("password", ""),
                 db_host=db_cred.get("host", self.config.db_host),
                 db_port=db_cred.get("port", self.config.db_port),
                 db_name=db_cred.get("database", self.config.db_name),
                 lease_id=db_cred.get("lease_id", ""),
                 ttl_seconds=db_cred.get("ttl_seconds", 300),
+                delegation_token=data.get("delegation_token", ""),
+                delegation_chain=data.get("metadata", {}).get("delegation_chain", []),
             )
 
             logger.info(
-                "Delegation successful: session=%s, db_user=%s, ttl=%ds",
-                session.session_id,
-                session.db_username,
-                session.ttl_seconds,
+                "Delegation successful: session=%s, db_user=%s",
+                session.session_id, session.db_username,
             )
             return session
 
         except requests.RequestException as e:
-            raise RuntimeError(f"Gateway request failed: {e}") from e
+            raise RuntimeError(f"Delegation request failed: {e}") from e
+
+    def get_delegation_chain(self, session_id: str) -> dict:
+        """Get the full delegation chain for a session."""
+        try:
+            resp = requests.get(
+                f"{self.chain_url}?session_id={session_id}", timeout=5
+            )
+            return resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def revoke_token(self, token: str) -> dict:
+        """Revoke a delegation token."""
+        try:
+            resp = requests.post(
+                self.revoke_url, json={"token": token}, timeout=10
+            )
+            return resp.json()
+        except Exception as e:
+            return {"error": str(e)}
 
     def check_health(self) -> dict:
-        """Check the gateway's health status."""
+        """Check the token exchange service's health."""
         try:
             resp = requests.get(self.health_url, timeout=5)
             return resp.json()
         except Exception as e:
             return {"status": "unhealthy", "error": str(e)}
-
-    def get_audit_log(self) -> list:
-        """Retrieve the gateway's audit log."""
-        try:
-            resp = requests.get(self.audit_url, timeout=5)
-            return resp.json()
-        except Exception as e:
-            return [{"error": str(e)}]
 
 
 class DatabaseQuerier:
@@ -313,11 +369,8 @@ class DatabaseQuerier:
 
         logger.info(
             "Connecting to database: host=%s, port=%d, db=%s, user=%s (ttl=%ds remaining)",
-            self.session.db_host,
-            self.session.db_port,
-            self.session.db_name,
-            self.session.db_username,
-            self.session.remaining_seconds,
+            self.session.db_host, self.session.db_port, self.session.db_name,
+            self.session.db_username, self.session.remaining_seconds,
         )
 
         self._conn = psycopg2.connect(
@@ -357,7 +410,6 @@ class DatabaseQuerier:
 
 # ─── Natural Language Query Mapping ────────────────────────────────────────
 
-# Pre-defined query mappings for the demo
 QUERY_MAPPINGS = {
     "show me all orders over $1000 from last month": """
         SELECT customer_name, product, quantity, unit_price, total_amount,
@@ -418,7 +470,6 @@ def map_natural_language_to_sql(question: str) -> str:
     for pattern, sql in QUERY_MAPPINGS.items():
         if pattern in question_lower or question_lower in pattern:
             return sql
-    # Default: show recent orders
     return DEFAULT_QUERY
 
 
@@ -427,8 +478,9 @@ def map_natural_language_to_sql(question: str) -> str:
 
 def print_banner():
     print("\n" + "=" * 70)
-    print("  Vault Agentic Identity Broker - AI Agent Demo")
-    print("  Secure delegation: Human → Agent → Database")
+    print("  Vault Agentic Identity Broker v2 - Token Exchange + Sub-Agents")
+    print("  Flow: Human → Agent → [Sub-Agent] → Database")
+    print("  Protocol: RFC 8693 OAuth 2.0 Token Exchange")
     print("=" * 70)
 
 
@@ -439,7 +491,7 @@ def print_step(num: int, description: str):
 
 
 def run_demo(question: str = "show me all orders over $1000 from last month"):
-    """Run the full identity delegation demo."""
+    """Run the full identity delegation demo with token exchange."""
     config = AgentConfig.from_env()
 
     print_banner()
@@ -453,48 +505,69 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
     try:
         human_token = human_auth.authenticate(username, password)
         claims = pyjwt.decode(human_token, options={"verify_signature": False})
-        print(f"  ✓ Human authenticated: {claims.get('email', claims.get('sub'))}")
-        print(f"  ✓ Groups: {claims.get('groups', [])}")
-        print(f"  ✓ May act: {json.dumps(claims.get('may_act', {}))}")
+        print(f"  [OK] Human authenticated: {claims.get('email', claims.get('sub'))}")
+        print(f"  [OK] Groups: {claims.get('groups', [])}")
+        print(f"  [OK] May act: {json.dumps(claims.get('may_act', {}))}")
     except Exception as e:
-        print(f"  ✗ Authentication failed: {e}")
-        print("  → Ensure Keycloak is running and configured")
+        print(f"  [FAIL] Authentication failed: {e}")
         sys.exit(1)
 
     # ── Step 2: Agent SPIFFE Identity ──
     print_step(2, "Agent obtains SPIFFE identity from SPIRE")
     spiffe = SPIFFEIdentity(config)
-    agent_svid = spiffe.fetch_jwt_svid(audience="identity-gateway")
-    print(f"  ✓ SPIFFE ID: {spiffe.spiffe_id}")
-    print(f"  ✓ JWT-SVID obtained (audience: identity-gateway)")
+    agent_svid = spiffe.fetch_jwt_svid(audience="token-exchange")
+    print(f"  [OK] SPIFFE ID: {spiffe.spiffe_id}")
+    print(f"  [OK] JWT-SVID obtained (audience: token-exchange)")
 
-    # ── Step 3: Token Exchange at Identity Gateway ──
-    print_step(3, "Token exchange + OPA policy evaluation at Identity Gateway")
-    gateway = IdentityGatewayClient(config)
+    # ── Step 3: RFC 8693 Token Exchange ──
+    print_step(3, "RFC 8693 Token Exchange at Token Exchange Service")
+    tx_client = TokenExchangeClient(config)
 
     try:
-        session = gateway.request_delegation(
+        session = tx_client.exchange_token(
             human_token=human_token,
-            agent_spiffe_id=spiffe.spiffe_id,
             agent_jwt_svid=agent_svid,
             requested_scope="readonly",
+            audience="database",
         )
-        print(f"  ✓ Delegation approved by OPA policy")
-        print(f"  ✓ Session ID: {session.session_id}")
-        print(f"  ✓ Delegating human: {session.human_subject}")
+        print(f"  [OK] Token exchange successful (RFC 8693)")
+        print(f"  [OK] Session ID: {session.session_id}")
+        print(f"  [OK] Delegation token issued")
+        print(f"  [OK] Delegation chain depth: {len(session.delegation_chain)}")
+        for link in session.delegation_chain:
+            print(f"       [{link.get('depth', '?')}] {link.get('subject', '?')} -> "
+                  f"{link.get('actor', '?')} ({link.get('actor_type', '?')})")
     except Exception as e:
-        print(f"  ✗ Delegation failed: {e}")
+        print(f"  [FAIL] Token exchange failed: {e}")
         sys.exit(1)
 
     # ── Step 4: Vault Dynamic Credentials ──
     print_step(4, "Vault issues dynamic database credentials (5-min TTL)")
-    print(f"  ✓ DB Username: {session.db_username}")
-    print(f"  ✓ DB Host: {session.db_host}:{session.db_port}/{session.db_name}")
-    print(f"  ✓ TTL: {session.ttl_seconds} seconds")
-    print(f"  ✓ Lease ID: {session.lease_id}")
+    print(f"  [OK] DB Username: {session.db_username}")
+    print(f"  [OK] DB Host: {session.db_host}:{session.db_port}/{session.db_name}")
+    print(f"  [OK] TTL: {session.ttl_seconds} seconds")
+    print(f"  [OK] Lease ID: {session.lease_id}")
 
-    # ── Step 5: Query Database ──
-    print_step(5, f"Agent queries database on behalf of {session.human_subject}")
+    # ── Step 5: Sub-Agent Delegation (optional) ──
+    print_step(5, "Sub-agent delegation chain extension")
+    if session.delegation_token:
+        print(f"  [OK] Delegation token available for sub-agent handoff")
+        print(f"  [INFO] Sub-agents can extend the chain via:")
+        print(f"         POST /v1/token/exchange")
+        print(f"         subject_token = <this delegation token>")
+        print(f"         actor_token = <sub-agent SPIFFE SVID>")
+
+        # Demonstrate sub-agent chain query
+        chain_info = tx_client.get_delegation_chain(session.session_id)
+        if "error" not in chain_info:
+            print(f"  [OK] Chain verified: depth={chain_info.get('chain_depth', 0)}")
+        else:
+            print(f"  [INFO] Chain query: {chain_info}")
+    else:
+        print(f"  [SKIP] No delegation token (using legacy mode)")
+
+    # ── Step 6: Query Database ──
+    print_step(6, f"Agent queries database on behalf of {session.human_subject}")
     print(f"  Question: \"{question}\"")
 
     sql = map_natural_language_to_sql(question)
@@ -509,31 +582,22 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
         else:
             print("  No results found.")
     except Exception as e:
-        print(f"  ✗ Query failed: {e}")
+        print(f"  [FAIL] Query failed: {e}")
     finally:
         querier.close()
 
-    # ── Step 6: Audit Trail ──
-    print_step(6, "Audit trail verification")
+    # ── Step 7: Audit Trail ──
+    print_step(7, "Audit trail and delegation chain verification")
     print(f"  Session: {session.session_id}")
     print(f"  Human: {session.human_subject}")
     print(f"  Agent: {spiffe.spiffe_id}")
     print(f"  DB User: {session.db_username}")
     print(f"  Credentials expire at: {session.expires_at.isoformat()}")
     print(f"  Remaining TTL: {session.remaining_seconds}s")
-
-    try:
-        audit_entries = gateway.get_audit_log()
-        print(f"  Gateway audit entries: {len(audit_entries)}")
-        for entry in audit_entries[-3:]:
-            print(f"    [{entry.get('timestamp', 'N/A')}] "
-                  f"human={entry.get('human', 'N/A')} "
-                  f"result={entry.get('result', 'N/A')}")
-    except Exception as e:
-        print(f"  Warning: Could not fetch audit log: {e}")
+    print(f"  Token Exchange Flow: RFC 8693")
 
     print(f"\n{'=' * 70}")
-    print("  Demo complete. Full identity chain verified.")
+    print("  Demo complete. Full identity chain verified via token exchange.")
     print(f"  Credentials will auto-expire in {session.remaining_seconds}s")
     print(f"{'=' * 70}\n")
 
@@ -551,16 +615,15 @@ def run_interactive():
     print(f"  {len(QUERY_MAPPINGS) + 1}. (enter custom query)")
     print()
 
-    # Authenticate once
     human_auth = HumanAuthenticator(config)
     username = os.getenv("DEMO_USERNAME", "alice")
     password = os.getenv("DEMO_PASSWORD", "alice-demo-password")
     human_token = human_auth.authenticate(username, password)
 
     spiffe = SPIFFEIdentity(config)
-    agent_svid = spiffe.fetch_jwt_svid(audience="identity-gateway")
+    agent_svid = spiffe.fetch_jwt_svid(audience="token-exchange")
 
-    gateway = IdentityGatewayClient(config)
+    tx_client = TokenExchangeClient(config)
 
     while True:
         try:
@@ -574,10 +637,9 @@ def run_interactive():
             else:
                 question = choice
 
-            # Get fresh delegation for each query
-            session = gateway.request_delegation(
+            # RFC 8693 token exchange for each query
+            session = tx_client.exchange_token(
                 human_token=human_token,
-                agent_spiffe_id=spiffe.spiffe_id,
                 agent_jwt_svid=agent_svid,
                 requested_scope="readonly",
             )
@@ -604,7 +666,6 @@ if __name__ == "__main__":
     if mode == "interactive":
         run_interactive()
     elif mode == "wait":
-        # Keep container alive for manual testing
         print_banner()
         print("Agent running in wait mode. Use 'docker exec' to run queries.")
         while True:

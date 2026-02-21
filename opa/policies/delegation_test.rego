@@ -4,12 +4,12 @@ import rego.v1
 
 import data.delegation
 
-# ═══════════════════════════════════════════════════════════════
-# Basic allow/deny tests
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. Basic Delegation Tests (existing behavior)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Test: Valid delegation should be allowed
-test_valid_delegation_allowed if {
+# Test: Valid human token + registered agent + may_act + permitted scope => allow
+test_allow_valid_human_token_registered_agent_may_act_permitted_scope if {
     delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -24,124 +24,8 @@ test_valid_delegation_allowed if {
     }
 }
 
-# Test: Engineer with readwrite scope should be allowed
-test_engineer_readwrite_allowed if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "bob@acme.com",
-            "groups": ["engineering"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "readwrite",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: Engineer with readonly scope should be allowed
-test_engineer_readonly_also_allowed if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "bob@acme.com",
-            "groups": ["engineering"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: trading-team member with db:read scope should be allowed
-test_trading_team_db_read if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["trading-team"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "db:read",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: data-analysts with db:query scope should be allowed
-test_data_analysts_db_query if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "db:query",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: Gateway SPIFFE ID should be allowed
-test_gateway_agent_allowed if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/gateway/identity-gateway",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-}
-
-# ═══════════════════════════════════════════════════════════════
-# Token validation tests
-# ═══════════════════════════════════════════════════════════════
-
-# Test: Expired human token should be denied
-test_expired_token_denied if {
-    not delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 1000000000,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: Token expiry at exact current_time should be denied
-test_token_expired_at_exact_time if {
-    not delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 1700000000,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: Empty subject should be denied
-test_empty_subject_denied if {
+# Test: Invalid human token (empty sub) => deny
+test_deny_invalid_human_token_empty_sub if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "",
@@ -156,15 +40,15 @@ test_empty_subject_denied if {
     }
 }
 
-# Test: Untrusted issuer should be denied
-test_untrusted_issuer_denied if {
+# Test: Expired human token => deny
+test_deny_expired_human_token if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
             "groups": ["data-analysts"],
             "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://evil-idp.com/realms/fake",
+            "exp": 1000000000,
+            "iss": "http://keycloak:8080/realms/demo",
         },
         "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
         "requested_scope": "readonly",
@@ -172,28 +56,24 @@ test_untrusted_issuer_denied if {
     }
 }
 
-# ═══════════════════════════════════════════════════════════════
-# Agent identity tests
-# ═══════════════════════════════════════════════════════════════
-
-# Test: Invalid agent SPIFFE ID (wrong trust domain)
-test_invalid_agent_trust_domain if {
+# Test: Token expired at exact current_time => deny (exp must be strictly greater)
+test_deny_token_expired_at_exact_current_time if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
             "groups": ["data-analysts"],
             "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
+            "exp": 1700000000,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://evil.com/agent/malicious",
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
         "requested_scope": "readonly",
         "current_time": 1700000000,
     }
 }
 
-# Test: Unregistered agent in correct trust domain
-test_unregistered_agent_denied if {
+# Test: Unregistered agent SPIFFE ID => deny
+test_deny_unregistered_agent_spiffe_id if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -208,28 +88,8 @@ test_unregistered_agent_denied if {
     }
 }
 
-# Test: Empty agent SPIFFE ID
-test_empty_agent_id_denied if {
-    not delegation.allow with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-}
-
-# ═══════════════════════════════════════════════════════════════
-# Delegation authorization tests
-# ═══════════════════════════════════════════════════════════════
-
-# Test: Human without may_act claim should be denied
-test_no_may_act_denied if {
+# Test: Missing may_act claim (empty object) => deny
+test_deny_missing_may_act_claim if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -244,8 +104,8 @@ test_no_may_act_denied if {
     }
 }
 
-# Test: may_act with empty sub should be denied
-test_may_act_empty_sub_denied if {
+# Test: may_act with empty sub => deny
+test_deny_may_act_empty_sub if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -260,12 +120,8 @@ test_may_act_empty_sub_denied if {
     }
 }
 
-# ═══════════════════════════════════════════════════════════════
-# Scope permission tests
-# ═══════════════════════════════════════════════════════════════
-
-# Test: data-analyst requesting readwrite should be denied
-test_data_analyst_readwrite_denied if {
+# Test: Scope not in group permissions => deny
+test_deny_scope_not_in_group_permissions if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -280,8 +136,24 @@ test_data_analyst_readwrite_denied if {
     }
 }
 
-# Test: data-analyst requesting db:write should be denied
-test_data_analyst_db_write_denied if {
+# Test: Untrusted issuer => deny
+test_deny_untrusted_issuer if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://evil-idp.com/realms/fake",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Agent with wrong trust domain => deny
+test_deny_agent_wrong_trust_domain if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "alice@acme.com",
@@ -290,46 +162,46 @@ test_data_analyst_db_write_denied if {
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "db:write",
+        "agent_spiffe_id": "spiffe://evil.com/agent/malicious",
+        "requested_scope": "readonly",
         "current_time": 1700000000,
     }
 }
 
-# Test: engineer requesting db:write should be allowed
-test_engineer_db_write_allowed if {
-    delegation.allow with input as {
-        "human_token": {
-            "sub": "bob@acme.com",
-            "groups": ["engineering"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 9999999999,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "db:write",
-        "current_time": 1700000000,
-    }
-}
-
-# Test: Unknown scope should be denied for all groups
-test_unknown_scope_denied if {
+# Test: Empty agent SPIFFE ID => deny
+test_deny_empty_agent_spiffe_id if {
     not delegation.allow with input as {
         "human_token": {
-            "sub": "bob@acme.com",
-            "groups": ["engineering"],
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
             "may_act": {"sub": "agent:query-agent-v2"},
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "admin:full",
+        "agent_spiffe_id": "",
+        "requested_scope": "readonly",
         "current_time": 1700000000,
     }
 }
 
-# Test: User with no groups should be denied
-test_no_groups_denied if {
+# Test: Gateway SPIFFE ID should be allowed as a registered agent
+test_allow_gateway_agent if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/gateway/identity-gateway",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: User with no groups => deny
+test_deny_no_groups if {
     not delegation.allow with input as {
         "human_token": {
             "sub": "nobody@acme.com",
@@ -344,11 +216,421 @@ test_no_groups_denied if {
     }
 }
 
-# ═══════════════════════════════════════════════════════════════
-# Decision reason tests
-# ═══════════════════════════════════════════════════════════════
+# Test: Unknown scope should be denied for all groups
+test_deny_unknown_scope if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "admin:full",
+        "current_time": 1700000000,
+    }
+}
 
-# Test: Allowed reason
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. Delegation Chain Extension Tests (new behavior)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: Sub-agent with valid delegation chain (depth > 0) => allow
+test_allow_subagent_valid_delegation_chain if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Registered sub-agent can extend chain at depth 2 => allow
+test_allow_registered_subagent_extends_chain if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/result-formatter",
+        "requested_scope": "readonly",
+        "delegation_depth": 2,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Max delegation depth exceeded (depth >= 3) => deny
+test_deny_max_delegation_depth_exceeded if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 3,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Delegation depth exactly at max (depth == 3, max == 3) => deny
+test_deny_delegation_depth_at_exact_max if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 3,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Delegation depth well beyond max => deny
+test_deny_delegation_depth_far_exceeds_max if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 10,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent with readonly scope (default for sub-agents) => allow
+test_allow_subagent_readonly_scope if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Unregistered sub-agent SPIFFE ID => deny
+test_deny_unregistered_subagent_spiffe_id if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/unknown-subagent",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent delegation with expired human token => deny
+test_deny_subagent_expired_token if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 1000000000,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent delegation with empty human sub => deny
+test_deny_subagent_empty_human_sub if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Primary registered agent can also participate in delegation chain
+test_allow_primary_agent_in_delegation_chain if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/analysis-agent",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. Scope Validation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: data-analyst group with readonly scope => allow
+test_allow_data_analyst_readonly_scope if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: engineering group with readwrite scope => allow
+test_allow_engineering_readwrite_scope if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readwrite",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: data-analyst group with readwrite scope => deny
+test_deny_data_analyst_readwrite_scope if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readwrite",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent inherits readonly scope via delegation chain => allow
+test_allow_subagent_inherits_readonly if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: data-analyst group with db:read scope => allow
+test_allow_data_analyst_db_read if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:read",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: data-analyst group with db:query scope => allow
+test_allow_data_analyst_db_query if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:query",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: data-analyst group with db:write scope => deny
+test_deny_data_analyst_db_write if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:write",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: engineering group with db:write scope => allow
+test_allow_engineering_db_write if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:write",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: engineering group with readonly scope => allow
+test_allow_engineering_readonly if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: trading-team with db:read scope => allow
+test_allow_trading_team_db_read if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["trading-team"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:read",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: User in multiple groups gets union of permissions
+test_allow_multi_group_union_permissions if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "charlie@acme.com",
+            "groups": ["data-analysts", "engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readwrite",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent scope permitted via group membership (db:query for data-analysts)
+test_allow_subagent_scope_via_group if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "db:query",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. Decision Details Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: Decision includes delegation_depth (default 0 for primary delegation)
+test_decision_includes_delegation_depth_default if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+    result.delegation_depth == 0
+}
+
+# Test: Decision includes delegation_depth from delegation chain
+test_decision_includes_delegation_depth_from_chain if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "delegation_depth": 2,
+        "current_time": 1700000000,
+    }
+    result.delegation_depth == 2
+}
+
+# Test: Decision reason is "allowed" for valid requests
 test_decision_reason_allowed if {
     result := delegation.decision with input as {
         "human_token": {
@@ -369,61 +651,47 @@ test_decision_reason_allowed if {
     result.scope == "readonly"
 }
 
-# Test: Invalid token reason
-test_decision_reason_invalid_token if {
+# Test: Decision reason is "allowed" for valid delegation chain request
+test_decision_reason_allowed_delegation_chain if {
     result := delegation.decision with input as {
         "human_token": {
             "sub": "alice@acme.com",
             "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
-            "exp": 1000000000,
-            "iss": "http://keycloak:8080/realms/demo",
-        },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-        "requested_scope": "readonly",
-        "current_time": 1700000000,
-    }
-    result.allowed == false
-    result.reason == "invalid_human_token"
-}
-
-# Test: Invalid agent identity reason
-test_decision_reason_invalid_agent if {
-    result := delegation.decision with input as {
-        "human_token": {
-            "sub": "alice@acme.com",
-            "groups": ["data-analysts"],
-            "may_act": {"sub": "agent:query-agent-v2"},
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://evil.com/agent/bad",
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
         "requested_scope": "readonly",
+        "delegation_depth": 1,
         "current_time": 1700000000,
     }
-    result.allowed == false
-    result.reason == "invalid_agent_identity"
+    result.allowed == true
+    result.reason == "allowed"
+    result.human == "alice@acme.com"
+    result.agent == "spiffe://demo.local/subagent/sql-executor"
+    result.scope == "readonly"
+    result.delegation_depth == 1
 }
 
-# Test: Unauthorized delegation reason
-test_decision_reason_unauthorized_delegation if {
+# Test: Decision reason is "max_delegation_depth_exceeded" for deep chains
+test_decision_reason_max_delegation_depth_exceeded if {
     result := delegation.decision with input as {
         "human_token": {
             "sub": "alice@acme.com",
             "groups": ["data-analysts"],
-            "may_act": {},
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
         "requested_scope": "readonly",
+        "delegation_depth": 3,
         "current_time": 1700000000,
     }
     result.allowed == false
-    result.reason == "unauthorized_delegation"
+    result.reason == "max_delegation_depth_exceeded"
 }
 
-# Test: Scope not permitted reason
+# Test: Decision reason is "scope_not_permitted" for unauthorized scope
 test_decision_reason_scope_not_permitted if {
     result := delegation.decision with input as {
         "human_token": {
@@ -441,22 +709,97 @@ test_decision_reason_scope_not_permitted if {
     result.reason == "scope_not_permitted"
 }
 
-# ═══════════════════════════════════════════════════════════════
-# Multi-group membership tests
-# ═══════════════════════════════════════════════════════════════
-
-# Test: User in multiple groups gets union of permissions
-test_multi_group_union if {
-    delegation.allow with input as {
+# Test: Decision reason is "invalid_human_token" for expired token
+test_decision_reason_invalid_human_token if {
+    result := delegation.decision with input as {
         "human_token": {
-            "sub": "charlie@acme.com",
-            "groups": ["data-analysts", "engineering"],
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 1000000000,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+    result.allowed == false
+    result.reason == "invalid_human_token"
+}
+
+# Test: Decision reason is "invalid_agent_identity" for bad agent
+test_decision_reason_invalid_agent_identity if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
             "may_act": {"sub": "agent:query-agent-v2"},
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
+        "agent_spiffe_id": "spiffe://evil.com/agent/bad",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+    result.allowed == false
+    result.reason == "invalid_agent_identity"
+}
+
+# Test: Decision reason is "unauthorized_delegation" for missing may_act
+test_decision_reason_unauthorized_delegation if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
         "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+    result.allowed == false
+    result.reason == "unauthorized_delegation"
+}
+
+# Test: Decision captures all fields correctly
+test_decision_captures_all_fields if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:write-agent-v1"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/write-agent",
         "requested_scope": "readwrite",
         "current_time": 1700000000,
     }
+    result.allowed == true
+    result.reason == "allowed"
+    result.human == "bob@acme.com"
+    result.agent == "spiffe://demo.local/agent/write-agent"
+    result.scope == "readwrite"
+    result.delegation_depth == 0
+}
+
+# Test: Decision for delegation chain captures depth
+test_decision_delegation_chain_captures_depth if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/result-formatter",
+        "requested_scope": "readonly",
+        "delegation_depth": 2,
+        "current_time": 1700000000,
+    }
+    result.allowed == true
+    result.delegation_depth == 2
+    result.agent == "spiffe://demo.local/subagent/result-formatter"
 }

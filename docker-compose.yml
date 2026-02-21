@@ -1,15 +1,18 @@
 ###############################################################################
-# Vault Agentic Identity Broker - Docker Compose
+# Vault Agentic Identity Broker - Docker Compose (v2 with AgentGateway)
 #
-# Seven containers implementing the full identity delegation chain:
-#   1. spire-server   - SPIFFE trust domain root
-#   2. spire-agent    - Workload attestation & SVID distribution
-#   3. keycloak       - Human OIDC Identity Provider
-#   4. vault          - Dynamic secrets management (JWT auth + DB engine)
-#   5. opa            - Policy engine for delegation decisions
-#   6. identity-gw    - Token validation, OPA eval, Vault brokering
-#   7. postgresql     - Target database with sample data
-#   8. ai-agent       - Demo AI agent with SPIFFE identity
+# Architecture: AgentGateway + Token Exchange (RFC 8693) + Sub-Agents
+#
+# Components:
+#   1. spire-server    - SPIFFE trust domain root
+#   2. spire-agent     - Workload attestation & SVID distribution
+#   3. keycloak        - Human OIDC Identity Provider
+#   4. vault           - Dynamic secrets management
+#   5. opa             - Policy engine for delegation decisions
+#   6. postgresql      - Target database with sample data
+#   7. agentgateway    - MCP/A2A proxy with RBAC (replaces custom Go gateway)
+#   8. token-exchange  - RFC 8693 Token Exchange Service
+#   9. ai-agent        - Demo AI agent with sub-agent delegation
 ###############################################################################
 
 services:
@@ -169,7 +172,79 @@ services:
     networks:
       - identity-net
 
-  # ─── Identity Gateway ─────────────────────────────────────────────────
+  # ─── AgentGateway (MCP/A2A Proxy) ─────────────────────────────────────
+  # Replaces the custom Go identity-gateway with the open-source
+  # AgentGateway (https://github.com/agentgateway/agentgateway)
+  agentgateway:
+    image: ghcr.io/agentgateway/agentgateway:latest
+    hostname: agentgateway
+    volumes:
+      - ./agentgateway/config/gateway.yaml:/etc/agentgateway/gateway.yaml:ro
+      - spire-agent-socket:/tmp/spire-agent/public:ro
+    environment:
+      AGENTGATEWAY_CONFIG: /etc/agentgateway/gateway.yaml
+      KEYCLOAK_ISSUER_URL: "http://keycloak:8080/realms/demo"
+      TOKEN_EXCHANGE_URL: "http://token-exchange:8090"
+      DB_TOOLS_URL: "http://token-exchange:8090"
+      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
+    ports:
+      - "9080:8080"     # MCP/HTTP agent listener
+      - "19000:19000"   # Admin API
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+      token-exchange:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:19000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - identity-net
+
+  # ─── Token Exchange Service (RFC 8693) ─────────────────────────────────
+  # New service implementing OAuth 2.0 Token Exchange with delegation
+  # semantics for AI agent identity chains
+  token-exchange:
+    build:
+      context: ./token-exchange
+      dockerfile: Dockerfile
+    hostname: token-exchange
+    environment:
+      LISTEN_PORT: "8090"
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_REALM: "demo"
+      OPA_ENDPOINT: "http://opa:8181"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
+      TRUST_DOMAIN: "demo.local"
+      SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
+      MAX_DELEGATION_DEPTH: "3"
+      DEFAULT_TTL: "300"
+      MAX_TTL: "1800"
+    ports:
+      - "8090:8090"
+    depends_on:
+      vault:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - identity-net
+
+  # ─── Legacy Identity Gateway (kept for backward compatibility) ─────────
   identity-gateway:
     build:
       context: ./identity-gateway
@@ -186,8 +261,6 @@ services:
       SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
     volumes:
       - spire-agent-socket:/tmp/spire-agent/public:ro
-    ports:
-      - "9080:8080"
     depends_on:
       vault:
         condition: service_healthy
@@ -204,7 +277,7 @@ services:
     networks:
       - identity-net
 
-  # ─── AI Agent ──────────────────────────────────────────────────────────
+  # ─── AI Agent (with sub-agent delegation) ──────────────────────────────
   ai-agent:
     build:
       context: ./ai-agent
@@ -212,7 +285,8 @@ services:
     hostname: ai-agent
     environment:
       AGENT_MODE: "wait"
-      GATEWAY_URL: "http://identity-gateway:8080"
+      GATEWAY_URL: "http://token-exchange:8090"
+      TOKEN_EXCHANGE_URL: "http://token-exchange:8090"
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "demo"
       TRUST_DOMAIN: "demo.local"
@@ -226,8 +300,8 @@ services:
     volumes:
       - spire-agent-socket:/tmp/spire-agent/public:ro
     depends_on:
-      identity-gateway:
-        condition: service_started
+      token-exchange:
+        condition: service_healthy
       postgresql:
         condition: service_healthy
     networks:

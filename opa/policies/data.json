@@ -1,18 +1,33 @@
 {
   "config": {
     "trusted_issuers": [
-      "http://keycloak:8080/realms/demo"
+      "http://keycloak:8080/realms/demo",
+      "http://localhost:8080/realms/demo"
     ],
     "registered_agents": [
       "spiffe://demo.local/agent/query-agent",
+      "spiffe://demo.local/agent/analysis-agent",
+      "spiffe://demo.local/agent/write-agent",
       "spiffe://demo.local/gateway/identity-gateway"
+    ],
+    "registered_subagents": [
+      "spiffe://demo.local/subagent/sql-executor",
+      "spiffe://demo.local/subagent/result-formatter"
     ],
     "group_permissions": {
       "data-analysts": ["readonly", "db:read", "db:query"],
       "trading-team": ["readonly", "db:read", "db:query"],
       "engineering": ["readonly", "readwrite", "db:read", "db:write", "db:query"]
     },
+    "max_delegation_depth": 3,
     "max_delegation_ttl_seconds": 28800,
-    "require_may_act_claim": true
+    "require_may_act_claim": true,
+    "scope_hierarchy": {
+      "readwrite": ["readonly", "db:read", "db:write", "db:query"],
+      "readonly": ["db:read", "db:query"],
+      "db:write": ["db:read"],
+      "db:read": [],
+      "db:query": []
+    }
   }
 }
