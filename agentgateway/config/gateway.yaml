@@ -5,183 +5,164 @@
 # (https://github.com/agentgateway/agentgateway) - a Rust-based proxy for
 # AI agent connectivity supporting MCP and A2A protocols.
 #
-# This configuration:
-#   - Listens for agent connections via MCP (SSE) and HTTP
-#   - Routes to upstream tool servers (token-exchange, database-tools)
-#   - Authenticates agents via OIDC (Keycloak) and SPIFFE
-#   - Applies RBAC policies per target
-#   - Provides observability and audit logging
+# Configuration follows the official AgentGateway format:
+#   - config:    Top-level settings (admin API)
+#   - binds:     Entry points (ports) with listeners and routing
+#   - listeners: Protocol handlers with route/policy/backend definitions
+#   - policies:  JWT auth, MCP authorization (CEL), rate limiting, CORS
+#   - backends:  Upstream MCP tool servers and HTTP services
+#
+# Docs: https://agentgateway.dev/docs/configuration/overview/
 ###############################################################################
 
-# Admin API for health checks and metrics
-admin:
-  address: 0.0.0.0:19000
+# ─── Top-Level Config ─────────────────────────────────────────────────────────
+config:
+  # Admin API for health checks, metrics, and developer portal
+  admin:
+    port: 19000
 
-# Listeners define how agents connect to the gateway
-listeners:
-  # MCP listener for AI agent tool connections
-  - name: mcp-agent-listener
-    address: 0.0.0.0:8080
-    protocol: MCP
-    sse:
-      enabled: true
-      endpoint: /mcp/sse
-    streamable_http:
-      enabled: true
-      endpoint: /mcp/message
+# ─── Bind Definitions ────────────────────────────────────────────────────────
+binds:
 
-  # HTTP listener for REST API delegation requests (backward-compatible)
-  - name: http-api-listener
-    address: 0.0.0.0:9080
-    protocol: HTTP
+  # ── MCP Agent Listener (Primary) ──
+  # AI agents connect here via MCP (SSE or Streamable HTTP)
+  - port: 8080
+    listeners:
+      - routes:
+          - policies:
+              # CORS for browser-based agents
+              cors:
+                allowOrigins: ["*"]
+                allowMethods: ["GET", "POST", "OPTIONS"]
+                allowHeaders:
+                  - Authorization
+                  - Content-Type
+                  - X-Request-ID
+                  - X-Gateway-Key
 
-# Authentication configuration
-auth:
-  # OIDC authentication via Keycloak
-  oidc:
-    issuer_url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
-    audience: "ai-agent-service"
-    jwks_cache_ttl: 300
-    required_claims:
-      - groups
-      - may_act
+              # JWT Authentication via Keycloak OIDC
+              # Validates agent tokens (Keycloak JWTs or SPIFFE JWT-SVIDs)
+              jwtAuth:
+                mode: strict
+                issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
+                audiences:
+                  - ai-agent-service
+                  - identity-gateway
+                jwks:
+                  url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
 
-  # SPIFFE/mTLS authentication for workload identity
-  spiffe:
-    trust_domain: "demo.local"
-    workload_api_socket: "${SPIRE_AGENT_SOCKET:-/tmp/spire-agent/public/api.sock}"
+              # MCP Tool-Level Authorization (CEL expressions)
+              # Fine-grained access control per tool based on JWT claims
+              mcpAuthorization:
+                rules:
+                  # Any authenticated agent can check delegation status
+                  - 'mcp.tool.name == "get_delegation_status"'
 
-  # API key authentication (for service-to-service)
-  api_key:
-    enabled: true
-    header: "X-Gateway-Key"
+                  # Data analysts and trading team: readonly query access
+                  - >-
+                    mcp.tool.name == "query_database"
+                    && jwt.groups.exists(g, g == "data-analysts" || g == "trading-team")
 
-# RBAC policies
-rbac:
-  roles:
-    - name: data-analyst
-      permissions:
-        - target: token-exchange
-          actions: ["delegate", "exchange"]
-          scopes: ["readonly", "db:read", "db:query"]
-        - target: database-tools
-          actions: ["read"]
+                  # Engineers: full query access (readonly + readwrite)
+                  - >-
+                    mcp.tool.name == "query_database"
+                    && jwt.groups.exists(g, g == "engineering")
 
-    - name: data-engineer
-      permissions:
-        - target: token-exchange
-          actions: ["delegate", "exchange"]
-          scopes: ["readonly", "readwrite", "db:read", "db:write", "db:query"]
-        - target: database-tools
-          actions: ["read", "write"]
+                  # Any authenticated agent can revoke their own credentials
+                  - >-
+                    mcp.tool.name == "revoke_credentials"
+                    && jwt.sub != ""
 
-    - name: sub-agent
-      permissions:
-        - target: token-exchange
-          actions: ["exchange"]
-          scopes: ["readonly", "db:read"]
-        - target: database-tools
-          actions: ["read"]
+              # Rate limiting: 60 requests per minute per identity
+              rateLimit:
+                requestsPerUnit: 60
+                unit: MINUTE
 
-  # Map OIDC groups to RBAC roles
-  group_mappings:
-    data-analysts: data-analyst
-    trading-team: data-analyst
-    engineering: data-engineer
+            # Backend: Token Exchange Service as MCP tool server
+            # Federates delegation tools to agents via MCP protocol
+            backends:
+              - mcp:
+                  targets:
+                    - name: delegation-tools
+                      http:
+                        url: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
 
-  # Map SPIFFE IDs to roles
-  spiffe_mappings:
-    "spiffe://demo.local/agent/query-agent": data-analyst
-    "spiffe://demo.local/agent/analysis-agent": data-analyst
-    "spiffe://demo.local/agent/write-agent": data-engineer
-    "spiffe://demo.local/subagent/sql-executor": sub-agent
-    "spiffe://demo.local/subagent/result-formatter": sub-agent
+  # ── HTTP API Listener (Backward-Compatible REST) ──
+  # Legacy REST API for clients that don't use MCP
+  - port: 9080
+    listeners:
+      - routes:
+          - policies:
+              # JWT auth in optional mode for REST clients
+              jwtAuth:
+                mode: optional
+                issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
+                audiences:
+                  - ai-agent-service
+                  - identity-gateway
+                jwks:
+                  url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
 
-# Targets define upstream services the gateway routes to
-targets:
-  # Token Exchange Service - handles RFC 8693 delegation flows
-  - name: token-exchange
-    address: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
-    protocol: HTTP
-    health_check:
-      path: /health
-      interval: 10s
-    routes:
-      - path: /v1/delegate
-        methods: [POST]
-      - path: /v1/token/exchange
-        methods: [POST]
-      - path: /v1/token/revoke
-        methods: [POST]
-      - path: /v1/delegation/chain
-        methods: [GET, POST]
+              # HTTP-level authorization with CEL rules
+              authorization:
+                rules:
+                  # Health and audit endpoints are open
+                  - allow: 'request.path == "/health"'
+                  - allow: 'request.path == "/v1/audit"'
+                  # Token exchange requires a POST
+                  - allow: >-
+                      request.path.startsWith("/v1/token/")
+                      && request.method == "POST"
+                  # Legacy delegation endpoint
+                  - allow: >-
+                      request.path == "/v1/delegate"
+                      && request.method == "POST"
+                  # Delegation chain queries
+                  - allow: >-
+                      request.path.startsWith("/v1/delegation/")
 
-  # MCP tool server for database operations
-  - name: database-tools
-    address: "${DB_TOOLS_URL:-http://token-exchange:8090}"
-    protocol: MCP
-    tools:
-      - name: query_database
-        description: "Execute a read-only SQL query on the delegated database"
-        input_schema:
-          type: object
-          properties:
-            question:
-              type: string
-              description: "Natural language question about the data"
-            scope:
-              type: string
-              enum: ["readonly", "readwrite"]
-              default: "readonly"
-          required: ["question"]
+              # Higher rate limit for REST API
+              rateLimit:
+                requestsPerUnit: 120
+                unit: MINUTE
 
-      - name: get_delegation_status
-        description: "Check the status of the current delegation session"
-        input_schema:
-          type: object
-          properties:
-            session_id:
-              type: string
-          required: ["session_id"]
+            # Backend: Token Exchange Service (HTTP passthrough)
+            backends:
+              - http:
+                  url: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
 
-      - name: revoke_credentials
-        description: "Revoke dynamic database credentials"
-        input_schema:
-          type: object
-          properties:
-            lease_id:
-              type: string
-          required: ["lease_id"]
-
-# Rate limiting
-rate_limit:
-  enabled: true
-  requests_per_minute: 60
-  burst: 10
-  per_identity: true
-
-# Observability
-observability:
-  logging:
-    level: info
-    format: json
-    include_request_body: false
-    include_response_body: false
-  metrics:
-    enabled: true
-    endpoint: /metrics
-    port: 9090
-  tracing:
-    enabled: false
-
-# Security headers
-security:
-  cors:
-    enabled: true
-    allow_origins: ["*"]
-    allow_methods: ["GET", "POST", "OPTIONS"]
-    allow_headers: ["Authorization", "Content-Type", "X-Request-ID", "X-Gateway-Key"]
-  headers:
-    X-Content-Type-Options: nosniff
-    X-Frame-Options: DENY
-    Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+# ─── MCP Tool Catalog ────────────────────────────────────────────────────────
+# These tools are exposed to AI agents via MCP when connecting to port 8080.
+# The Token Exchange Service implements the tool handlers.
+#
+# Tool catalog (served via MCP tools/list):
+#
+#   delegation-tools__query_database
+#     Execute a read-only SQL query on the delegated database
+#     Input: { question: string, scope: "readonly"|"readwrite" }
+#
+#   delegation-tools__get_delegation_status
+#     Check the status of the current delegation session
+#     Input: { session_id: string }
+#
+#   delegation-tools__revoke_credentials
+#     Revoke dynamic database credentials
+#     Input: { lease_id: string }
+#
+# ─── RBAC Role Mappings (via CEL authorization rules above) ──────────────────
+#
+#   JWT group claim → access level:
+#     data-analysts  → readonly query_database
+#     trading-team   → readonly query_database
+#     engineering    → readonly + readwrite query_database, revoke_credentials
+#
+# ─── SPIFFE Workload Identity ────────────────────────────────────────────────
+# When deployed with SPIRE, agents present SPIFFE JWT-SVIDs as bearer tokens.
+# AgentGateway validates these as standard JWTs since SPIFFE JWT-SVIDs are JWTs.
+#
+# Registered agent identities (validated by OPA in Token Exchange Service):
+#   spiffe://demo.local/agent/query-agent      (primary query agent)
+#   spiffe://demo.local/agent/analysis-agent   (analysis agent)
+#   spiffe://demo.local/agent/write-agent      (write agent)
+#   spiffe://demo.local/subagent/sql-executor  (sub-agent)
+#   spiffe://demo.local/subagent/result-formatter (sub-agent)

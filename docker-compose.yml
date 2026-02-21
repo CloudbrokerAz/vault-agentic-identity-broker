@@ -176,16 +176,17 @@ services:
   # Replaces the custom Go identity-gateway with the open-source
   # AgentGateway (https://github.com/agentgateway/agentgateway)
   agentgateway:
-    image: ghcr.io/agentgateway/agentgateway:latest
+    image: ghcr.io/agentgateway/agentgateway:v0.3.2
     hostname: agentgateway
+    command:
+      - --config
+      - /config/gateway.yaml
     volumes:
-      - ./agentgateway/config/gateway.yaml:/etc/agentgateway/gateway.yaml:ro
+      - ./agentgateway/config/gateway.yaml:/config/gateway.yaml:ro
       - spire-agent-socket:/tmp/spire-agent/public:ro
     environment:
-      AGENTGATEWAY_CONFIG: /etc/agentgateway/gateway.yaml
       KEYCLOAK_ISSUER_URL: "http://keycloak:8080/realms/demo"
       TOKEN_EXCHANGE_URL: "http://token-exchange:8090"
-      DB_TOOLS_URL: "http://token-exchange:8090"
       SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
     ports:
       - "9080:8080"     # MCP/HTTP agent listener
