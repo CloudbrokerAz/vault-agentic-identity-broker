@@ -25,8 +25,11 @@
                     |  - trading-team   |
                     +--------+----------+
                              |
-                    (1) OIDC Login
-                    username + password
+                    (1) Device Auth Flow (RFC 8628)
+                    Human opens browser, logs in
+                    directly with Keycloak.
+                    Agent NEVER sees password.
+                    (Or: token from upstream app)
                              |
                              v
                   +---------------------+
@@ -38,6 +41,8 @@
                    (2) JWT Access Token
                    Claims: sub, email,
                    groups[], may_act{}
+                   (agent receives token
+                    only after human consents)
                              |
                              v
               +--------------+--------------+
@@ -46,6 +51,7 @@
               |                             |
               |  Has:                       |
               |  - Human's OIDC token       |
+              |    (NOT the password)       |
               |  - Own SPIFFE identity      |
               +----+-------------------+----+
                    |                   |

@@ -5,8 +5,8 @@ Tests cover:
 - AgentConfig defaults and environment loading
 - DelegationSession lifecycle and expiry
 - SPIFFEIdentity demo SVID generation
-- HumanAuthenticator Keycloak interaction
-- IdentityGatewayClient delegation requests
+- HumanAuthenticator auth modes (device, token, password)
+- TokenExchangeClient delegation requests
 - DatabaseQuerier session validation
 - Natural language to SQL mapping
 """
@@ -28,7 +28,7 @@ from agent import (
     DelegationSession,
     SPIFFEIdentity,
     HumanAuthenticator,
-    IdentityGatewayClient,
+    TokenExchangeClient,
     DatabaseQuerier,
     map_natural_language_to_sql,
     QUERY_MAPPINGS,
@@ -42,7 +42,7 @@ class TestAgentConfig(unittest.TestCase):
     def test_default_values(self):
         config = AgentConfig()
         self.assertEqual(config.spire_socket_path, "/tmp/spire-agent/public/api.sock")
-        self.assertEqual(config.gateway_url, "http://identity-gateway:8080")
+        self.assertEqual(config.gateway_url, "http://token-exchange:8090")
         self.assertEqual(config.keycloak_url, "http://keycloak:8080")
         self.assertEqual(config.keycloak_realm, "demo")
         self.assertEqual(config.trust_domain, "demo.local")
@@ -53,16 +53,15 @@ class TestAgentConfig(unittest.TestCase):
 
     def test_from_env_defaults(self):
         """from_env should return defaults when no env vars are set."""
-        # Clear relevant env vars
         env_vars = [
-            "SPIRE_AGENT_SOCKET", "GATEWAY_URL", "KEYCLOAK_URL",
-            "KEYCLOAK_REALM", "TRUST_DOMAIN", "AGENT_SPIFFE_ID",
-            "DB_HOST", "DB_PORT", "DB_NAME",
+            "SPIRE_AGENT_SOCKET", "GATEWAY_URL", "TOKEN_EXCHANGE_URL",
+            "KEYCLOAK_URL", "KEYCLOAK_REALM", "TRUST_DOMAIN",
+            "AGENT_SPIFFE_ID", "DB_HOST", "DB_PORT", "DB_NAME",
         ]
         saved = {k: os.environ.pop(k, None) for k in env_vars}
         try:
             config = AgentConfig.from_env()
-            self.assertEqual(config.gateway_url, "http://identity-gateway:8080")
+            self.assertEqual(config.gateway_url, "http://token-exchange:8090")
             self.assertEqual(config.db_port, 5432)
         finally:
             for k, v in saved.items():
@@ -199,7 +198,7 @@ class TestSPIFFEIdentity(unittest.TestCase):
 
 
 class TestHumanAuthenticator(unittest.TestCase):
-    """Tests for HumanAuthenticator class."""
+    """Tests for HumanAuthenticator class with multiple auth modes."""
 
     def test_token_endpoint_construction(self):
         config = AgentConfig(
@@ -212,10 +211,29 @@ class TestHumanAuthenticator(unittest.TestCase):
             "https://auth.example.com/realms/production/protocol/openid-connect/token",
         )
 
+    def test_device_auth_endpoint_construction(self):
+        config = AgentConfig(
+            keycloak_url="https://auth.example.com",
+            keycloak_realm="production",
+        )
+        auth = HumanAuthenticator(config)
+        self.assertEqual(
+            auth.device_auth_endpoint,
+            "https://auth.example.com/realms/production/protocol/openid-connect/auth/device",
+        )
+
+    def test_invalid_auth_mode_raises(self):
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+        with self.assertRaises(ValueError) as ctx:
+            auth.authenticate(auth_mode="invalid")
+        self.assertIn("invalid", str(ctx.exception))
+
+    # ── Password grant tests ──────────────────────────────────────────
+
     @patch("agent.requests.post")
-    def test_authenticate_success(self, mock_post):
-        """Test successful authentication via Keycloak."""
-        # Create a fake access token
+    def test_password_grant_success(self, mock_post):
+        """Test successful authentication via password grant."""
         fake_token = pyjwt.encode(
             {
                 "sub": "alice-uuid",
@@ -235,18 +253,18 @@ class TestHumanAuthenticator(unittest.TestCase):
 
         config = AgentConfig()
         auth = HumanAuthenticator(config)
-        token = auth.authenticate("alice", "alice-demo-password")
+        token = auth.authenticate(
+            auth_mode="password",
+            username="alice",
+            password="alice-demo-password",
+        )
 
         self.assertEqual(token, fake_token)
         mock_post.assert_called_once()
 
-        # Verify the request payload
-        call_kwargs = mock_post.call_args
-        self.assertEqual(call_kwargs.kwargs.get("timeout", call_kwargs[1].get("timeout")), 10)
-
     @patch("agent.requests.post")
-    def test_authenticate_failure(self, mock_post):
-        """Test authentication failure raises RuntimeError."""
+    def test_password_grant_failure(self, mock_post):
+        """Test password grant failure raises RuntimeError."""
         import requests as real_requests
         mock_post.side_effect = real_requests.exceptions.ConnectionError("Connection refused")
 
@@ -254,13 +272,13 @@ class TestHumanAuthenticator(unittest.TestCase):
         auth = HumanAuthenticator(config)
 
         with self.assertRaises(RuntimeError) as ctx:
-            auth.authenticate("alice", "wrong-password")
+            auth.authenticate(auth_mode="password", username="alice", password="wrong")
 
         self.assertIn("Human authentication failed", str(ctx.exception))
 
     @patch("agent.requests.post")
-    def test_authenticate_http_error(self, mock_post):
-        """Test HTTP error from Keycloak."""
+    def test_password_grant_http_error(self, mock_post):
+        """Test HTTP error from Keycloak during password grant."""
         import requests as real_requests
 
         mock_response = MagicMock()
@@ -272,47 +290,195 @@ class TestHumanAuthenticator(unittest.TestCase):
         auth = HumanAuthenticator(config)
 
         with self.assertRaises(RuntimeError):
-            auth.authenticate("alice", "bad-password")
+            auth.authenticate(auth_mode="password", username="alice", password="bad")
 
+    # ── Pre-supplied token tests ──────────────────────────────────────
 
-class TestIdentityGatewayClient(unittest.TestCase):
-    """Tests for IdentityGatewayClient class."""
+    def test_token_mode_with_argument(self):
+        """Token mode should accept a pre-supplied access token."""
+        fake_token = pyjwt.encode(
+            {
+                "sub": "alice@acme.com",
+                "groups": ["data-analysts"],
+                "exp": int(time.time()) + 300,
+            },
+            "secret",
+            algorithm="HS256",
+        )
 
-    def test_url_construction(self):
-        config = AgentConfig(gateway_url="http://gateway:9080")
-        client = IdentityGatewayClient(config)
-        self.assertEqual(client.delegate_url, "http://gateway:9080/v1/delegate")
-        self.assertEqual(client.health_url, "http://gateway:9080/v1/health")
-        self.assertEqual(client.audit_url, "http://gateway:9080/v1/audit")
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+        result = auth.authenticate(auth_mode="token", access_token=fake_token)
+        self.assertEqual(result, fake_token)
+
+    def test_token_mode_from_env(self):
+        """Token mode should read from HUMAN_ACCESS_TOKEN env var."""
+        fake_token = pyjwt.encode(
+            {
+                "sub": "bob@acme.com",
+                "groups": ["engineering"],
+                "exp": int(time.time()) + 300,
+            },
+            "secret",
+            algorithm="HS256",
+        )
+
+        os.environ["HUMAN_ACCESS_TOKEN"] = fake_token
+        try:
+            config = AgentConfig()
+            auth = HumanAuthenticator(config)
+            result = auth.authenticate(auth_mode="token")
+            self.assertEqual(result, fake_token)
+        finally:
+            os.environ.pop("HUMAN_ACCESS_TOKEN", None)
+
+    def test_token_mode_missing_token_raises(self):
+        """Token mode without a token should raise RuntimeError."""
+        os.environ.pop("HUMAN_ACCESS_TOKEN", None)
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="token")
+        self.assertIn("No access token", str(ctx.exception))
+
+    # ── Device flow tests ─────────────────────────────────────────────
+
+    @patch("agent.time.sleep")  # Don't actually sleep in tests
+    @patch("agent.requests.post")
+    def test_device_flow_success(self, mock_post, mock_sleep):
+        """Test the device authorization flow happy path."""
+        fake_token = pyjwt.encode(
+            {
+                "sub": "alice@acme.com",
+                "groups": ["data-analysts"],
+                "exp": int(time.time()) + 300,
+            },
+            "secret",
+            algorithm="HS256",
+        )
+
+        # First call: device auth endpoint returns codes
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEVICE-CODE-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "verification_uri_complete": "http://localhost:8080/device?user_code=ABCD-1234",
+            "interval": 1,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        # Second call: poll returns authorization_pending
+        pending_response = MagicMock()
+        pending_response.json.return_value = {
+            "error": "authorization_pending",
+        }
+
+        # Third call: poll returns the token
+        token_response = MagicMock()
+        token_response.json.return_value = {
+            "access_token": fake_token,
+        }
+
+        mock_post.side_effect = [device_response, pending_response, token_response]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+        result = auth.authenticate(auth_mode="device")
+
+        self.assertEqual(result, fake_token)
+        self.assertEqual(mock_post.call_count, 3)
 
     @patch("agent.requests.post")
-    def test_request_delegation_success(self, mock_post):
+    def test_device_flow_request_failure(self, mock_post):
+        """Test device flow when initial request fails."""
+        import requests as real_requests
+        mock_post.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="device")
+        self.assertIn("Device authorization request failed", str(ctx.exception))
+
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_device_flow_access_denied(self, mock_post, mock_sleep):
+        """Test device flow when user denies authorization."""
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEVICE-CODE-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 1,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        denied_response = MagicMock()
+        denied_response.json.return_value = {
+            "error": "access_denied",
+            "error_description": "User denied the request",
+        }
+
+        mock_post.side_effect = [device_response, denied_response]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="device")
+        self.assertIn("access_denied", str(ctx.exception))
+
+
+class TestTokenExchangeClient(unittest.TestCase):
+    """Tests for TokenExchangeClient class."""
+
+    def test_url_construction(self):
+        config = AgentConfig(token_exchange_url="http://exchange:9090")
+        client = TokenExchangeClient(config)
+        self.assertEqual(client.exchange_url, "http://exchange:9090/v1/token/exchange")
+        self.assertEqual(client.delegate_url, "http://exchange:9090/v1/delegate")
+        self.assertEqual(client.health_url, "http://exchange:9090/health")
+
+    @patch("agent.requests.post")
+    def test_exchange_token_success(self, mock_post):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
+            "access_token": "delegation-token-xyz",
             "session_id": "sess-abc123",
+            "expires_in": 300,
+            "scope": "readonly",
             "db_credential": {
                 "username": "v-spiffe-readonly-xyz",
                 "password": "dynamic-pw",
                 "host": "postgresql",
                 "port": 5432,
                 "database": "appdb",
-                "ttl_seconds": 300,
                 "lease_id": "database/creds/ai-agent-readonly/abc",
             },
-            "metadata": {
-                "delegating_human": "alice@acme.com",
-                "delegation_scope": "readonly",
-            },
-            "expires_at": "2026-02-20T10:35:00Z",
+            "delegation_chain": [
+                {
+                    "subject": "alice@acme.com",
+                    "actor": "spiffe://demo.local/agent/query-agent",
+                    "actor_type": "agent",
+                    "scope": "readonly",
+                    "depth": 0,
+                }
+            ],
         }
         mock_post.return_value = mock_response
 
         config = AgentConfig()
-        client = IdentityGatewayClient(config)
-        session = client.request_delegation(
+        client = TokenExchangeClient(config)
+        session = client.exchange_token(
             human_token="fake-token",
-            agent_spiffe_id="spiffe://demo.local/agent/query-agent",
             agent_jwt_svid="fake-svid",
             requested_scope="readonly",
         )
@@ -324,40 +490,32 @@ class TestIdentityGatewayClient(unittest.TestCase):
         self.assertFalse(session.is_expired)
 
     @patch("agent.requests.post")
-    def test_request_delegation_denied(self, mock_post):
+    def test_exchange_token_error(self, mock_post):
         mock_response = MagicMock()
-        mock_response.status_code = 403
         mock_response.json.return_value = {
-            "error": "Delegation denied by policy: scope_not_permitted",
+            "error": "access_denied",
+            "error_description": "Policy denied",
         }
         mock_post.return_value = mock_response
 
         config = AgentConfig()
-        client = IdentityGatewayClient(config)
+        client = TokenExchangeClient(config)
 
         with self.assertRaises(RuntimeError) as ctx:
-            client.request_delegation(
-                human_token="fake-token",
-                agent_spiffe_id="spiffe://demo.local/agent/query-agent",
-                agent_jwt_svid="fake-svid",
-                requested_scope="readwrite",
-            )
-
-        self.assertIn("403", str(ctx.exception))
-        self.assertIn("scope_not_permitted", str(ctx.exception))
+            client.exchange_token("tok", "svid")
+        self.assertIn("Token exchange failed", str(ctx.exception))
 
     @patch("agent.requests.post")
-    def test_request_delegation_connection_error(self, mock_post):
+    def test_exchange_token_connection_error(self, mock_post):
         import requests as real_requests
         mock_post.side_effect = real_requests.exceptions.ConnectionError("refused")
 
         config = AgentConfig()
-        client = IdentityGatewayClient(config)
+        client = TokenExchangeClient(config)
 
         with self.assertRaises(RuntimeError) as ctx:
-            client.request_delegation("tok", "spiffe", "svid")
-
-        self.assertIn("Gateway request failed", str(ctx.exception))
+            client.exchange_token("tok", "svid")
+        self.assertIn("Token exchange request failed", str(ctx.exception))
 
     @patch("agent.requests.get")
     def test_check_health_success(self, mock_get):
@@ -366,7 +524,7 @@ class TestIdentityGatewayClient(unittest.TestCase):
         mock_get.return_value = mock_response
 
         config = AgentConfig()
-        client = IdentityGatewayClient(config)
+        client = TokenExchangeClient(config)
         health = client.check_health()
 
         self.assertEqual(health["status"], "healthy")
@@ -376,38 +534,11 @@ class TestIdentityGatewayClient(unittest.TestCase):
         mock_get.side_effect = Exception("connection refused")
 
         config = AgentConfig()
-        client = IdentityGatewayClient(config)
+        client = TokenExchangeClient(config)
         health = client.check_health()
 
         self.assertEqual(health["status"], "unhealthy")
         self.assertIn("connection refused", health["error"])
-
-    @patch("agent.requests.get")
-    def test_get_audit_log_success(self, mock_get):
-        mock_response = MagicMock()
-        mock_response.json.return_value = [
-            {"session_id": "sess-1", "result": "success"},
-            {"session_id": "sess-2", "result": "denied"},
-        ]
-        mock_get.return_value = mock_response
-
-        config = AgentConfig()
-        client = IdentityGatewayClient(config)
-        entries = client.get_audit_log()
-
-        self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]["result"], "success")
-
-    @patch("agent.requests.get")
-    def test_get_audit_log_failure(self, mock_get):
-        mock_get.side_effect = Exception("error")
-
-        config = AgentConfig()
-        client = IdentityGatewayClient(config)
-        entries = client.get_audit_log()
-
-        self.assertEqual(len(entries), 1)
-        self.assertIn("error", entries[0])
 
 
 class TestDatabaseQuerier(unittest.TestCase):

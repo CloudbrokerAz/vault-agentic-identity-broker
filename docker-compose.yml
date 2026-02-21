@@ -286,6 +286,8 @@ services:
     hostname: ai-agent
     environment:
       AGENT_MODE: "wait"
+      # Authentication mode: "device" (recommended), "token", or "password" (demo only)
+      AUTH_MODE: "${AUTH_MODE:-device}"
       GATEWAY_URL: "http://token-exchange:8090"
       TOKEN_EXCHANGE_URL: "http://token-exchange:8090"
       KEYCLOAK_URL: "http://keycloak:8080"
@@ -296,8 +298,11 @@ services:
       DB_HOST: "postgresql"
       DB_PORT: "5432"
       DB_NAME: "appdb"
-      DEMO_USERNAME: "alice"
-      DEMO_PASSWORD: "alice-demo-password"
+      # Pre-supplied human token (for AUTH_MODE=token)
+      HUMAN_ACCESS_TOKEN: "${HUMAN_ACCESS_TOKEN:-}"
+      # Legacy password grant credentials (for AUTH_MODE=password only — DEMO USE)
+      DEMO_USERNAME: "${DEMO_USERNAME:-alice}"
+      DEMO_PASSWORD: "${DEMO_PASSWORD:-}"
     volumes:
       - spire-agent-socket:/tmp/spire-agent/public:ro
     depends_on:

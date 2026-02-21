@@ -183,13 +183,30 @@ docker compose up -d
 # 2. Wait for services to be healthy, then bootstrap
 ./scripts/bootstrap.sh
 
-# 3. Run the demo
+# 3. Run the demo (default: Device Authorization Flow)
 ./scripts/demo.sh
+
+# Or choose an auth mode:
+AUTH_MODE=device   ./scripts/demo.sh   # (recommended) Agent never sees password
+AUTH_MODE=token    ./scripts/demo.sh   # Pre-supplied token from upstream app
+AUTH_MODE=password ./scripts/demo.sh   # Demo/test only — agent has password
 ```
+
+### Human Authentication Modes
+
+The agent supports three modes for obtaining the human's OIDC token, controlled by the `AUTH_MODE` environment variable:
+
+| Mode | `AUTH_MODE=` | Agent sees password? | Production ready? | How it works |
+|---|---|---|---|---|
+| **Device Flow** | `device` (default) | **No** | Yes | Agent displays a URL + code. Human opens browser, authenticates directly with Keycloak (with MFA if configured), and approves. Agent polls for the token. |
+| **Pre-supplied Token** | `token` | **No** | Yes | An upstream app (chat UI, IDE, orchestrator) already authenticated the human and passes the access token via `HUMAN_ACCESS_TOKEN` env var. |
+| **Password Grant** | `password` | **YES** | **No** | Agent calls Keycloak with the human's username/password. This is a demo shortcut only — [OAuth 2.1 removes this grant type entirely](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-07#section-2.1). |
+
+> **Security note:** In `device` and `token` modes, the agent **never possesses the human's password**. It only receives a scoped, time-limited access token after the human explicitly consents. This is the correct pattern for production AI agent deployments.
 
 ### What the demo does
 
-1. **Alice authenticates** via Keycloak OIDC (direct access grant with `may_act` claim)
+1. **Alice authorizes** the agent via one of the auth modes above (Device Flow recommended)
 2. **AI agent obtains SPIFFE identity** from SPIRE (JWT-SVID: `spiffe://demo.local/agent/query-agent`)
 3. **RFC 8693 Token Exchange** — agent sends Alice's OIDC token + its own SPIFFE SVID to the Token Exchange Service
 4. **Token Exchange validates** both tokens, then consults **OPA** for policy evaluation
@@ -293,7 +310,8 @@ docker compose up -d
 
 - **Realm**: `demo`
 - **Users**: `alice` (data-analyst, groups: data-analysts, trading-team), `bob` (data-engineer, group: engineering)
-- **Clients**: `demo-cli` (public, direct access), `ai-agent-service` (confidential, token exchange enabled)
+- **Clients**: `demo-cli` (public, device auth + direct access), `ai-agent-service` (confidential, token exchange enabled)
+- **Device Auth**: `demo-cli` supports OAuth 2.0 Device Authorization Grant (RFC 8628) — the recommended auth flow for AI agents
 - **Custom claims**: `groups` membership, `may_act` delegation authorization (hardcoded protocol mapper)
 
 ### HashiCorp Vault
@@ -315,10 +333,12 @@ docker compose up -d
 
 - **Language**: Python
 - **SPIFFE**: py-spiffe library (falls back to demo mode without SPIRE)
+- **Human auth**: Supports Device Flow (RFC 8628, recommended), pre-supplied token, or legacy password grant (demo only)
 - **Token exchange**: RFC 8693 client for delegation via Token Exchange Service
 - **Sub-agents**: `sql-executor` — can receive delegation from parent agent and extend the chain
 - **Queries**: Pre-mapped natural language → SQL for demo
-- **Modes**: `demo` (single query), `interactive` (REPL), `wait` (container standby)
+- **Agent modes**: `demo` (single query), `interactive` (REPL), `wait` (container standby)
+- **Auth modes**: `device` (default), `token`, `password` — controlled by `AUTH_MODE` env var
 
 ### Identity Gateway (Legacy)
 
@@ -329,6 +349,7 @@ docker compose up -d
 
 | Property | Implementation |
 |---|---|
+| **Agent never sees password** | Device Authorization Flow (RFC 8628) or pre-supplied token mode — agent only receives a scoped, time-limited access token after explicit human consent |
 | **No static credentials** | All DB credentials are dynamic, 5-min TTL, auto-revoked |
 | **Human attribution** | `sub` claim preserved through entire delegation chain via RFC 8693 `act` claim |
 | **Agent attestation** | SPIFFE SVID proves agent workload identity cryptographically |

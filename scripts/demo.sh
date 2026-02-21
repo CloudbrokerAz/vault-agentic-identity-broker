@@ -49,16 +49,115 @@ QUESTION="${1:-show me all orders over \$1000 from last month}"
 
 # ─── Step 1: Human Authentication ────────────────────────────────────────
 
+AUTH_MODE="${AUTH_MODE:-device}"
+
 echo ""
 echo -e "${CYAN}━━━ Step 1: Human authenticates via Keycloak OIDC ━━━${NC}"
 echo ""
 
-HUMAN_TOKEN=$(curl -sf "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
-    -d "grant_type=password" \
-    -d "client_id=demo-cli" \
-    -d "username=alice" \
-    -d "password=alice-demo-password" \
-    -d "scope=openid" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+if [ "${AUTH_MODE}" = "device" ]; then
+    echo -e "  ${BOLD}Auth mode: Device Authorization Flow (RFC 8628)${NC}"
+    echo -e "  The agent NEVER sees the human's password."
+    echo ""
+
+    # Step 1a: Request device + user codes from Keycloak
+    DEVICE_RESPONSE=$(curl -sf "http://localhost:8080/realms/demo/protocol/openid-connect/auth/device" \
+        -d "client_id=demo-cli" \
+        -d "scope=openid")
+
+    DEVICE_CODE=$(echo "${DEVICE_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['device_code'])")
+    USER_CODE=$(echo "${DEVICE_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['user_code'])")
+    VERIFICATION_URI=$(echo "${DEVICE_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('verification_uri_complete', json.load(sys.stdin).get('verification_uri','')))" 2>/dev/null || true)
+    if [ -z "${VERIFICATION_URI}" ]; then
+        VERIFICATION_URI=$(echo "${DEVICE_RESPONSE}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('verification_uri_complete', d.get('verification_uri','')))")
+    fi
+    POLL_INTERVAL=$(echo "${DEVICE_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('interval', 5))")
+
+    echo -e "  ${BOLD}${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  HUMAN AUTHORIZATION REQUIRED                            ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║                                                          ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  Open this URL in your browser:                          ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  ${VERIFICATION_URI}${NC}"
+    echo -e "  ${BOLD}${YELLOW}║                                                          ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  Enter code: ${USER_CODE}                                     ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║                                                          ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  Log in as: alice / alice-demo-password                  ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  (The agent does NOT have this password)                  ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Step 1b: Poll until human completes login
+    echo -e "  Waiting for human to authorize..."
+    HUMAN_TOKEN=""
+    for i in $(seq 1 60); do
+        sleep "${POLL_INTERVAL}"
+        POLL_RESPONSE=$(curl -sf "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+            -d "client_id=demo-cli" \
+            -d "device_code=${DEVICE_CODE}" 2>/dev/null || echo '{"error":"poll_failed"}')
+
+        HUMAN_TOKEN=$(echo "${POLL_RESPONSE}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null || echo "")
+        if [ -n "${HUMAN_TOKEN}" ] && [ "${HUMAN_TOKEN}" != "" ]; then
+            break
+        fi
+
+        POLL_ERROR=$(echo "${POLL_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))" 2>/dev/null || echo "")
+        if [ "${POLL_ERROR}" = "authorization_pending" ]; then
+            echo -e "    ... waiting for human (attempt ${i}/60)"
+            continue
+        elif [ "${POLL_ERROR}" = "slow_down" ]; then
+            POLL_INTERVAL=$((POLL_INTERVAL + 1))
+            continue
+        elif [ "${POLL_ERROR}" = "expired_token" ] || [ "${POLL_ERROR}" = "access_denied" ]; then
+            echo -e "  ${RED}✗${NC} Device authorization failed: ${POLL_ERROR}"
+            exit 1
+        fi
+    done
+
+    if [ -z "${HUMAN_TOKEN}" ]; then
+        echo -e "  ${RED}✗${NC} Device authorization timed out"
+        exit 1
+    fi
+
+    echo -e "  ${GREEN}✓${NC} Human authorized via Device Flow (agent never saw password)"
+
+elif [ "${AUTH_MODE}" = "token" ]; then
+    echo -e "  ${BOLD}Auth mode: Pre-supplied token${NC}"
+    echo -e "  The agent receives a token from an upstream application."
+    echo -e "  The agent NEVER sees the human's password."
+    echo ""
+
+    if [ -n "${HUMAN_ACCESS_TOKEN:-}" ]; then
+        HUMAN_TOKEN="${HUMAN_ACCESS_TOKEN}"
+        echo -e "  ${GREEN}✓${NC} Using pre-supplied token from HUMAN_ACCESS_TOKEN"
+    else
+        echo -e "  ${YELLOW}!${NC} No HUMAN_ACCESS_TOKEN set. Obtaining one for demo..."
+        # For demonstration, obtain a token the way an upstream app would
+        HUMAN_TOKEN=$(curl -sf "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+            -d "grant_type=password" \
+            -d "client_id=demo-cli" \
+            -d "username=alice" \
+            -d "password=alice-demo-password" \
+            -d "scope=openid" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+        echo -e "  ${GREEN}✓${NC} Token obtained (simulating upstream app handoff)"
+    fi
+
+else
+    # Legacy password grant — demo only
+    echo -e "  ${BOLD}${RED}Auth mode: Password grant (DEMO ONLY)${NC}"
+    echo -e "  ${RED}WARNING: The agent has the human's raw password.${NC}"
+    echo -e "  ${RED}Use AUTH_MODE=device or AUTH_MODE=token in production.${NC}"
+    echo ""
+
+    HUMAN_TOKEN=$(curl -sf "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+        -d "grant_type=password" \
+        -d "client_id=demo-cli" \
+        -d "username=alice" \
+        -d "password=alice-demo-password" \
+        -d "scope=openid" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+    echo -e "  ${GREEN}✓${NC} Human authenticated (password grant — demo mode)"
+fi
 
 HUMAN_CLAIMS=$(echo "${HUMAN_TOKEN}" | python3 -c "
 import sys, json, base64
@@ -73,7 +172,7 @@ print(json.dumps({
 }, indent=2))
 ")
 
-echo -e "  ${GREEN}✓${NC} Human authenticated:"
+echo -e "  ${GREEN}✓${NC} Human identity:"
 echo "${HUMAN_CLAIMS}" | python3 -c "
 import sys, json
 c = json.load(sys.stdin)
@@ -81,6 +180,7 @@ print(f\"    Subject: {c['sub']}\")
 print(f\"    Groups:  {c['groups']}\")
 print(f\"    May Act: {json.dumps(c['may_act'])}\")
 "
+echo -e "  ${GREEN}✓${NC} Auth mode: ${AUTH_MODE}"
 
 # ─── Step 2: Agent SPIFFE Identity ────────────────────────────────────────
 
@@ -236,7 +336,13 @@ echo -e "${BOLD}${GREEN}╔═════════════════�
 echo -e "${BOLD}${GREEN}║    Demo Complete - Full Identity Chain Verified                  ║${NC}"
 echo -e "${BOLD}${GREEN}╠══════════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${BOLD}${GREEN}║                                                                  ║${NC}"
-echo -e "${BOLD}${GREEN}║  1. ✓ Human authenticated via OIDC (Keycloak)                   ║${NC}"
+if [ "${AUTH_MODE}" = "device" ]; then
+echo -e "${BOLD}${GREEN}║  1. ✓ Human authorized via Device Flow (agent never saw pw)     ║${NC}"
+elif [ "${AUTH_MODE}" = "token" ]; then
+echo -e "${BOLD}${GREEN}║  1. ✓ Human token provided by upstream app (no pw exposure)     ║${NC}"
+else
+echo -e "${BOLD}${GREEN}║  1. ✓ Human authenticated via password grant (DEMO ONLY)        ║${NC}"
+fi
 echo -e "${BOLD}${GREEN}║  2. ✓ Agent attested via SPIFFE (SPIRE)                         ║${NC}"
 echo -e "${BOLD}${GREEN}║  3. ✓ Delegation approved by OPA policy                         ║${NC}"
 echo -e "${BOLD}${GREEN}║  4. ✓ Dynamic credentials issued by Vault (5-min TTL)           ║${NC}"
@@ -245,4 +351,9 @@ echo -e "${BOLD}${GREEN}║  6. ✓ Full audit trail preserved across all layers
 echo -e "${BOLD}${GREEN}║  7. ✓ Credentials auto-revoked after use                        ║${NC}"
 echo -e "${BOLD}${GREEN}║                                                                  ║${NC}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${BOLD}  Auth modes:${NC}"
+echo -e "    AUTH_MODE=device   ${GREEN}(recommended)${NC} Agent never sees password"
+echo -e "    AUTH_MODE=token    ${GREEN}(recommended)${NC} Token from upstream app"
+echo -e "    AUTH_MODE=password ${RED}(demo only)${NC}    Agent has raw password"
 echo ""

@@ -146,10 +146,14 @@
       "name": "Demo CLI Client",
       "enabled": true,
       "publicClient": true,
-      "standardFlowEnabled": false,
+      "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "protocol": "openid-connect",
       "redirectUris": ["http://localhost:*"],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "oauth2.device.polling.interval": "5"
+      },
       "protocolMappers": [
         {
           "name": "groups",

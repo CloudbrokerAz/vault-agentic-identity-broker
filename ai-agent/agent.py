@@ -147,7 +147,29 @@ class SPIFFEIdentity:
 
 
 class HumanAuthenticator:
-    """Handles human authentication via Keycloak OIDC."""
+    """
+    Handles human authentication via Keycloak OIDC.
+
+    Supports three authentication modes (AUTH_MODE env var):
+
+      device   - OAuth 2.0 Device Authorization Grant (RFC 8628).
+                 The agent displays a URL and code; the human authenticates
+                 in their own browser. The agent NEVER sees the password.
+                 This is the recommended production pattern.
+
+      token    - Pre-supplied access token. An upstream application (chat
+                 UI, IDE, orchestrator) already authenticated the human
+                 and passes the token to the agent. The agent NEVER sees
+                 credentials — only a scoped, time-limited token.
+
+      password - Direct access grant (grant_type=password).
+                 *** DEMO/TEST ONLY — NOT FOR PRODUCTION ***
+                 The agent has the human's raw password in memory.
+    """
+
+    # Default polling parameters for device flow
+    DEVICE_POLL_INTERVAL = 5   # seconds between polls
+    DEVICE_POLL_TIMEOUT = 300  # give up after 5 minutes
 
     def __init__(self, config: AgentConfig):
         self.config = config
@@ -155,10 +177,196 @@ class HumanAuthenticator:
             f"{config.keycloak_url}/realms/{config.keycloak_realm}"
             f"/protocol/openid-connect/token"
         )
+        self.device_auth_endpoint = (
+            f"{config.keycloak_url}/realms/{config.keycloak_realm}"
+            f"/protocol/openid-connect/auth/device"
+        )
 
-    def authenticate(self, username: str, password: str) -> str:
-        """Authenticate a human user via Keycloak's direct access grant."""
-        logger.info("Authenticating human user: %s", username)
+    # ── Public entry point ───────────────────────────────────────────
+
+    def authenticate(self, auth_mode: str = "device", **kwargs) -> str:
+        """
+        Authenticate a human user via the specified mode.
+
+        Args:
+            auth_mode: One of "device", "token", or "password".
+            **kwargs:  Mode-specific parameters.
+                device  — client_id (optional, default "demo-cli")
+                token   — access_token (required)
+                password— username, password (required; demo only)
+
+        Returns:
+            A valid Keycloak access_token.
+        """
+        if auth_mode == "device":
+            return self.authenticate_device(**kwargs)
+        elif auth_mode == "token":
+            return self.authenticate_with_token(**kwargs)
+        elif auth_mode == "password":
+            return self.authenticate_password(**kwargs)
+        else:
+            raise ValueError(
+                f"Unknown auth_mode '{auth_mode}'. "
+                "Use 'device', 'token', or 'password'."
+            )
+
+    # ── Device Authorization Grant (RFC 8628) ────────────────────────
+
+    def authenticate_device(self, client_id: str = "demo-cli") -> str:
+        """
+        Authenticate using the OAuth 2.0 Device Authorization Grant.
+
+        The agent requests a device code from Keycloak, displays a URL
+        and user code for the human to visit in their browser, then
+        polls until the human completes login.
+
+        The agent NEVER sees the human's password.
+        """
+        logger.info("Starting Device Authorization Flow (RFC 8628)")
+
+        # Step 1: Request device + user codes
+        try:
+            resp = requests.post(
+                self.device_auth_endpoint,
+                data={
+                    "client_id": client_id,
+                    "scope": "openid",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            device_data = resp.json()
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"Device authorization request failed: {e}"
+            ) from e
+
+        device_code = device_data["device_code"]
+        user_code = device_data["user_code"]
+        verification_uri = device_data.get("verification_uri", "")
+        verification_uri_complete = device_data.get(
+            "verification_uri_complete", ""
+        )
+        poll_interval = device_data.get("interval", self.DEVICE_POLL_INTERVAL)
+        expires_in = device_data.get("expires_in", self.DEVICE_POLL_TIMEOUT)
+
+        # Step 2: Display instructions for the human
+        print()
+        print("  " + "=" * 58)
+        print("  |  HUMAN AUTHORIZATION REQUIRED                          |")
+        print("  |                                                        |")
+        if verification_uri_complete:
+            print(f"  |  Open: {verification_uri_complete:<49}|")
+        else:
+            print(f"  |  Open: {verification_uri:<49}|")
+            print(f"  |  Enter code: {user_code:<42}|")
+        print("  |                                                        |")
+        print("  |  Log in with your credentials in the browser.          |")
+        print("  |  The agent does NOT have your password.                |")
+        print("  " + "=" * 58)
+        print()
+        logger.info(
+            "Waiting for human to authorize at %s (code: %s)",
+            verification_uri_complete or verification_uri,
+            user_code,
+        )
+
+        # Step 3: Poll for token
+        deadline = time.time() + expires_in
+        while time.time() < deadline:
+            time.sleep(poll_interval)
+            try:
+                poll_resp = requests.post(
+                    self.token_endpoint,
+                    data={
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        "client_id": client_id,
+                        "device_code": device_code,
+                    },
+                    timeout=10,
+                )
+                poll_data = poll_resp.json()
+
+                if "access_token" in poll_data:
+                    access_token = poll_data["access_token"]
+                    self._log_token_claims(access_token)
+                    return access_token
+
+                error = poll_data.get("error", "")
+                if error == "authorization_pending":
+                    logger.debug("Authorization pending, polling again...")
+                    continue
+                elif error == "slow_down":
+                    poll_interval += 1
+                    logger.debug("Slow down requested, interval=%ds", poll_interval)
+                    continue
+                elif error in ("expired_token", "access_denied"):
+                    raise RuntimeError(
+                        f"Device authorization failed: {error} — "
+                        f"{poll_data.get('error_description', '')}"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Device authorization error: {error} — "
+                        f"{poll_data.get('error_description', '')}"
+                    )
+
+            except requests.RequestException as e:
+                logger.warning("Poll request failed (will retry): %s", e)
+                continue
+
+        raise RuntimeError(
+            "Device authorization timed out. "
+            "The human did not complete login within the allowed time."
+        )
+
+    # ── Pre-supplied Token ───────────────────────────────────────────
+
+    def authenticate_with_token(self, access_token: str = "") -> str:
+        """
+        Use a pre-supplied access token from an upstream application.
+
+        In production, this is the most common pattern: the human
+        already authenticated through a chat UI, IDE, or orchestrator
+        that passes the token to the agent.
+
+        The agent NEVER sees the human's credentials.
+        """
+        if not access_token:
+            access_token = os.getenv("HUMAN_ACCESS_TOKEN", "")
+        if not access_token:
+            raise RuntimeError(
+                "No access token provided. Set HUMAN_ACCESS_TOKEN env var "
+                "or pass access_token= parameter."
+            )
+
+        logger.info("Using pre-supplied human access token")
+        self._log_token_claims(access_token)
+        return access_token
+
+    # ── Legacy Password Grant (demo only) ────────────────────────────
+
+    def authenticate_password(
+        self, username: str = "", password: str = ""
+    ) -> str:
+        """
+        Authenticate via Keycloak direct access grant (grant_type=password).
+
+        *** SECURITY WARNING: DEMO / AUTOMATED-TEST USE ONLY ***
+
+        This gives the agent direct access to the human's credentials.
+        In production, use 'device' or 'token' mode instead so the agent
+        never possesses the human's password.
+        """
+        logger.warning(
+            "Using password grant (grant_type=password). "
+            "This is a DEMO SHORTCUT — the agent has the human's raw "
+            "password. Use AUTH_MODE=device or AUTH_MODE=token in production."
+        )
+
+        username = username or os.getenv("DEMO_USERNAME", "alice")
+        password = password or os.getenv("DEMO_PASSWORD", "alice-demo-password")
+        logger.info("Authenticating human user (password grant): %s", username)
 
         try:
             resp = requests.post(
@@ -175,18 +383,28 @@ class HumanAuthenticator:
             resp.raise_for_status()
             token_data = resp.json()
             access_token = token_data["access_token"]
-
-            claims = pyjwt.decode(access_token, options={"verify_signature": False})
-            logger.info(
-                "Human authenticated: sub=%s, groups=%s",
-                claims.get("email", claims.get("sub")),
-                claims.get("groups", []),
-            )
+            self._log_token_claims(access_token)
             return access_token
 
         except requests.RequestException as e:
             logger.error("Keycloak authentication failed: %s", e)
             raise RuntimeError(f"Human authentication failed: {e}") from e
+
+    # ── Helpers ──────────────────────────────────────────────────────
+
+    def _log_token_claims(self, access_token: str) -> None:
+        """Log key claims from a decoded token (unverified, for display only)."""
+        try:
+            claims = pyjwt.decode(
+                access_token, options={"verify_signature": False}
+            )
+            logger.info(
+                "Human authenticated: sub=%s, groups=%s",
+                claims.get("email", claims.get("sub")),
+                claims.get("groups", []),
+            )
+        except pyjwt.InvalidTokenError:
+            logger.warning("Could not decode token claims for logging")
 
 
 class TokenExchangeClient:
@@ -477,10 +695,17 @@ def map_natural_language_to_sql(question: str) -> str:
 
 
 def print_banner():
+    auth_mode = os.getenv("AUTH_MODE", "device")
     print("\n" + "=" * 70)
     print("  Vault Agentic Identity Broker v2 - Token Exchange + Sub-Agents")
     print("  Flow: Human → Agent → [Sub-Agent] → Database")
     print("  Protocol: RFC 8693 OAuth 2.0 Token Exchange")
+    if auth_mode == "device":
+        print("  Auth: Device Flow (RFC 8628) — agent never sees password")
+    elif auth_mode == "token":
+        print("  Auth: Pre-supplied token — agent never sees password")
+    elif auth_mode == "password":
+        print("  Auth: Password grant — DEMO ONLY (not for production)")
     print("=" * 70)
 
 
@@ -493,21 +718,30 @@ def print_step(num: int, description: str):
 def run_demo(question: str = "show me all orders over $1000 from last month"):
     """Run the full identity delegation demo with token exchange."""
     config = AgentConfig.from_env()
+    auth_mode = os.getenv("AUTH_MODE", "device")
 
     print_banner()
 
     # ── Step 1: Human Authentication ──
-    print_step(1, "Human authenticates via Keycloak OIDC")
+    auth_labels = {
+        "device": "Human authorizes via Device Flow (RFC 8628) — agent NEVER sees password",
+        "token": "Human token provided by upstream application — agent NEVER sees password",
+        "password": "Human authenticates via password grant (DEMO ONLY — agent has password)",
+    }
+    print_step(1, auth_labels.get(auth_mode, f"Human authenticates ({auth_mode})"))
     human_auth = HumanAuthenticator(config)
-    username = os.getenv("DEMO_USERNAME", "alice")
-    password = os.getenv("DEMO_PASSWORD", "alice-demo-password")
 
     try:
-        human_token = human_auth.authenticate(username, password)
+        human_token = human_auth.authenticate(auth_mode=auth_mode)
         claims = pyjwt.decode(human_token, options={"verify_signature": False})
         print(f"  [OK] Human authenticated: {claims.get('email', claims.get('sub'))}")
         print(f"  [OK] Groups: {claims.get('groups', [])}")
         print(f"  [OK] May act: {json.dumps(claims.get('may_act', {}))}")
+        print(f"  [OK] Auth mode: {auth_mode}")
+        if auth_mode in ("device", "token"):
+            print(f"  [OK] Agent credential exposure: NONE (password never seen)")
+        else:
+            print(f"  [WARN] Agent credential exposure: FULL (demo mode — has password)")
     except Exception as e:
         print(f"  [FAIL] Authentication failed: {e}")
         sys.exit(1)
@@ -607,6 +841,7 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
 def run_interactive():
     """Run in interactive mode, accepting questions from stdin."""
     config = AgentConfig.from_env()
+    auth_mode = os.getenv("AUTH_MODE", "device")
 
     print_banner()
     print("\nAvailable queries:")
@@ -616,9 +851,7 @@ def run_interactive():
     print()
 
     human_auth = HumanAuthenticator(config)
-    username = os.getenv("DEMO_USERNAME", "alice")
-    password = os.getenv("DEMO_PASSWORD", "alice-demo-password")
-    human_token = human_auth.authenticate(username, password)
+    human_token = human_auth.authenticate(auth_mode=auth_mode)
 
     spiffe = SPIFFEIdentity(config)
     agent_svid = spiffe.fetch_jwt_svid(audience="token-exchange")
