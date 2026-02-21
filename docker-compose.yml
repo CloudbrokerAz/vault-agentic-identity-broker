@@ -63,6 +63,34 @@ services:
     networks:
       - identity-net
 
+  # ─── SPIRE OIDC Discovery Provider ────────────────────────────────────
+  # Serves a JWKS endpoint for SPIRE JWT-SVIDs so that Vault (and other
+  # relying parties) can verify agent identity tokens cryptographically.
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:1.11.0
+    hostname: spire-oidc
+    command:
+      - -config
+      - /opt/spire/conf/oidc/oidc-discovery-provider.conf
+    volumes:
+      - ./spire/oidc/oidc-discovery-provider.conf:/opt/spire/conf/oidc/oidc-discovery-provider.conf:ro
+      - spire-agent-socket:/tmp/spire-agent/public:ro
+    ports:
+      - "8082:8082"
+    depends_on:
+      spire-server:
+        condition: service_healthy
+      spire-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/keys"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - identity-net
+
   # ─── Keycloak (Human IdP) ─────────────────────────────────────────────
   keycloak:
     image: quay.io/keycloak/keycloak:26.0

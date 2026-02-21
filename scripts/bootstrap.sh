@@ -322,47 +322,54 @@ curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
     }' > /dev/null 2>&1 || log_warn "JWT auth method may already be enabled"
 log_ok "JWT auth method enabled"
 
-# Configure JWT auth with SPIRE as the OIDC issuer
-# In production, SPIRE exposes a JWKS endpoint at the configured jwt_issuer URL.
-# For local demo, we use the SPIRE server's issuer and JWKS endpoint.
+# Configure JWT auth with SPIRE OIDC Discovery Provider.
+# The spire-oidc service (port 8082) serves a JWKS endpoint backed by
+# the SPIRE trust bundle so Vault can cryptographically verify JWT-SVIDs.
 SPIRE_ISSUER="https://spire-server:8443"
-SPIRE_JWKS_URL="https://spire-server:8443/keys"
+if [ "${HOST_MODE}" = "true" ]; then
+    SPIRE_JWKS_URL="http://127.0.0.1:8082/keys"
+else
+    SPIRE_JWKS_URL="http://spire-oidc:8082/keys"
+fi
 
-log_info "Configuring JWT auth with SPIRE OIDC issuer..."
+# Wait for the OIDC Discovery Provider to be ready
+wait_for_service "SPIRE OIDC Provider" "${SPIRE_JWKS_URL}" 20 || log_warn "SPIRE OIDC provider not reachable yet"
+
+log_info "Configuring JWT auth with SPIRE OIDC Discovery Provider..."
 curl -sf "${VAULT_ADDR}/v1/auth/jwt/config" \
     -X POST \
     -H "X-Vault-Token: ${VAULT_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{
-        "oidc_discovery_url": "",
         "jwks_url": "'"${SPIRE_JWKS_URL}"'",
         "bound_issuer": "'"${SPIRE_ISSUER}"'",
-        "default_role": "spire-agent",
-        "jwks_ca_pem": ""
-    }' > /dev/null 2>&1 || log_warn "JWT auth config may need SPIRE CA cert in production"
-log_ok "JWT auth configured with SPIRE issuer: ${SPIRE_ISSUER}"
+        "default_role": "spire-agent"
+    }' > /dev/null 2>&1 || log_warn "JWT auth config update failed"
+log_ok "JWT auth configured with SPIRE OIDC provider: ${SPIRE_JWKS_URL}"
 
-# Create JWT auth role for agents (maps SPIFFE IDs to Vault policies)
-log_info "Creating JWT auth role for agents..."
-curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent" \
+# Create JWT auth role for gateway (maps SPIFFE IDs to Vault policies)
+log_info "Creating JWT auth role for gateway..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-gateway" \
     -X POST \
     -H "X-Vault-Token: ${VAULT_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{
         "role_type": "jwt",
         "bound_audiences": ["vault"],
-        "bound_subject": "",
         "bound_claims": {
-            "sub": "spiffe://demo.local/*"
+            "sub": "spiffe://demo.local/gateway/*"
         },
         "user_claim": "sub",
+        "claim_mappings": {
+            "sub": "spiffe_id"
+        },
         "token_policies": ["gateway-policy"],
         "token_ttl": "1h",
         "token_max_ttl": "4h"
     }' > /dev/null
-log_ok "JWT auth role 'spire-agent' created"
+log_ok "JWT auth role 'spire-gateway' created"
 
-# Create a narrower JWT auth role for read-only agents
+# Create JWT auth role for read-only agents
 log_info "Creating JWT auth role for read-only agents..."
 curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readonly" \
     -X POST \
@@ -375,11 +382,36 @@ curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readonly" \
             "sub": "spiffe://demo.local/agent/*"
         },
         "user_claim": "sub",
+        "claim_mappings": {
+            "sub": "spiffe_id"
+        },
         "token_policies": ["ai-agent-db-read"],
         "token_ttl": "30m",
         "token_max_ttl": "1h"
     }' > /dev/null
 log_ok "JWT auth role 'spire-agent-readonly' created"
+
+# Create JWT auth role for readwrite agents (write-agent)
+log_info "Creating JWT auth role for readwrite agents..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readwrite" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "role_type": "jwt",
+        "bound_audiences": ["vault"],
+        "bound_claims": {
+            "sub": "spiffe://demo.local/agent/write-agent"
+        },
+        "user_claim": "sub",
+        "claim_mappings": {
+            "sub": "spiffe_id"
+        },
+        "token_policies": ["ai-agent-db-readwrite"],
+        "token_ttl": "30m",
+        "token_max_ttl": "1h"
+    }' > /dev/null
+log_ok "JWT auth role 'spire-agent-readwrite' created"
 
 # ─── Step 8: Register SPIRE Entries ─────────────────────────────────────
 

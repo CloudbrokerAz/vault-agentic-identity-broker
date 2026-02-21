@@ -803,3 +803,221 @@ test_decision_delegation_chain_captures_depth if {
     result.delegation_depth == 2
     result.agent == "spiffe://demo.local/subagent/result-formatter"
 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. may_act Agent Identity Validation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: may_act.sub matches agent SPIFFE ID exactly => allow
+test_allow_may_act_spiffe_id_match if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "spiffe://demo.local/agent/query-agent"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: may_act.sub is SPIFFE ID but doesn't match requesting agent => deny
+test_deny_may_act_spiffe_id_mismatch if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {"sub": "spiffe://demo.local/agent/analysis-agent"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: may_act.aud includes the requesting agent's SPIFFE ID => allow
+test_allow_may_act_aud_match if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {
+                "sub": "agent:query-agent-v2",
+                "aud": ["spiffe://demo.local/agent/query-agent"],
+            },
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: may_act.aud does NOT include the requesting agent => deny
+test_deny_may_act_aud_mismatch if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "may_act": {
+                "sub": "agent:query-agent-v2",
+                "aud": ["spiffe://demo.local/agent/analysis-agent"],
+            },
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "readonly",
+        "current_time": 1700000000,
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. Scope Hierarchy Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: readwrite implies readonly via scope_hierarchy => allow
+test_allow_scope_hierarchy_readwrite_implies_readonly if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:read",
+        "current_time": 1700000000,
+    }
+}
+
+# Test: readwrite implies db:write via scope_hierarchy => allow
+test_allow_scope_hierarchy_readwrite_implies_db_write if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "may_act": {"sub": "agent:query-agent-v2"},
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
+        "requested_scope": "db:write",
+        "current_time": 1700000000,
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. Scope Narrowing Enforcement Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Test: Sub-agent requests same scope as parent => allow
+test_allow_scope_narrowing_same_scope if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["data-analysts"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "parent_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent narrows scope from readwrite to readonly => allow
+test_allow_scope_narrowing_readwrite_to_readonly if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readonly",
+        "parent_scope": "readwrite",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent narrows scope from readwrite to db:read => allow
+test_allow_scope_narrowing_readwrite_to_db_read if {
+    delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "db:read",
+        "parent_scope": "readwrite",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent tries to escalate from readonly to readwrite => deny
+test_deny_scope_narrowing_escalation_readonly_to_readwrite if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["engineering"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readwrite",
+        "parent_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Sub-agent tries to escalate from db:read to db:write => deny
+test_deny_scope_narrowing_escalation_db_read_to_db_write if {
+    not delegation.allow with input as {
+        "human_token": {
+            "sub": "bob@acme.com",
+            "groups": ["engineering"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "db:write",
+        "parent_scope": "db:read",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+}
+
+# Test: Decision reason is "scope_narrowing_violation" for escalation attempt
+test_decision_reason_scope_narrowing_violation if {
+    result := delegation.decision with input as {
+        "human_token": {
+            "sub": "alice@acme.com",
+            "groups": ["engineering"],
+            "exp": 9999999999,
+            "iss": "http://keycloak:8080/realms/demo",
+        },
+        "agent_spiffe_id": "spiffe://demo.local/subagent/sql-executor",
+        "requested_scope": "readwrite",
+        "parent_scope": "readonly",
+        "delegation_depth": 1,
+        "current_time": 1700000000,
+    }
+    result.allowed == false
+    result.reason == "scope_narrowing_violation"
+}

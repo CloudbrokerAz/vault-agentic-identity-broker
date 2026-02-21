@@ -48,6 +48,28 @@ services:
       retries: 12
       start_period: 15s
 
+  # ─── SPIRE OIDC Discovery Provider ────────────────────────────────────
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:1.11.0
+    command:
+      - -config
+      - /opt/spire/conf/oidc/oidc-discovery-provider.conf
+    volumes:
+      - ./spire/oidc/oidc-discovery-provider.conf:/opt/spire/conf/oidc/oidc-discovery-provider.conf:ro
+      - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
+    depends_on:
+      spire-server:
+        condition: service_healthy
+      spire-agent:
+        condition: service_healthy
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/keys"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
   # ─── Keycloak (Human IdP) ─────────────────────────────────────────────
   keycloak:
     image: quay.io/keycloak/keycloak:26.0

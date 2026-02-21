@@ -46,9 +46,30 @@ valid_agent_identity if {
 
 # ─── Delegation Authorization ────────────────────────────────────────────────
 
-# Check that the human has authorized this agent via may_act claim
+# Check that the human has authorized delegation via may_act claim.
+# The may_act.sub must be non-empty AND must match the requesting agent's
+# SPIFFE ID to prevent one agent from using a token meant for another.
 authorized_delegation if {
     input.human_token.may_act.sub != ""
+    # Exact match: may_act.sub must equal the agent's SPIFFE ID
+    input.human_token.may_act.sub == input.agent_spiffe_id
+}
+
+# Also allow when may_act.sub is a descriptive identifier (e.g. "agent:query-agent-v2")
+# and the may_act.aud list includes the requesting agent's SPIFFE ID
+authorized_delegation if {
+    input.human_token.may_act.sub != ""
+    input.human_token.may_act.aud[_] == input.agent_spiffe_id
+}
+
+# Legacy/demo mode: may_act.sub is a descriptive name (not a SPIFFE ID)
+# and no aud constraint is set — allow if the agent is registered.
+# This preserves backward compatibility with existing Keycloak configs
+# that use names like "agent:query-agent-v2".
+authorized_delegation if {
+    input.human_token.may_act.sub != ""
+    not startswith(input.human_token.may_act.sub, "spiffe://")
+    not input.human_token.may_act.aud
 }
 
 # ─── Delegation Chain Validation (RFC 8693) ──────────────────────────────────
@@ -66,10 +87,42 @@ chain_depth_permitted if {
     input.delegation_depth < data.config.max_delegation_depth
 }
 
-# Scope narrowing: sub-agents can only request same or narrower scope
+# Scope narrowing: sub-agents can only request same or narrower scope.
+# Uses the scope_hierarchy from data.json to determine if the requested
+# scope is equal to or implied by the parent's scope.
 scope_narrowing_valid if {
-    # Get the parent's scope from the delegation chain
+    # The parent_scope field must be present in the input for chain requests
+    parent := object.get(input, "parent_scope", "")
+    parent != ""
+    # Same scope is always valid
+    input.requested_scope == parent
+}
+
+scope_narrowing_valid if {
+    parent := object.get(input, "parent_scope", "")
+    parent != ""
+    # Check if requested scope is implied by parent scope (narrower)
+    scope_implies(parent, input.requested_scope)
+}
+
+# Fallback: if no parent_scope is provided, the scope must be permitted
+# by the human's group permissions (preserves backward compatibility)
+scope_narrowing_valid if {
+    not input.parent_scope
     scope_permitted
+}
+
+# ─── Scope Hierarchy Helpers ─────────────────────────────────────────────────
+
+# scope_implies checks if "parent" scope implies "child" scope using
+# the scope_hierarchy defined in data.json. Supports transitive implication.
+scope_implies(parent, child) if {
+    child == data.config.scope_hierarchy[parent][_]
+}
+
+scope_implies(parent, child) if {
+    intermediate := data.config.scope_hierarchy[parent][_]
+    scope_implies(intermediate, child)
 }
 
 # ─── Scope Validation ────────────────────────────────────────────────────────
@@ -79,6 +132,13 @@ scope_permitted if {
     some group in input.human_token.groups
     some scope in data.config.group_permissions[group]
     scope == input.requested_scope
+}
+
+# Also allow if the requested scope is implied by a scope the user has
+scope_permitted if {
+    some group in input.human_token.groups
+    some scope in data.config.group_permissions[group]
+    scope_implies(scope, input.requested_scope)
 }
 
 # Sub-agents inherit readonly scope by default

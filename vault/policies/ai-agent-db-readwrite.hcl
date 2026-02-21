@@ -1,18 +1,18 @@
-# Policy: ai-agent-db-read
-# Grants AI agents the ability to read dynamic database credentials
-# Scoped to readonly access only.
-#
-# When entity metadata is available (via delegation), the scope is
-# enforced via templated paths. A static fallback is included for
-# agents that authenticate directly via JWT without delegation metadata.
+# Policy: ai-agent-db-readwrite
+# Grants AI agents the ability to obtain dynamic database credentials
+# with read/write access. Only agents whose delegation scope (or JWT
+# role) permits readwrite will be assigned this policy.
 
-# Templated path: resolves to the scope stored in entity metadata
-# (e.g. "readonly" → database/creds/ai-agent-readonly)
+# Templated path: resolves via entity metadata from the delegation chain
 path "database/creds/ai-agent-{{identity.entity.metadata.delegation_scope}}" {
   capabilities = ["read"]
 }
 
-# Static fallback: agents authenticated via JWT without delegation metadata
+# Static paths for readwrite and readonly (readwrite implies read)
+path "database/creds/ai-agent-readwrite" {
+  capabilities = ["read"]
+}
+
 path "database/creds/ai-agent-readonly" {
   capabilities = ["read"]
 }

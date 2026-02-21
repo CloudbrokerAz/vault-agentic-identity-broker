@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -98,7 +100,8 @@ func (tv *TokenVerifier) validateViaUserinfo(ctx context.Context, tokenString st
 	return tv.extractClaims(rawClaims, tokenString)
 }
 
-// validateViaJWKS validates the token using Keycloak's JWKS endpoint
+// validateViaJWKS validates the token using Keycloak's JWKS endpoint with
+// full cryptographic signature verification via go-jose.
 func (tv *TokenVerifier) validateViaJWKS(ctx context.Context, tokenString string) (*HumanClaims, error) {
 	// Fetch JWKS
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tv.jwksURL, nil)
@@ -116,20 +119,46 @@ func (tv *TokenVerifier) validateViaJWKS(ctx context.Context, tokenString string
 		return nil, fmt.Errorf("JWKS returned status %d", resp.StatusCode)
 	}
 
-	var jwks struct {
-		Keys []json.RawMessage `json:"keys"`
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading JWKS response: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+
+	var jwks jose.JSONWebKeySet
+	if err := json.Unmarshal(body, &jwks); err != nil {
 		return nil, fmt.Errorf("decoding JWKS: %w", err)
 	}
 
-	// Parse the token and validate claims
-	token, _, err := jwt.NewParser(
+	// Build a keyfunc that looks up the signing key from the JWKS by key ID.
+	keyfunc := func(token *jwt.Token) (interface{}, error) {
+		kid, ok := token.Header["kid"].(string)
+		if !ok || kid == "" {
+			// No kid header — try each key in the set
+			for _, key := range jwks.Keys {
+				if key.Use == "sig" || key.Use == "" {
+					return key.Key, nil
+				}
+			}
+			return nil, fmt.Errorf("no suitable signing key found in JWKS")
+		}
+		keys := jwks.Key(kid)
+		if len(keys) == 0 {
+			return nil, fmt.Errorf("key %q not found in JWKS", kid)
+		}
+		// Return the public key for signature verification
+		if pub, ok := keys[0].Key.(crypto.PublicKey); ok {
+			return pub, nil
+		}
+		return keys[0].Key, nil
+	}
+
+	// Parse and verify the token signature + claims
+	token, err := jwt.NewParser(
 		jwt.WithIssuer(tv.issuerURL),
 		jwt.WithLeeway(30*time.Second),
-	).ParseUnverified(tokenString, jwt.MapClaims{})
+	).Parse(tokenString, keyfunc)
 	if err != nil {
-		return nil, fmt.Errorf("parsing token: %w", err)
+		return nil, fmt.Errorf("verifying token signature: %w", err)
 	}
 
 	mapClaims, ok := token.Claims.(jwt.MapClaims)

@@ -3,6 +3,7 @@ module github.com/cloudbrokeraz/vault-agentic-identity-broker/identity-gateway
 go 1.22
 
 require (
+	github.com/go-jose/go-jose/v4 v4.0.4
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.14.0
@@ -10,7 +11,6 @@ require (
 
 require (
 	github.com/cenkalti/backoff/v3 v3.0.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.0.4 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
