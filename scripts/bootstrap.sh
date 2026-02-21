@@ -15,7 +15,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
-COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml"
+
+# Use host-network compose file if --host flag is passed or HOST_NETWORK is set
+COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
+HOST_MODE="false"
+if [ "${1:-}" = "--host" ] || [ "${HOST_NETWORK:-}" = "true" ]; then
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.host.yml"
+    HOST_MODE="true"
+fi
+COMPOSE="docker compose -f ${COMPOSE_FILE}"
+
+# Set DB host based on network mode (Vault connects to PostgreSQL)
+if [ "${HOST_MODE}" = "true" ]; then
+    DB_HOST="127.0.0.1"
+    GATEWAY_PORT="9080"
+else
+    DB_HOST="postgresql"
+    GATEWAY_PORT="9080"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -186,7 +203,7 @@ curl -sf "${VAULT_ADDR}/v1/database/config/postgresql" \
     -d '{
         "plugin_name": "postgresql-database-plugin",
         "allowed_roles": "ai-agent-readonly,ai-agent-readwrite",
-        "connection_url": "postgresql://{{username}}:{{password}}@postgresql:5432/appdb?sslmode=disable",
+        "connection_url": "postgresql://{{username}}:{{password}}@'"${DB_HOST}"':5432/appdb?sslmode=disable",
         "username": "vault_admin",
         "password": "vault-admin-initial-password"
     }' > /dev/null
@@ -282,12 +299,9 @@ GATEWAY_VAULT_TOKEN=$(echo "${GATEWAY_TOKEN_RESPONSE}" | python3 -c "import sys,
 log_ok "Gateway token created"
 
 # Update the identity-gateway container with the Vault token
-log_info "Updating Identity Gateway with Vault token..."
-${COMPOSE} stop identity-gateway 2>/dev/null || true
-
-# Write an env file for the gateway
+# Save gateway credentials for reference
 cat > "${PROJECT_DIR}/.gateway.env" <<EOF
-VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}
+GATEWAY_VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}
 EOF
 chmod 600 "${PROJECT_DIR}/.gateway.env"
 
@@ -331,22 +345,21 @@ fi
 
 log_step 8 "Restarting Identity Gateway with Vault token"
 
-# Export the token so docker compose picks it up
+# Export the token so docker compose picks it up via ${GATEWAY_VAULT_TOKEN:-}
 export GATEWAY_VAULT_TOKEN
-${COMPOSE} run -d --rm --name identity-gateway-configured \
-    -e "VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}" \
-    identity-gateway 2>/dev/null || true
-
-# Alternative: restart the existing service with env
-${COMPOSE} up -d --force-recreate identity-gateway 2>/dev/null || true
+${COMPOSE} up -d --force-recreate identity-gateway 2>/dev/null
 
 # Wait for the gateway to come up
-sleep 3
+log_info "Waiting for Identity Gateway to start..."
+for i in $(seq 1 15); do
+    if curl -sf "http://localhost:${GATEWAY_PORT}/v1/health" > /dev/null 2>&1; then
+        log_ok "Identity Gateway is ready"
+        break
+    fi
+    sleep 2
+done
 
-# Set the env var directly in the running container
-${COMPOSE} exec -T -e "VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}" identity-gateway sh -c 'echo "Token injected"' 2>/dev/null || true
-
-log_ok "Identity Gateway restarted"
+log_ok "Identity Gateway restarted with Vault token"
 
 # ─── Step 9: Verify Setup ──────────────────────────────────────────────
 
