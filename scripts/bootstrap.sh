@@ -307,9 +307,83 @@ chmod 600 "${PROJECT_DIR}/.gateway.env"
 
 log_ok "Gateway credentials saved to .gateway.env"
 
-# ─── Step 7: Register SPIRE Entries ─────────────────────────────────────
+# ─── Step 7: Configure Vault JWT Auth (SPIRE OIDC) ────────────────────
 
-log_step 7 "Registering SPIRE workload entries"
+log_step 7 "Configuring Vault JWT auth method for SPIRE JWT-SVIDs"
+
+# Enable JWT auth method
+curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "type": "jwt",
+        "description": "SPIRE JWT-SVID authentication for agents"
+    }' > /dev/null 2>&1 || log_warn "JWT auth method may already be enabled"
+log_ok "JWT auth method enabled"
+
+# Configure JWT auth with SPIRE as the OIDC issuer
+# In production, SPIRE exposes a JWKS endpoint at the configured jwt_issuer URL.
+# For local demo, we use the SPIRE server's issuer and JWKS endpoint.
+SPIRE_ISSUER="https://spire-server:8443"
+SPIRE_JWKS_URL="https://spire-server:8443/keys"
+
+log_info "Configuring JWT auth with SPIRE OIDC issuer..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/config" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "oidc_discovery_url": "",
+        "jwks_url": "'"${SPIRE_JWKS_URL}"'",
+        "bound_issuer": "'"${SPIRE_ISSUER}"'",
+        "default_role": "spire-agent",
+        "jwks_ca_pem": ""
+    }' > /dev/null 2>&1 || log_warn "JWT auth config may need SPIRE CA cert in production"
+log_ok "JWT auth configured with SPIRE issuer: ${SPIRE_ISSUER}"
+
+# Create JWT auth role for agents (maps SPIFFE IDs to Vault policies)
+log_info "Creating JWT auth role for agents..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "role_type": "jwt",
+        "bound_audiences": ["vault"],
+        "bound_subject": "",
+        "bound_claims": {
+            "sub": "spiffe://demo.local/*"
+        },
+        "user_claim": "sub",
+        "token_policies": ["gateway-policy"],
+        "token_ttl": "1h",
+        "token_max_ttl": "4h"
+    }' > /dev/null
+log_ok "JWT auth role 'spire-agent' created"
+
+# Create a narrower JWT auth role for read-only agents
+log_info "Creating JWT auth role for read-only agents..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readonly" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "role_type": "jwt",
+        "bound_audiences": ["vault"],
+        "bound_claims": {
+            "sub": "spiffe://demo.local/agent/*"
+        },
+        "user_claim": "sub",
+        "token_policies": ["ai-agent-db-read"],
+        "token_ttl": "30m",
+        "token_max_ttl": "1h"
+    }' > /dev/null
+log_ok "JWT auth role 'spire-agent-readonly' created"
+
+# ─── Step 8: Register SPIRE Entries ─────────────────────────────────────
+
+log_step 8 "Registering SPIRE workload entries"
 
 # Generate join token and register entries
 log_info "Generating SPIRE join token..."
@@ -329,21 +403,54 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -ttl 3600 2>/dev/null || log_warn "Gateway entry may already exist"
     log_ok "Identity Gateway registered with SPIRE"
 
-    # Register AI Agent
+    # Register AI Agents
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
         -parentID "spiffe://demo.local/spire-agent" \
         -spiffeID "spiffe://demo.local/agent/query-agent" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "Agent entry may already exist"
-    log_ok "AI Agent registered with SPIRE"
+        -ttl 3600 2>/dev/null || log_warn "Query Agent entry may already exist"
+    log_ok "Query Agent registered with SPIRE"
+
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/agent/analysis-agent" \
+        -selector "unix:uid:0" \
+        -dns "ai-agent" \
+        -ttl 3600 2>/dev/null || log_warn "Analysis Agent entry may already exist"
+    log_ok "Analysis Agent registered with SPIRE"
+
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/agent/write-agent" \
+        -selector "unix:uid:0" \
+        -dns "ai-agent" \
+        -ttl 3600 2>/dev/null || log_warn "Write Agent entry may already exist"
+    log_ok "Write Agent registered with SPIRE"
+
+    # Register Sub-Agents
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/subagent/sql-executor" \
+        -selector "unix:uid:0" \
+        -dns "ai-agent" \
+        -ttl 3600 2>/dev/null || log_warn "SQL Executor entry may already exist"
+    log_ok "SQL Executor Sub-Agent registered with SPIRE"
+
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/subagent/result-formatter" \
+        -selector "unix:uid:0" \
+        -dns "ai-agent" \
+        -ttl 3600 2>/dev/null || log_warn "Result Formatter entry may already exist"
+    log_ok "Result Formatter Sub-Agent registered with SPIRE"
 else
     log_warn "Could not generate SPIRE join token (agent may use existing token)"
 fi
 
-# ─── Step 8: Restart Gateway with Token ─────────────────────────────────
+# ─── Step 9: Restart Gateway with Token ─────────────────────────────────
 
-log_step 8 "Restarting Identity Gateway with Vault token"
+log_step 9 "Restarting Identity Gateway with Vault token"
 
 # Export the token so docker compose picks it up via ${GATEWAY_VAULT_TOKEN:-}
 export GATEWAY_VAULT_TOKEN
@@ -361,9 +468,9 @@ done
 
 log_ok "Identity Gateway restarted with Vault token"
 
-# ─── Step 9: Verify Setup ──────────────────────────────────────────────
+# ─── Step 10: Verify Setup ─────────────────────────────────────────────
 
-log_step 9 "Verifying setup"
+log_step 10 "Verifying setup"
 
 echo ""
 log_info "Service endpoints:"

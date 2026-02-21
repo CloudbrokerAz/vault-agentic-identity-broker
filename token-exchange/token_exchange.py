@@ -689,14 +689,41 @@ class TokenExchangeService:
         }
 
         try:
-            # Try to update entity metadata (non-blocking)
-            requests.post(
+            # Look up the current token's entity ID, then persist delegation
+            # metadata onto the Vault entity so it survives service restarts.
+            lookup_resp = requests.get(
                 f"{self.config.vault_addr}/v1/auth/token/lookup-self",
                 headers=headers,
                 timeout=5,
             )
-        except Exception:
-            pass
+            if lookup_resp.status_code == 200:
+                entity_id = lookup_resp.json().get("data", {}).get("entity_id", "")
+                if entity_id:
+                    requests.post(
+                        f"{self.config.vault_addr}/v1/identity/entity/id/{entity_id}",
+                        headers=headers,
+                        json={"metadata": metadata},
+                        timeout=5,
+                    )
+                    logger.info(
+                        "Vault entity metadata updated: entity=%s, session=%s",
+                        entity_id, session_id,
+                    )
+                else:
+                    # No entity attached to token — create a named entity
+                    entity_name = f"delegation-{session_id}"
+                    requests.post(
+                        f"{self.config.vault_addr}/v1/identity/entity",
+                        headers=headers,
+                        json={"name": entity_name, "metadata": metadata},
+                        timeout=5,
+                    )
+                    logger.info(
+                        "Vault entity created: name=%s, session=%s",
+                        entity_name, session_id,
+                    )
+        except Exception as exc:
+            logger.warning("Failed to persist entity metadata to Vault: %s", exc)
 
         # Get dynamic credentials
         try:
