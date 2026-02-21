@@ -1,0 +1,240 @@
+###############################################################################
+# Vault Agentic Identity Broker - Docker Compose
+#
+# Seven containers implementing the full identity delegation chain:
+#   1. spire-server   - SPIFFE trust domain root
+#   2. spire-agent    - Workload attestation & SVID distribution
+#   3. keycloak       - Human OIDC Identity Provider
+#   4. vault          - Dynamic secrets management (JWT auth + DB engine)
+#   5. opa            - Policy engine for delegation decisions
+#   6. identity-gw    - Token validation, OPA eval, Vault brokering
+#   7. postgresql     - Target database with sample data
+#   8. ai-agent       - Demo AI agent with SPIFFE identity
+###############################################################################
+
+services:
+
+  # ─── SPIRE Server ──────────────────────────────────────────────────────
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.11.0
+    hostname: spire-server
+    command:
+      - -config
+      - /opt/spire/conf/server/server.conf
+    volumes:
+      - ./spire/server/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/opt/spire/data/server
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - identity-net
+
+  # ─── SPIRE Agent ───────────────────────────────────────────────────────
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.11.0
+    hostname: spire-agent
+    command:
+      - -config
+      - /opt/spire/conf/agent/agent.conf
+    volumes:
+      - ./spire/agent/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - spire-agent-data:/opt/spire/data/agent
+      - spire-agent-socket:/tmp/spire-agent/public
+      - spire-server-data:/opt/spire/data/server:ro
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    pid: "host"
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - identity-net
+
+  # ─── Keycloak (Human IdP) ─────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    hostname: keycloak
+    command:
+      - start-dev
+      - --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/realm/demo-realm.json:/opt/keycloak/data/import/demo-realm.json:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - identity-net
+
+  # ─── HashiCorp Vault ───────────────────────────────────────────────────
+  vault:
+    image: hashicorp/vault:1.17
+    hostname: vault
+    command: server
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_ADDR: "http://0.0.0.0:8200"
+      VAULT_API_ADDR: "http://vault:8200"
+    volumes:
+      - ./vault/config/vault.hcl:/vault/config/vault.hcl:ro
+      - ./vault/policies:/vault/policies:ro
+      - vault-data:/vault/file
+      - vault-logs:/vault/logs
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - identity-net
+
+  # ─── OPA Policy Engine ────────────────────────────────────────────────
+  opa:
+    image: openpolicyagent/opa:0.70.0
+    hostname: opa
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --log-level=debug
+      - /policies/delegation.rego
+      - /policies/data.json
+    volumes:
+      - ./opa/policies:/policies:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - identity-net
+
+  # ─── PostgreSQL Database ──────────────────────────────────────────────
+  postgresql:
+    image: postgres:16-alpine
+    hostname: postgresql
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres-root-password
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pgaudit
+      - -c
+      - pgaudit.log=read
+      - -c
+      - log_statement=all
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - identity-net
+
+  # ─── Identity Gateway ─────────────────────────────────────────────────
+  identity-gateway:
+    build:
+      context: ./identity-gateway
+      dockerfile: Dockerfile
+    hostname: identity-gateway
+    environment:
+      LISTEN_PORT: "8080"
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_REALM: "demo"
+      OPA_ENDPOINT: "http://opa:8181"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: ""  # Set by bootstrap script
+      TRUST_DOMAIN: "demo.local"
+      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent/public:ro
+    ports:
+      - "9080:8080"
+    depends_on:
+      vault:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    networks:
+      - identity-net
+
+  # ─── AI Agent ──────────────────────────────────────────────────────────
+  ai-agent:
+    build:
+      context: ./ai-agent
+      dockerfile: Dockerfile
+    hostname: ai-agent
+    environment:
+      AGENT_MODE: "wait"
+      GATEWAY_URL: "http://identity-gateway:8080"
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_REALM: "demo"
+      TRUST_DOMAIN: "demo.local"
+      AGENT_SPIFFE_ID: "spiffe://demo.local/agent/query-agent"
+      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
+      DB_HOST: "postgresql"
+      DB_PORT: "5432"
+      DB_NAME: "appdb"
+      DEMO_USERNAME: "alice"
+      DEMO_PASSWORD: "alice-demo-password"
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent/public:ro
+    depends_on:
+      identity-gateway:
+        condition: service_started
+      postgresql:
+        condition: service_healthy
+    networks:
+      - identity-net
+
+volumes:
+  spire-server-data:
+  spire-agent-data:
+  spire-agent-socket:
+  vault-data:
+  vault-logs:
+  postgres-data:
+
+networks:
+  identity-net:
+    driver: bridge

@@ -1,0 +1,71 @@
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+*.cert
+.env.local
+.env.production
+secrets/
+
+# Vault data
+vault/data/
+vault/logs/
+
+# SPIRE data
+spire/data/
+.spire/
+
+# PostgreSQL data
+postgres/data/
+pgdata/
+
+# Keycloak data
+keycloak/data/
+
+# OPA bundles
+opa/bundles/
+
+# Build artifacts
+identity-gateway/identity-gateway
+ai-agent/ai-agent
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+vendor/
+*.mod.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

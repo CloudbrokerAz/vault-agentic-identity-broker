@@ -1,0 +1,197 @@
+{
+  "realm": "demo",
+  "enabled": true,
+  "displayName": "Demo Identity Broker",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanUserAction": 300,
+  "defaultSignatureAlgorithm": "RS256",
+  "roles": {
+    "realm": [
+      {
+        "name": "data-analyst",
+        "description": "Can read data from databases via AI agents"
+      },
+      {
+        "name": "data-engineer",
+        "description": "Can read and write data via AI agents"
+      },
+      {
+        "name": "admin",
+        "description": "Full administrative access"
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "data-analysts",
+      "realmRoles": ["data-analyst"]
+    },
+    {
+      "name": "trading-team",
+      "realmRoles": ["data-analyst"]
+    },
+    {
+      "name": "engineering",
+      "realmRoles": ["data-engineer"]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@acme.com",
+      "firstName": "Alice",
+      "lastName": "Analyst",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-demo-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["data-analyst"],
+      "groups": ["data-analysts", "trading-team"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@acme.com",
+      "firstName": "Bob",
+      "lastName": "Builder",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "bob-demo-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["data-engineer"],
+      "groups": ["engineering"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "ai-agent-service",
+      "name": "AI Agent Service",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "ai-agent-service-secret",
+      "redirectUris": ["http://localhost:8080/*", "http://identity-gateway:8080/*"],
+      "webOrigins": ["*"],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oauth2.token.exchange.grant.enabled": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "may_act",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "may_act",
+            "claim.value": "{\"sub\":\"agent:query-agent-v2\",\"client_id\":\"ai-agent-service\"}",
+            "jsonType.label": "JSON",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "identity-gateway",
+      "name": "Identity Gateway",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "gateway-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "publicClient": false,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "demo-cli",
+      "name": "Demo CLI Client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:*"],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "may_act",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "may_act",
+            "claim.value": "{\"sub\":\"agent:query-agent-v2\",\"client_id\":\"ai-agent-service\"}",
+            "jsonType.label": "JSON",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "agent-delegation",
+      "description": "Scope for AI agent delegation",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      }
+    }
+  ],
+  "components": {
+    "org.keycloak.protocol.oidc.mappers.OIDCAttributeMapperHelper": []
+  }
+}

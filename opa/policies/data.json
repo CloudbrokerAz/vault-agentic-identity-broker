@@ -1,0 +1,18 @@
+{
+  "config": {
+    "trusted_issuers": [
+      "http://keycloak:8080/realms/demo"
+    ],
+    "registered_agents": [
+      "spiffe://demo.local/agent/query-agent",
+      "spiffe://demo.local/gateway/identity-gateway"
+    ],
+    "group_permissions": {
+      "data-analysts": ["readonly", "db:read", "db:query"],
+      "trading-team": ["readonly", "db:read", "db:query"],
+      "engineering": ["readonly", "readwrite", "db:read", "db:write", "db:query"]
+    },
+    "max_delegation_ttl_seconds": 28800,
+    "require_may_act_claim": true
+  }
+}
