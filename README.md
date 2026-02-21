@@ -14,13 +14,23 @@ When an AI agent queries a database on behalf of a human, the system must know *
 │  │ (OIDC)   │    │ (Trust Root) │    │ (Rego Policies)  │                  │
 │  └────┬─────┘    └──────┬───────┘    └────────┬─────────┘                  │
 ├───────┼─────────────────┼─────────────────────┼────────────────────────────┤
-│  TRUST BOUNDARY 2: Credential Broker                                        │
+│  TRUST BOUNDARY 2: Proxy + Credential Broker                                │
 │  ┌──────────────────────────────────────────────────────────────┐           │
-│  │            Identity Gateway (Go service)                     │           │
-│  │  1. Validates human OIDC token (Keycloak JWKS)              │           │
-│  │  2. Validates agent SPIFFE ID (trust domain check)          │           │
-│  │  3. Evaluates OPA delegation policy                         │           │
-│  │  4. Brokers Vault access with delegation metadata           │           │
+│  │  AgentGateway (Rust, open-source MCP/A2A proxy)              │           │
+│  │  - OIDC authentication (Keycloak)                             │           │
+│  │  - RBAC with group-to-role mapping                            │           │
+│  │  - Rate limiting (60 req/min per identity)                    │           │
+│  │  - Routes to Token Exchange Service                           │           │
+│  └───────────────────────┬──────────────────────────────────────┘           │
+│                          │                                                  │
+│  ┌───────────────────────┴──────────────────────────────────────┐           │
+│  │  Token Exchange Service (Python, RFC 8693)                    │           │
+│  │  1. Validates human OIDC token (Keycloak userinfo)            │           │
+│  │  2. Validates agent SPIFFE identity (trust domain check)      │           │
+│  │  3. Evaluates OPA delegation policy                           │           │
+│  │  4. Builds delegation chain with nested `act` claim           │           │
+│  │  5. Brokers Vault dynamic credentials                         │           │
+│  │  6. Supports sub-agent chain extension (configurable depth)   │           │
 │  └───────────────────────┬──────────────────────────────────────┘           │
 │                          │                                                  │
 │  ┌───────────────────────┴──────────────────────────────────────┐           │
@@ -35,9 +45,9 @@ When an AI agent queries a database on behalf of a human, the system must know *
 │  ┌──────────────────────────────────────────────┐                          │
 │  │  AI Agent (Python)                            │                          │
 │  │  - SPIFFE identity via SPIRE Workload API     │                          │
-│  │  - Delegation request to gateway              │                          │
+│  │  - RFC 8693 token exchange for delegation     │                          │
 │  │  - Dynamic DB credentials from Vault          │                          │
-│  │  - Natural language → SQL query mapping        │                          │
+│  │  - Sub-agent delegation (sql-executor, etc.)  │                          │
 │  └──────────────────────┬───────────────────────┘                          │
 ├─────────────────────────┼───────────────────────────────────────────────────┤
 │  TRUST BOUNDARY 4: Protected Resources                                      │
@@ -50,45 +60,111 @@ When an AI agent queries a database on behalf of a human, the system must know *
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Identity Delegation Flow
+## Identity Delegation Flow (RFC 8693)
 
 ```
- Human (Alice)         AI Agent         Identity Gateway      OPA       Vault      PostgreSQL
-     │                    │                    │                │          │             │
-     │ 1. OIDC Login      │                    │                │          │             │
-     │───────────────────>│                    │                │          │             │
-     │   access_token     │                    │                │          │             │
-     │<───────────────────│                    │                │          │             │
-     │                    │ 2. SPIRE SVID      │                │          │             │
-     │                    │  (Workload API)    │                │          │             │
-     │                    │                    │                │          │             │
-     │                    │ 3. Delegate        │                │          │             │
-     │                    │  human_token +     │                │          │             │
-     │                    │  agent_spiffe_id   │                │          │             │
-     │                    │───────────────────>│                │          │             │
-     │                    │                    │ 4. Evaluate    │          │             │
-     │                    │                    │───────────────>│          │             │
-     │                    │                    │   allow/deny   │          │             │
-     │                    │                    │<───────────────│          │             │
-     │                    │                    │                │          │             │
-     │                    │                    │ 5. Get DB creds│          │             │
-     │                    │                    │  + delegation  │          │             │
-     │                    │                    │  metadata      │          │             │
-     │                    │                    │───────────────────────────>│             │
-     │                    │                    │  dynamic creds (5-min TTL)│             │
-     │                    │                    │<─────────────────────────│             │
-     │                    │                    │                │          │             │
-     │                    │ 6. DB credentials  │                │          │             │
-     │                    │<───────────────────│                │          │             │
-     │                    │                                                │             │
-     │                    │ 7. SQL query with dynamic credentials          │             │
-     │                    │───────────────────────────────────────────────>│             │
-     │                    │                           results             │             │
-     │                    │<──────────────────────────────────────────────│             │
-     │  results           │                                                │             │
-     │<───────────────────│                                                │             │
-     │                    │                                                │             │
-     │                    │           8. Credentials auto-expire (5 min)   │             │
+ Human (Alice)    Keycloak     AI Agent     SPIRE    Token Exchange    OPA       Vault      PostgreSQL
+     │               │            │           │            │            │          │             │
+     │ 1. OIDC Login │            │           │            │            │          │             │
+     │──────────────>│            │           │            │            │          │             │
+     │  access_token │            │           │            │            │          │             │
+     │  {sub, email, │            │           │            │            │          │             │
+     │   groups,     │            │           │            │            │          │             │
+     │   may_act}    │            │           │            │            │          │             │
+     │<──────────────│            │           │            │            │          │             │
+     │               │            │           │            │            │          │             │
+     │──(token)────────────────>│           │            │            │          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │ 2. SVID   │            │            │          │             │
+     │               │            │──────────>│            │            │          │             │
+     │               │            │<──────────│            │            │          │             │
+     │               │            │  JWT-SVID              │            │          │             │
+     │               │            │  {sub: spiffe://       │            │          │             │
+     │               │            │   demo.local/agent/    │            │          │             │
+     │               │            │   query-agent}         │            │          │             │
+     │               │            │           │            │            │          │             │
+     │               │  3. RFC 8693 Token Exchange         │            │          │             │
+     │               │            │──────────────────────>│            │          │             │
+     │               │            │  grant_type:           │            │          │             │
+     │               │            │   token-exchange       │            │          │             │
+     │               │            │  subject_token:        │            │          │             │
+     │               │            │   human_jwt            │            │          │             │
+     │               │            │  actor_token:          │            │          │             │
+     │               │            │   agent_svid           │            │          │             │
+     │               │            │  scope: readonly       │            │          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │           │  4. Validate human token │          │             │
+     │               │<───────────────────────────(userinfo)│           │          │             │
+     │               │────────────────────────────(claims)>│           │          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │           │  5. Evaluate OPA policy  │          │             │
+     │               │            │           │            │───────────>│          │             │
+     │               │            │           │            │<───────────│          │             │
+     │               │            │           │            │  allow/deny│          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │           │  6. Build delegation chain         │             │
+     │               │            │           │     act: {sub: agent,   │          │             │
+     │               │            │           │       act: {sub: alice}}│          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │           │  7. Broker Vault creds  │          │             │
+     │               │            │           │            │──────────────────────>│             │
+     │               │            │           │            │  dynamic creds       │             │
+     │               │            │           │            │  (5-min TTL)         │             │
+     │               │            │           │            │<──────────────────────│             │
+     │               │            │           │            │            │          │  CREATE ROLE│
+     │               │            │           │            │            │          │────────────>│
+     │               │            │           │            │            │          │             │
+     │               │            │<──────────────────────│            │          │             │
+     │               │            │  {delegation_token,    │            │          │             │
+     │               │            │   db_credential,       │            │          │             │
+     │               │            │   delegation_chain}    │            │          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │ 8. SQL query with dynamic credentials         │             │
+     │               │            │────────────────────────────────────────────────────────────>│
+     │               │            │                                     results                │
+     │               │            │<──────────────────────────────────────────────────────────│
+     │  results      │            │           │            │            │          │             │
+     │<──────────────────────────│           │            │            │          │             │
+     │               │            │           │            │            │          │             │
+     │               │            │           9. Credentials auto-expire (5 min)  │             │
+```
+
+### Sub-Agent Delegation (Chain Extension)
+
+When an agent needs to delegate further to a sub-agent, the same token exchange
+repeats at a deeper level. The parent's **delegation token** (not the original
+human token) becomes the `subject_token`:
+
+```
+ Parent Agent       Sub-Agent (sql-executor)    Token Exchange     Vault      PostgreSQL
+     │                         │                      │              │             │
+     │  delegation_token       │                      │              │             │
+     │────────────────────────>│                      │              │             │
+     │                         │                      │              │             │
+     │                         │  RFC 8693 Exchange   │              │             │
+     │                         │  subject_token =     │              │             │
+     │                         │   parent's deleg_jwt │              │             │
+     │                         │  actor_token =       │              │             │
+     │                         │   subagent's SVID    │              │             │
+     │                         │─────────────────────>│              │             │
+     │                         │                      │              │             │
+     │                         │              Validates chain depth  │             │
+     │                         │              (must be < max of 3)   │             │
+     │                         │              Enforces scope narrow  │             │
+     │                         │              Extends act{} claim    │             │
+     │                         │                      │              │             │
+     │                         │                      │──(GET creds)>│             │
+     │                         │                      │<─────────────│             │
+     │                         │                      │              │             │
+     │                         │<─────────────────────│              │             │
+     │                         │  {sub-delegation_token,             │             │
+     │                         │   db_credential,                    │             │
+     │                         │   extended_chain}                   │             │
+     │                         │                      │              │             │
+     │                         │  SQL query with own credentials     │             │
+     │                         │─────────────────────────────────────────────────>│
+     │                         │                                    results       │
+     │                         │<────────────────────────────────────────────────│
 ```
 
 ## Quick Start
@@ -113,19 +189,45 @@ docker compose up -d
 
 ### What the demo does
 
-1. **Alice authenticates** via Keycloak OIDC (direct access grant)
-2. **AI agent obtains SPIFFE identity** from SPIRE (JWT-SVID)
-3. **Identity Gateway** validates both tokens, consults OPA
-4. **OPA evaluates** delegation policy (alice's groups permit readonly scope)
-5. **Vault generates** dynamic PostgreSQL credentials (5-minute TTL)
-6. **Agent queries** database: "Show me all orders over $1000 from last month"
-7. **Credentials auto-revoke** after TTL expiry
-8. **Full audit trail** visible in Vault audit log
+1. **Alice authenticates** via Keycloak OIDC (direct access grant with `may_act` claim)
+2. **AI agent obtains SPIFFE identity** from SPIRE (JWT-SVID: `spiffe://demo.local/agent/query-agent`)
+3. **RFC 8693 Token Exchange** — agent sends Alice's OIDC token + its own SPIFFE SVID to the Token Exchange Service
+4. **Token Exchange validates** both tokens, then consults **OPA** for policy evaluation
+5. **OPA evaluates** delegation policy (Alice's groups permit `readonly` scope, `may_act` authorizes delegation)
+6. **Vault generates** dynamic PostgreSQL credentials (5-minute TTL, read-only role)
+7. **Delegation token minted** with nested `act` claim preserving the full identity chain
+8. **Agent queries** database using Vault-issued credentials
+9. **(Optional) Sub-agent delegation** — agent delegates to `sql-executor` sub-agent via a second token exchange, extending the `act` chain
+10. **Credentials auto-revoke** after TTL expiry (or immediate revocation via `/v1/token/revoke`)
 
 ## Project Structure
 
 ```
-├── docker-compose.yml           # 8-container orchestration
+├── docker-compose.yml           # 9-container orchestration (v2)
+├── ARCHITECTURE.md              # Detailed architecture documentation
+├── agentgateway/                # AgentGateway proxy configuration (NEW)
+│   └── config/
+│       └── gateway.yaml         # MCP/A2A proxy config (OIDC, RBAC, routing)
+├── token-exchange/              # RFC 8693 Token Exchange Service (NEW)
+│   ├── token_exchange.py        # Token exchange, delegation chains, Vault brokering
+│   ├── requirements.txt
+│   └── Dockerfile
+├── ai-agent/                    # Python AI agent with sub-agent support
+│   ├── agent.py                 # SPIFFE identity, RFC 8693 exchange, DB queries
+│   ├── subagents/               # Sub-agent modules (NEW)
+│   │   ├── __init__.py
+│   │   └── sql_executor.py      # SQL executor sub-agent with chain extension
+│   ├── tests/
+│   │   └── test_agent.py
+│   ├── requirements.txt
+│   └── Dockerfile
+├── identity-gateway/            # Legacy Go gateway (kept for backward compatibility)
+│   ├── main.go
+│   ├── token_verifier.go
+│   ├── opa_client.go
+│   ├── vault_broker.go
+│   ├── Dockerfile
+│   └── go.mod
 ├── spire/
 │   ├── server/server.conf       # SPIRE server config (trust domain root)
 │   ├── agent/agent.conf         # SPIRE agent config (workload attestation)
@@ -140,19 +242,9 @@ docker compose up -d
 │       └── admin-policy.hcl     # Admin: full access (bootstrap only)
 ├── opa/
 │   └── policies/
-│       ├── delegation.rego      # OPA delegation policy (Rego)
-│       └── data.json            # Policy data (trusted issuers, groups, scopes)
-├── identity-gateway/            # Go service: token validation + Vault brokering
-│   ├── main.go                  # HTTP server, delegation endpoint, audit log
-│   ├── token_verifier.go        # Keycloak OIDC token validation
-│   ├── opa_client.go            # OPA policy evaluation client
-│   ├── vault_broker.go          # Vault API client for dynamic credentials
-│   ├── Dockerfile
-│   └── go.mod
-├── ai-agent/                    # Python demo agent
-│   ├── agent.py                 # SPIFFE identity, delegation flow, DB queries
-│   ├── requirements.txt
-│   └── Dockerfile
+│       ├── delegation.rego      # OPA delegation policy (Rego) — with chain validation
+│       └── data.json            # Policy data (trusted issuers, agents, sub-agents,
+│                                #   group permissions, scope hierarchy, max depth)
 ├── postgres/
 │   └── init/                    # Database initialization
 │       ├── 00-vault-user.sql    # Vault admin user
@@ -165,25 +257,48 @@ docker compose up -d
 
 ## Components
 
+### AgentGateway (MCP/A2A Proxy)
+
+- **Runtime**: Rust ([agentgateway/agentgateway](https://github.com/agentgateway/agentgateway))
+- **Port**: `:9080` (MCP/HTTP), `:19000` (Admin API)
+- **Features**: OIDC authentication, RBAC with group-to-role mapping, rate limiting (60 req/min), observability
+- **Role**: Front-door proxy for AI agents; routes requests to the Token Exchange Service
+
+### Token Exchange Service (RFC 8693)
+
+- **Language**: Python
+- **Port**: `:8090`
+- **Endpoints**:
+  - `POST /v1/token/exchange` — RFC 8693 token exchange with delegation semantics
+  - `POST /v1/delegate` — Legacy delegation API (backward-compatible)
+  - `POST /v1/token/revoke` — Revoke delegation token and Vault credentials
+  - `GET /v1/delegation/chain` — Query full delegation chain for a session
+  - `GET /v1/audit` — Audit trail
+- **Flow**: Validate subject token (Keycloak) → Validate actor token (SPIFFE) → Check chain depth → Enforce scope narrowing → Evaluate OPA policy → Build `act` claim → Broker Vault credentials → Issue delegation token
+
 ### SPIRE (SPIFFE Runtime Environment)
 
 - **Trust domain**: `demo.local`
 - **Node attestation**: Join token (for demo; Kubernetes/AWS in production)
 - **Workload attestation**: Unix UID (for demo; K8s pod selectors in production)
-- **Agent SPIFFE IDs**:
-  - `spiffe://demo.local/gateway/identity-gateway`
-  - `spiffe://demo.local/agent/query-agent`
+- **Registered SPIFFE IDs**:
+  - `spiffe://demo.local/agent/query-agent` (primary agent)
+  - `spiffe://demo.local/agent/analysis-agent` (analysis agent)
+  - `spiffe://demo.local/agent/write-agent` (write agent)
+  - `spiffe://demo.local/subagent/sql-executor` (sub-agent)
+  - `spiffe://demo.local/subagent/result-formatter` (sub-agent)
+  - `spiffe://demo.local/gateway/identity-gateway` (legacy gateway)
 
 ### Keycloak (Human Identity Provider)
 
 - **Realm**: `demo`
-- **Users**: `alice` (data-analyst), `bob` (data-engineer)
-- **Clients**: `demo-cli` (public, direct access), `ai-agent-service` (confidential)
-- **Custom claims**: `groups` membership, `may_act` delegation authorization
+- **Users**: `alice` (data-analyst, groups: data-analysts, trading-team), `bob` (data-engineer, group: engineering)
+- **Clients**: `demo-cli` (public, direct access), `ai-agent-service` (confidential, token exchange enabled)
+- **Custom claims**: `groups` membership, `may_act` delegation authorization (hardcoded protocol mapper)
 
 ### HashiCorp Vault
 
-- **Auth**: JWT auth (SPIRE OIDC) for production; token auth for demo gateway
+- **Auth**: JWT auth (SPIRE OIDC) for production; token auth for demo
 - **Secrets engine**: PostgreSQL database with dynamic credential generation
 - **Policies**: Templated ACL using identity entity metadata
 - **Roles**: `ai-agent-readonly` (SELECT only, 5-min TTL), `ai-agent-readwrite`
@@ -191,46 +306,54 @@ docker compose up -d
 
 ### OPA (Open Policy Agent)
 
-- **Policy**: `delegation.rego` — evaluates human token, agent SPIFFE ID, scope
-- **Data**: Trusted issuers, registered agents, group-to-scope permissions
+- **Policy**: `delegation.rego` — evaluates human token, agent SPIFFE ID, scope, delegation chain depth, and scope narrowing
+- **Data**: Trusted issuers, registered agents, registered sub-agents, group-to-scope permissions, scope hierarchy, max delegation depth
 - **Decision**: Allow/deny with reason (for audit trail)
+- **Delegation chain rules**: Validates chain extension for sub-agents, enforces max depth (3), scope narrowing
 
-### Identity Gateway
-
-- **Language**: Go
-- **Endpoint**: `POST /v1/delegate`
-- **Flow**: Validate human token → Validate agent SPIFFE ID → Evaluate OPA → Broker Vault → Return DB credentials
-- **Audit**: In-memory log at `GET /v1/audit`
-
-### AI Agent
+### AI Agent (with Sub-Agent Delegation)
 
 - **Language**: Python
 - **SPIFFE**: py-spiffe library (falls back to demo mode without SPIRE)
+- **Token exchange**: RFC 8693 client for delegation via Token Exchange Service
+- **Sub-agents**: `sql-executor` — can receive delegation from parent agent and extend the chain
 - **Queries**: Pre-mapped natural language → SQL for demo
 - **Modes**: `demo` (single query), `interactive` (REPL), `wait` (container standby)
+
+### Identity Gateway (Legacy)
+
+- **Language**: Go
+- **Status**: Kept for backward compatibility; new deployments should use AgentGateway + Token Exchange Service
 
 ## Security Properties
 
 | Property | Implementation |
 |---|---|
 | **No static credentials** | All DB credentials are dynamic, 5-min TTL, auto-revoked |
-| **Human attribution** | Delegation metadata attached to Vault entity, logged at every layer |
+| **Human attribution** | `sub` claim preserved through entire delegation chain via RFC 8693 `act` claim |
 | **Agent attestation** | SPIFFE SVID proves agent workload identity cryptographically |
-| **Least privilege** | Agents get SELECT-only on specific schemas |
-| **Policy enforcement** | OPA evaluates group membership, scope, and may_act claims |
-| **Audit trail** | 6-layer correlation: IdP → Gateway → OPA → Vault → Lease → PostgreSQL |
-| **Credential lifecycle** | Vault auto-revokes; immediate manual revocation available |
-| **Zero trust** | Every request validated; no implicit trust based on network position |
+| **RFC 8693 delegation** | Standard OAuth 2.0 token exchange with `subject_token` + `actor_token` |
+| **Delegation chains** | Nested `act` claims per RFC 8693 Section 4.1; Human → Agent → Sub-Agent traceable |
+| **Scope narrowing** | Each delegation level can only narrow scope, never widen it |
+| **Max chain depth** | Configurable limit (default: 3) prevents infinite delegation |
+| **Least privilege** | Agents get SELECT-only on specific schemas; scoped by group membership |
+| **Policy enforcement** | OPA evaluates group membership, scope, `may_act` claims, chain depth, and scope narrowing |
+| **Audit trail** | 7-layer correlation: IdP → AgentGateway → Token Exchange → OPA → Vault → Lease → PostgreSQL |
+| **Credential lifecycle** | Vault auto-revokes after TTL; immediate revocation via `/v1/token/revoke` |
+| **Zero trust** | Every request validated end-to-end; no implicit trust from network position |
 
 ## Service Endpoints (Local)
 
 | Service | URL | Credentials |
 |---|---|---|
-| Vault UI | http://localhost:8200 | Root token from `.vault-root-token` |
 | Keycloak Admin | http://localhost:8080 | admin / admin |
+| SPIRE Server | localhost:8081 | (internal) |
+| Token Exchange | http://localhost:8090 | (no auth for demo) |
 | OPA | http://localhost:8181 | (no auth) |
-| Identity Gateway | http://localhost:9080 | (no auth for demo) |
+| Vault UI | http://localhost:8200 | Root token from `.vault-root-token` |
 | PostgreSQL | localhost:5432 | postgres / postgres-root-password |
+| AgentGateway | http://localhost:9080 | (OIDC auth) |
+| AgentGateway Admin | http://localhost:19000 | (no auth) |
 
 ## Cleanup
 
