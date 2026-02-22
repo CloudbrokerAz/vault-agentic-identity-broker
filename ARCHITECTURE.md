@@ -11,7 +11,7 @@
 |   identities, each validated by policy with cryptographic proof."       |
 |                                                                         |
 |  New in v2:                                                             |
-|   - AgentGateway (Rust) replaces custom Go gateway                     |
+|   - AgentGateway (Rust) as MCP/A2A proxy                              |
 |   - RFC 8693 Token Exchange for delegation                             |
 |   - Sub-agent delegation chains (configurable depth)                   |
 |   - MCP/A2A protocol support                                           |
@@ -296,7 +296,7 @@
 |  +========================+    +=========================+              |
 |                                                                         |
 |  +===================================================================+ |
-|  | PROXY LAYER (NEW - replaces custom Go gateway)                    | |
+|  | PROXY LAYER                                                       | |
 |  |                                                                    | |
 |  | +----------------------------------------------------------------+| |
 |  | | AgentGateway :9080 (Rust, open-source)                          || |
@@ -554,8 +554,8 @@ ALLOW   DENY
           |    +-------------+                     ^
           |    |                                   |
   +-------v----v--------+                          |
-  |   AgentGateway      |   <-- NEW (replaces      |
-  |  :9080 (MCP/HTTP)   |       identity-gateway)  |
+  |   AgentGateway      |                          |
+  |  :9080 (MCP/HTTP)   |                          |
   |  :19000 (Admin)     |                          |
   +-------+-------------+                          |
           |                                        |

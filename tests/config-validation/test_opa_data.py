@@ -68,9 +68,9 @@ class TestOPAData(unittest.TestCase):
             self.config["registered_agents"],
         )
 
-    def test_gateway_registered(self):
+    def test_write_agent_registered(self):
         self.assertIn(
-            "spiffe://demo.local/gateway/identity-gateway",
+            "spiffe://demo.local/agent/write-agent",
             self.config["registered_agents"],
         )
 

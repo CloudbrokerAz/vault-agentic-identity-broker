@@ -7,8 +7,7 @@
     "registered_agents": [
       "spiffe://demo.local/agent/query-agent",
       "spiffe://demo.local/agent/analysis-agent",
-      "spiffe://demo.local/agent/write-agent",
-      "spiffe://demo.local/gateway/identity-gateway"
+      "spiffe://demo.local/agent/write-agent"
     ],
     "registered_subagents": [
       "spiffe://demo.local/subagent/sql-executor",

@@ -1,5 +1,5 @@
 # Policy: gateway-policy
-# Grants the Identity Gateway the ability to create tokens for agents
+# Grants the Token Exchange Service the ability to create tokens for agents
 # and manage entity metadata for delegation tracking
 
 # Allow creating child tokens with specific policies

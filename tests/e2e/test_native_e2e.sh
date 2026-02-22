@@ -4,7 +4,7 @@
 #
 # Runs all services natively (no Docker required):
 #   - Mock Keycloak, OPA, and Vault via Python
-#   - Real Identity Gateway (Go binary)
+#   - Real Token Exchange (Go binary)
 #   - Real PostgreSQL database
 #
 # Tests the full identity delegation chain:
@@ -12,7 +12,7 @@
 #   2. Keycloak authentication (alice, bob, invalid)
 #   3. OPA policy evaluation (allow/deny scenarios)
 #   4. Vault dynamic credential lifecycle
-#   5. Identity Gateway delegation flow
+#   5. Token Exchange delegation flow
 #   6. Database queries with dynamic credentials
 #   7. Credential revocation
 ###############################################################################
@@ -93,8 +93,8 @@ GATEWAY_TOKEN_RESP=$(curl -sf "http://127.0.0.1:8200/v1/auth/token/create" \
 GATEWAY_VAULT_TOKEN=$(echo "${GATEWAY_TOKEN_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])" 2>/dev/null)
 echo "${GATEWAY_VAULT_TOKEN}" > /tmp/gateway-vault-token
 
-# Start Identity Gateway
-info "Starting Identity Gateway..."
+# Start Token Exchange
+info "Starting Token Exchange..."
 LISTEN_PORT=9080 \
 KEYCLOAK_URL="http://127.0.0.1:8080" \
 KEYCLOAK_REALM="demo" \
@@ -102,12 +102,12 @@ OPA_ENDPOINT="http://127.0.0.1:8181" \
 VAULT_ADDR="http://127.0.0.1:8200" \
 VAULT_TOKEN="${GATEWAY_VAULT_TOKEN}" \
 TRUST_DOMAIN="demo.local" \
-/tmp/identity-gateway &
+/tmp/token-exchange &
 GATEWAY_PID=$!
 sleep 2
 
 if ! kill -0 "${GATEWAY_PID}" 2>/dev/null; then
-    echo -e "${RED}Failed to start Identity Gateway${NC}"
+    echo -e "${RED}Failed to start Token Exchange${NC}"
     exit 1
 fi
 
@@ -139,11 +139,11 @@ else
     fail "Keycloak health check" "not responding"
 fi
 
-# Identity Gateway health
+# Token Exchange health
 if curl -sf "http://127.0.0.1:9080/v1/health" > /dev/null 2>&1; then
-    pass "Identity Gateway is healthy"
+    pass "Token Exchange is healthy"
 else
-    fail "Identity Gateway health check" "not responding"
+    fail "Token Exchange health check" "not responding"
 fi
 
 # PostgreSQL health
@@ -489,10 +489,10 @@ else
     fail "Vault credential generation" "no response from Vault"
 fi
 
-# ─── Test 5: Identity Gateway Delegation Flow ───────────────────
+# ─── Test 5: Token Exchange Delegation Flow ───────────────────
 
 echo ""
-echo "── Identity Gateway Delegation Flow ──"
+echo "── Token Exchange Delegation Flow ──"
 
 if [ -n "${ALICE_TOKEN}" ]; then
     # Successful delegation: alice → readonly
@@ -510,7 +510,7 @@ if [ -n "${ALICE_TOKEN}" ]; then
     RESPONSE_BODY=$(echo "${DELEGATION_RESP}" | sed '$d')
 
     if [ "${HTTP_CODE}" = "200" ]; then
-        pass "Identity Gateway accepts valid delegation request"
+        pass "Token Exchange accepts valid delegation request"
 
         # Verify response structure
         SESSION_ID=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['session_id'])" 2>/dev/null)
@@ -567,7 +567,7 @@ if [ -n "${ALICE_TOKEN}" ]; then
             fi
         fi
     else
-        fail "Identity Gateway delegation" "HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
+        fail "Token Exchange delegation" "HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
     fi
 
     # Denied delegation: alice → readwrite (data-analysts can't write)
@@ -583,7 +583,7 @@ if [ -n "${ALICE_TOKEN}" ]; then
     DENY_CODE=$(echo "${DENY_RESP}" | tail -1)
 
     if [ "${DENY_CODE}" = "403" ]; then
-        pass "Identity Gateway denies alice readwrite (scope_not_permitted)"
+        pass "Token Exchange denies alice readwrite (scope_not_permitted)"
     else
         fail "Gateway deny readwrite" "expected 403, got ${DENY_CODE}"
     fi
@@ -601,12 +601,12 @@ if [ -n "${ALICE_TOKEN}" ]; then
     BAD_AGENT_CODE=$(echo "${BAD_AGENT_RESP}" | tail -1)
 
     if [ "${BAD_AGENT_CODE}" = "403" ]; then
-        pass "Identity Gateway rejects untrusted agent SPIFFE ID"
+        pass "Token Exchange rejects untrusted agent SPIFFE ID"
     else
         fail "Gateway untrusted agent" "expected 403, got ${BAD_AGENT_CODE}"
     fi
 else
-    skip "Identity Gateway delegation tests" "Alice authentication failed"
+    skip "Token Exchange delegation tests" "Alice authentication failed"
 fi
 
 # Bob delegation: readwrite should succeed
@@ -623,7 +623,7 @@ if [ -n "${BOB_TOKEN}" ]; then
     BOB_CODE=$(echo "${BOB_DELEG_RESP}" | tail -1)
 
     if [ "${BOB_CODE}" = "200" ]; then
-        pass "Identity Gateway allows bob readwrite delegation"
+        pass "Token Exchange allows bob readwrite delegation"
 
         # Test readwrite credentials can actually write
         BOB_BODY=$(echo "${BOB_DELEG_RESP}" | sed '$d')

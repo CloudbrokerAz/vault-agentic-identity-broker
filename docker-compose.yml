@@ -10,7 +10,7 @@
 #   4. vault           - Dynamic secrets management
 #   5. opa             - Policy engine for delegation decisions
 #   6. postgresql      - Target database with sample data
-#   7. agentgateway    - MCP/A2A proxy with RBAC (replaces custom Go gateway)
+#   7. agentgateway    - MCP/A2A proxy with RBAC
 #   8. token-exchange  - RFC 8693 Token Exchange Service
 #   9. ai-agent        - Demo AI agent with sub-agent delegation
 ###############################################################################
@@ -201,8 +201,7 @@ services:
       - identity-net
 
   # ─── AgentGateway (MCP/A2A Proxy) ─────────────────────────────────────
-  # Replaces the custom Go identity-gateway with the open-source
-  # AgentGateway (https://github.com/agentgateway/agentgateway)
+  # Open-source proxy (https://github.com/agentgateway/agentgateway)
   agentgateway:
     image: ghcr.io/agentgateway/agentgateway:v0.3.2
     hostname: agentgateway
@@ -266,39 +265,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 10s
-    networks:
-      - identity-net
-
-  # ─── Legacy Identity Gateway (kept for backward compatibility) ─────────
-  identity-gateway:
-    build:
-      context: ./identity-gateway
-      dockerfile: Dockerfile
-    hostname: identity-gateway
-    environment:
-      LISTEN_PORT: "8080"
-      KEYCLOAK_URL: "http://keycloak:8080"
-      KEYCLOAK_REALM: "demo"
-      OPA_ENDPOINT: "http://opa:8181"
-      VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
-      TRUST_DOMAIN: "demo.local"
-      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
-    volumes:
-      - spire-agent-socket:/tmp/spire-agent/public:ro
-    depends_on:
-      vault:
-        condition: service_healthy
-      keycloak:
-        condition: service_healthy
-      opa:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 6

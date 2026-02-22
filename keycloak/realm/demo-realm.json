@@ -89,7 +89,7 @@
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "ai-agent-service-secret",
-      "redirectUris": ["http://localhost:8080/*", "http://identity-gateway:8080/*"],
+      "redirectUris": ["http://localhost:8080/*", "http://token-exchange:8090/*"],
       "webOrigins": ["*"],
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
@@ -128,18 +128,6 @@
           }
         }
       ]
-    },
-    {
-      "clientId": "identity-gateway",
-      "name": "Identity Gateway",
-      "enabled": true,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "gateway-secret",
-      "serviceAccountsEnabled": true,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": false,
-      "publicClient": false,
-      "protocol": "openid-connect"
     },
     {
       "clientId": "demo-cli",

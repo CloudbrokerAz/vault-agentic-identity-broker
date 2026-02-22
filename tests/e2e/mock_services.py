@@ -8,7 +8,7 @@ Simulates:
 - Vault Dynamic Secrets (port 8200)
 
 These mock services implement just enough of each API to support
-the Identity Gateway's delegation flow.
+the Token Exchange Service's delegation flow.
 """
 
 import json
@@ -60,7 +60,7 @@ OPA_CONFIG = {
         "spiffe://demo.local/agent/query-agent",
         "spiffe://demo.local/agent/analysis-agent",
         "spiffe://demo.local/agent/write-agent",
-        "spiffe://demo.local/gateway/identity-gateway",
+        "spiffe://demo.local/agent/write-agent",
     ],
     "registered_subagents": [
         "spiffe://demo.local/subagent/sql-executor",

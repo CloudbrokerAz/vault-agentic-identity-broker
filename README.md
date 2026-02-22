@@ -220,7 +220,7 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 ## Project Structure
 
 ```
-├── docker-compose.yml           # 9-container orchestration (v2)
+├── docker-compose.yml           # 10-service container orchestration
 ├── ARCHITECTURE.md              # Detailed architecture documentation
 ├── agentgateway/                # AgentGateway proxy configuration (NEW)
 │   └── config/
@@ -238,13 +238,6 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 │   │   └── test_agent.py
 │   ├── requirements.txt
 │   └── Dockerfile
-├── identity-gateway/            # Legacy Go gateway (kept for backward compatibility)
-│   ├── main.go
-│   ├── token_verifier.go
-│   ├── opa_client.go
-│   ├── vault_broker.go
-│   ├── Dockerfile
-│   └── go.mod
 ├── spire/
 │   ├── server/server.conf       # SPIRE server config (trust domain root)
 │   ├── agent/agent.conf         # SPIRE agent config (workload attestation)
@@ -304,8 +297,6 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
   - `spiffe://demo.local/agent/write-agent` (write agent)
   - `spiffe://demo.local/subagent/sql-executor` (sub-agent)
   - `spiffe://demo.local/subagent/result-formatter` (sub-agent)
-  - `spiffe://demo.local/gateway/identity-gateway` (legacy gateway)
-
 ### Keycloak (Human Identity Provider)
 
 - **Realm**: `demo`
@@ -339,11 +330,6 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 - **Queries**: Pre-mapped natural language → SQL for demo
 - **Agent modes**: `demo` (single query), `interactive` (REPL), `wait` (container standby)
 - **Auth modes**: `device` (default), `token`, `password` — controlled by `AUTH_MODE` env var
-
-### Identity Gateway (Legacy)
-
-- **Language**: Go
-- **Status**: Kept for backward compatibility; new deployments should use AgentGateway + Token Exchange Service
 
 ## Security Properties
 

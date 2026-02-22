@@ -194,7 +194,7 @@ test_allow_gateway_agent if {
             "exp": 9999999999,
             "iss": "http://keycloak:8080/realms/demo",
         },
-        "agent_spiffe_id": "spiffe://demo.local/gateway/identity-gateway",
+        "agent_spiffe_id": "spiffe://demo.local/agent/write-agent",
         "requested_scope": "readonly",
         "current_time": 1700000000,
     }

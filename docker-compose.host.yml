@@ -163,22 +163,23 @@ services:
       retries: 10
       start_period: 10s
 
-  # ─── Identity Gateway ─────────────────────────────────────────────────
-  identity-gateway:
+  # ─── Token Exchange Service (RFC 8693) ────────────────────────────────
+  token-exchange:
     build:
-      context: ./identity-gateway
+      context: ./token-exchange
       dockerfile: Dockerfile
     environment:
-      LISTEN_PORT: "9080"
+      LISTEN_PORT: "8090"
       KEYCLOAK_URL: "http://127.0.0.1:8080"
       KEYCLOAK_REALM: "demo"
       OPA_ENDPOINT: "http://127.0.0.1:8181"
       VAULT_ADDR: "http://127.0.0.1:8200"
       VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
       TRUST_DOMAIN: "demo.local"
-      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
-    volumes:
-      - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
+      SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
+      MAX_DELEGATION_DEPTH: "3"
+      DEFAULT_TTL: "300"
+      MAX_TTL: "1800"
     depends_on:
       vault:
         condition: service_healthy
@@ -188,7 +189,7 @@ services:
         condition: service_healthy
     network_mode: host
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9080/v1/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -201,7 +202,9 @@ services:
       dockerfile: Dockerfile
     environment:
       AGENT_MODE: "wait"
-      GATEWAY_URL: "http://127.0.0.1:9080"
+      AUTH_MODE: "${AUTH_MODE:-device}"
+      GATEWAY_URL: "http://127.0.0.1:8090"
+      TOKEN_EXCHANGE_URL: "http://127.0.0.1:8090"
       KEYCLOAK_URL: "http://127.0.0.1:8080"
       KEYCLOAK_REALM: "demo"
       TRUST_DOMAIN: "demo.local"
@@ -210,13 +213,14 @@ services:
       DB_HOST: "127.0.0.1"
       DB_PORT: "5432"
       DB_NAME: "appdb"
-      DEMO_USERNAME: "alice"
-      DEMO_PASSWORD: "alice-demo-password"
+      HUMAN_ACCESS_TOKEN: "${HUMAN_ACCESS_TOKEN:-}"
+      DEMO_USERNAME: "${DEMO_USERNAME:-alice}"
+      DEMO_PASSWORD: "${DEMO_PASSWORD:-}"
     volumes:
       - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
     depends_on:
-      identity-gateway:
-        condition: service_started
+      token-exchange:
+        condition: service_healthy
       postgresql:
         condition: service_healthy
     network_mode: host

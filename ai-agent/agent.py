@@ -411,8 +411,8 @@ class TokenExchangeClient:
     """
     Client for the Token Exchange Service (RFC 8693).
 
-    Replaces the direct identity-gateway delegation with
-    standard OAuth 2.0 Token Exchange.
+    Implements standard OAuth 2.0 Token Exchange (RFC 8693)
+    for human-to-agent delegation.
     """
 
     def __init__(self, config: AgentConfig):

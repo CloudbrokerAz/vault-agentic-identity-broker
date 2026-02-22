@@ -120,7 +120,6 @@ class TestKeycloakRealmConfig(unittest.TestCase):
     def test_clients_exist(self):
         client_ids = {c["clientId"] for c in self.realm["clients"]}
         self.assertIn("ai-agent-service", client_ids)
-        self.assertIn("identity-gateway", client_ids)
         self.assertIn("demo-cli", client_ids)
 
     def test_ai_agent_service_config(self):
@@ -149,12 +148,9 @@ class TestKeycloakRealmConfig(unittest.TestCase):
         self.assertTrue(client["directAccessGrantsEnabled"])
         self.assertFalse(client["standardFlowEnabled"])
 
-    def test_identity_gateway_is_confidential(self):
-        client = next(
-            c for c in self.realm["clients"] if c["clientId"] == "identity-gateway"
-        )
-        self.assertFalse(client["publicClient"])
-        self.assertTrue(client["serviceAccountsEnabled"])
+    def test_client_count(self):
+        """Should have exactly 2 clients: ai-agent-service and demo-cli."""
+        self.assertEqual(len(self.realm["clients"]), 2)
 
     # ─── Protocol Mappers ────────────────────────────────────────────
 

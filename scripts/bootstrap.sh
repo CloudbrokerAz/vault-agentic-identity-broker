@@ -7,7 +7,7 @@
 #   2. Initializes and unseals Vault
 #   3. Configures Vault auth methods, secrets engines, and policies
 #   4. Registers SPIRE workload entries
-#   5. Configures the Identity Gateway with Vault credentials
+#   5. Configures the Token Exchange Service with Vault credentials
 #   6. Runs a connectivity test
 ###############################################################################
 
@@ -278,7 +278,7 @@ log_ok "Test credential revoked"
 
 # ─── Step 6: Create Gateway Token ───────────────────────────────────────
 
-log_step 6 "Creating Identity Gateway Vault token"
+log_step 6 "Creating Token Exchange Service Vault token"
 
 GATEWAY_TOKEN_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/auth/token/create" \
     -X POST \
@@ -286,26 +286,25 @@ GATEWAY_TOKEN_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/auth/token/create" \
     -H "Content-Type: application/json" \
     -d '{
         "policies": ["gateway-policy"],
-        "display_name": "identity-gateway",
+        "display_name": "token-exchange",
         "ttl": "24h",
         "renewable": true,
         "metadata": {
-            "service": "identity-gateway",
+            "service": "token-exchange",
             "purpose": "delegation-broker"
         }
     }')
 
 GATEWAY_VAULT_TOKEN=$(echo "${GATEWAY_TOKEN_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])")
-log_ok "Gateway token created"
+log_ok "Token Exchange Vault token created"
 
-# Update the identity-gateway container with the Vault token
-# Save gateway credentials for reference
+# Save credentials for reference
 cat > "${PROJECT_DIR}/.gateway.env" <<EOF
 GATEWAY_VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}
 EOF
 chmod 600 "${PROJECT_DIR}/.gateway.env"
 
-log_ok "Gateway credentials saved to .gateway.env"
+log_ok "Token Exchange credentials saved to .gateway.env"
 
 # ─── Step 7: Configure Vault JWT Auth (SPIRE OIDC) ────────────────────
 
@@ -426,15 +425,6 @@ JOIN_TOKEN=$(${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server token g
 if [ -n "${JOIN_TOKEN}" ]; then
     log_ok "Join token generated"
 
-    # Register Identity Gateway
-    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
-        -parentID "spiffe://demo.local/spire-agent" \
-        -spiffeID "spiffe://demo.local/gateway/identity-gateway" \
-        -selector "unix:uid:0" \
-        -dns "identity-gateway" \
-        -ttl 3600 2>/dev/null || log_warn "Gateway entry may already exist"
-    log_ok "Identity Gateway registered with SPIRE"
-
     # Register AI Agents
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
         -parentID "spiffe://demo.local/spire-agent" \
@@ -480,25 +470,25 @@ else
     log_warn "Could not generate SPIRE join token (agent may use existing token)"
 fi
 
-# ─── Step 9: Restart Gateway with Token ─────────────────────────────────
+# ─── Step 9: Restart Token Exchange Service with Token ─────────────────────
 
-log_step 9 "Restarting Identity Gateway with Vault token"
+log_step 9 "Restarting Token Exchange Service with Vault token"
 
 # Export the token so docker compose picks it up via ${GATEWAY_VAULT_TOKEN:-}
 export GATEWAY_VAULT_TOKEN
-${COMPOSE} up -d --force-recreate identity-gateway 2>/dev/null
+${COMPOSE} up -d --force-recreate token-exchange 2>/dev/null
 
-# Wait for the gateway to come up
-log_info "Waiting for Identity Gateway to start..."
+# Wait for the service to come up
+log_info "Waiting for Token Exchange Service to start..."
 for i in $(seq 1 15); do
-    if curl -sf "http://localhost:${GATEWAY_PORT}/v1/health" > /dev/null 2>&1; then
-        log_ok "Identity Gateway is ready"
+    if curl -sf "http://localhost:8090/health" > /dev/null 2>&1; then
+        log_ok "Token Exchange Service is ready"
         break
     fi
     sleep 2
 done
 
-log_ok "Identity Gateway restarted with Vault token"
+log_ok "Token Exchange Service restarted with Vault token"
 
 # ─── Step 10: Verify Setup ─────────────────────────────────────────────
 
@@ -509,7 +499,8 @@ log_info "Service endpoints:"
 echo "  Vault:            http://localhost:8200  (UI available)"
 echo "  Keycloak:         http://localhost:8080  (admin/admin)"
 echo "  OPA:              http://localhost:8181"
-echo "  Identity Gateway: http://localhost:9080"
+echo "  Token Exchange:   http://localhost:8090"
+echo "  AgentGateway:     http://localhost:9080"
 echo "  PostgreSQL:       localhost:5432 (appdb)"
 echo ""
 
@@ -574,8 +565,8 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo -e "${GREEN}  Bootstrap complete!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "  Vault Root Token: ${VAULT_ROOT_TOKEN}"
-echo "  Gateway Token:    ${GATEWAY_VAULT_TOKEN}"
+echo "  Vault Root Token:       ${VAULT_ROOT_TOKEN}"
+echo "  Token Exchange Token:   ${GATEWAY_VAULT_TOKEN}"
 echo ""
 echo "  To run the demo:"
 echo "    ./scripts/demo.sh"

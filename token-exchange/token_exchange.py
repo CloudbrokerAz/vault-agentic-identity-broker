@@ -368,7 +368,7 @@ class TokenExchangeService:
     def delegate(self, request: dict) -> dict:
         """
         Process a simplified delegation request (backward-compatible with
-        the original identity-gateway API).
+        the legacy delegation API).
 
         Converts to RFC 8693 token exchange internally.
         """

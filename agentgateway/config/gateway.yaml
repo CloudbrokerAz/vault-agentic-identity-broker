@@ -1,7 +1,7 @@
 ###############################################################################
 # AgentGateway Configuration
 #
-# Replaces the custom Go identity-gateway with the open-source AgentGateway
+# Open-source AgentGateway
 # (https://github.com/agentgateway/agentgateway) - a Rust-based proxy for
 # AI agent connectivity supporting MCP and A2A protocols.
 #
@@ -47,7 +47,7 @@ binds:
                 issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
                 audiences:
                   - ai-agent-service
-                  - identity-gateway
+                  - token-exchange
                 jwks:
                   url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
 
@@ -99,7 +99,7 @@ binds:
                 issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
                 audiences:
                   - ai-agent-service
-                  - identity-gateway
+                  - token-exchange
                 jwks:
                   url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
 

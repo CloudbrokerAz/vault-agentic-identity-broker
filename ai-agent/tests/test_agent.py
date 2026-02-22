@@ -182,10 +182,10 @@ class TestSPIFFEIdentity(unittest.TestCase):
         """Without SPIRE, should fall back to demo SVID."""
         config = AgentConfig(spire_socket_path="/nonexistent/socket")
         identity = SPIFFEIdentity(config)
-        svid = identity.fetch_jwt_svid(audience="identity-gateway")
+        svid = identity.fetch_jwt_svid(audience="token-exchange")
 
         self.assertIsNotNone(svid)
-        claims = pyjwt.decode(svid, "demo-secret", algorithms=["HS256"], audience="identity-gateway")
+        claims = pyjwt.decode(svid, "demo-secret", algorithms=["HS256"], audience="token-exchange")
         self.assertEqual(claims["sub"], config.agent_spiffe_id)
 
     def test_svid_stored_internally(self):

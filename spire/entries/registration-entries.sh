@@ -28,15 +28,6 @@ JOIN_TOKEN=$(${SPIRE_SERVER} token generate \
 echo "Join token: ${JOIN_TOKEN}"
 echo "${JOIN_TOKEN}" > /opt/spire/data/server/join-token
 
-# Register the Identity Gateway workload
-echo "Registering Identity Gateway..."
-${SPIRE_SERVER} entry create \
-    -parentID "${AGENT_SPIFFE_ID}" \
-    -spiffeID "spiffe://demo.local/gateway/identity-gateway" \
-    -selector "unix:uid:0" \
-    -dns "identity-gateway" \
-    -ttl 3600 || true
-
 # Register the AI Agent workloads
 echo "Registering Query Agent..."
 ${SPIRE_SERVER} entry create \

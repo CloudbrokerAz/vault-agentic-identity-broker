@@ -69,11 +69,11 @@ else
     skip "Keycloak health check" "may still be starting"
 fi
 
-# Identity Gateway
-if curl -sf "http://localhost:9080/v1/health" > /dev/null 2>&1; then
-    pass "Identity Gateway is healthy"
+# Token Exchange Service
+if curl -sf "http://localhost:8090/health" > /dev/null 2>&1; then
+    pass "Token Exchange Service is healthy"
 else
-    skip "Identity Gateway health check" "may not be started yet"
+    skip "Token Exchange Service health check" "may not be started yet"
 fi
 
 # ─── Test 2: Keycloak Authentication ────────────────────────────

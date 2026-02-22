@@ -27,8 +27,8 @@ class TestDockerCompose(unittest.TestCase):
 
     def test_all_services_defined(self):
         expected = {
-            "spire-server", "spire-agent", "keycloak", "vault",
-            "opa", "postgresql", "identity-gateway", "ai-agent",
+            "spire-server", "spire-agent", "spire-oidc", "keycloak", "vault",
+            "opa", "postgresql", "ai-agent",
             "agentgateway", "token-exchange",
         }
         actual = set(self.config["services"].keys())
@@ -226,40 +226,34 @@ class TestDockerCompose(unittest.TestCase):
         ports = [str(p) for p in svc.get("ports", [])]
         self.assertTrue(any("5432" in p for p in ports))
 
-    # ─── Identity Gateway ────────────────────────────────────────────
+    # ─── Token Exchange Service ──────────────────────────────────────
 
-    def test_gateway_build_context(self):
-        svc = self.config["services"]["identity-gateway"]
+    def test_token_exchange_build_context(self):
+        svc = self.config["services"]["token-exchange"]
         build = svc.get("build", {})
-        self.assertEqual(build.get("context"), "./identity-gateway")
+        self.assertEqual(build.get("context"), "./token-exchange")
 
-    def test_gateway_depends_on_vault(self):
-        svc = self.config["services"]["identity-gateway"]
+    def test_token_exchange_depends_on_vault(self):
+        svc = self.config["services"]["token-exchange"]
         deps = svc.get("depends_on", {})
         self.assertIn("vault", deps)
 
-    def test_gateway_depends_on_keycloak(self):
-        svc = self.config["services"]["identity-gateway"]
+    def test_token_exchange_depends_on_keycloak(self):
+        svc = self.config["services"]["token-exchange"]
         deps = svc.get("depends_on", {})
         self.assertIn("keycloak", deps)
 
-    def test_gateway_depends_on_opa(self):
-        svc = self.config["services"]["identity-gateway"]
+    def test_token_exchange_depends_on_opa(self):
+        svc = self.config["services"]["token-exchange"]
         deps = svc.get("depends_on", {})
         self.assertIn("opa", deps)
 
-    def test_gateway_environment(self):
-        svc = self.config["services"]["identity-gateway"]
+    def test_token_exchange_environment(self):
+        svc = self.config["services"]["token-exchange"]
         env = svc.get("environment", {})
         self.assertEqual(env.get("OPA_ENDPOINT"), "http://opa:8181")
         self.assertEqual(env.get("VAULT_ADDR"), "http://vault:8200")
         self.assertEqual(env.get("TRUST_DOMAIN"), "demo.local")
-
-    def test_gateway_spire_socket_mount(self):
-        svc = self.config["services"]["identity-gateway"]
-        volume_strs = [str(v) for v in svc.get("volumes", [])]
-        has_socket = any("spire-agent-socket" in v for v in volume_strs)
-        self.assertTrue(has_socket, "Gateway SPIRE socket not mounted")
 
     # ─── AI Agent ────────────────────────────────────────────────────
 

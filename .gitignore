@@ -26,7 +26,6 @@ keycloak/data/
 opa/bundles/
 
 # Build artifacts
-identity-gateway/identity-gateway
 ai-agent/ai-agent
 *.exe
 *.dll
