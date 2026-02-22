@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault Agentic Identity Broker — Interactive Flow</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0a12; color: #e0dfe6;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  min-height: 100vh; overflow-x: hidden;
+}
+:root {
+  --pink: #ff2d7b; --cyan: #00f0ff; --purple: #b44dff;
+  --green: #39ff8e; --orange: #ff9d2e; --yellow: #ffe14d;
+  --ice: #a8c8ff; --red: #ff4444; --dim: 0.15;
+  --border: rgba(255,255,255,0.06);
+  --mono: 'SF Mono','Fira Code','Cascadia Code','Consolas',monospace;
+}
+::selection { background: rgba(0,240,255,0.2); }
+
+/* === NAV === */
+#nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  display: flex; align-items: center; background: rgba(10,10,18,0.97);
+  border-bottom: 1px solid var(--border); backdrop-filter: blur(14px);
+  padding: 0 24px; height: 48px;
+}
+.nav-title {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 2.5px; text-transform: uppercase;
+  background: linear-gradient(90deg, var(--pink), var(--purple), var(--cyan));
+  background-size: 200% 200%; background-clip: text; -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; animation: gradient-shift 5s ease infinite;
+  margin-right: 24px; white-space: nowrap; flex-shrink: 0;
+}
+.nav-steps {
+  display: flex; gap: 1px; height: 100%; align-items: stretch;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.nav-steps::-webkit-scrollbar { display: none; }
+.nav-step {
+  display: flex; align-items: center; padding: 0 14px; font-size: 10.5px;
+  letter-spacing: 0.8px; color: #444; cursor: pointer; border: none;
+  background: transparent; position: relative; transition: all 0.2s ease;
+  font-family: inherit; white-space: nowrap;
+}
+.nav-step:hover { color: #888; background: rgba(255,255,255,0.02); }
+.nav-step.active { color: var(--cyan); }
+.nav-step.active::after {
+  content: ''; position: absolute; bottom: 0; left: 20%; right: 20%; height: 2px;
+  background: var(--cyan); border-radius: 2px 2px 0 0; box-shadow: 0 0 8px rgba(0,240,255,0.4);
+}
+.nav-step.visited { color: #666; }
+.nav-step .step-num {
+  width: 18px; height: 18px; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 9px; font-weight: 700;
+  margin-right: 6px; border: 1px solid currentColor; flex-shrink: 0;
+}
+.nav-step.active .step-num { background: var(--cyan); color: #0a0a12; border-color: var(--cyan); }
+.nav-step.visited .step-num { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15); }
+
+/* === PROGRESS BAR === */
+#progress-bar {
+  position: fixed; top: 48px; left: 0; right: 0; height: 2px; z-index: 99;
+  background: rgba(255,255,255,0.03);
+}
+#progress-fill {
+  height: 100%; width: 0%; transition: width 0.4s ease;
+  background: linear-gradient(90deg, var(--pink), var(--purple), var(--cyan), var(--green));
+  background-size: 300% 100%; animation: gradient-shift 4s ease infinite;
+  box-shadow: 0 0 8px rgba(0,240,255,0.3);
+}
+
+/* === VIEWS === */
+.phase { display: none; padding: 56px 24px 120px; animation: fadeIn 0.35s ease; }
+.phase.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes gradient-shift { 0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%} }
+@keyframes pulse-glow { 0%,100%{box-shadow:0 0 0 0 rgba(0,240,255,0)}50%{box-shadow:0 0 16px 4px rgba(0,240,255,0.15)} }
+@keyframes dash-flow { from{stroke-dashoffset:0}to{stroke-dashoffset:-20} }
+@keyframes float { 0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)} }
+@keyframes blink { 0%,100%{opacity:1}50%{opacity:0.3} }
+
+.phase-content { max-width: 800px; margin: 0 auto; }
+
+/* Phase header */
+.phase-header { text-align: center; padding: 24px 0 20px; }
+.phase-label {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 3px;
+  text-transform: uppercase; color: #555; margin-bottom: 4px;
+}
+.phase-header h1 {
+  font-family: var(--mono); font-size: 1.5rem; font-weight: 700;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+}
+.phase-header .subtitle {
+  font-size: 13px; color: #777; line-height: 1.5; max-width: 560px; margin: 0 auto;
+}
+
+/* Component nodes */
+.component {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+  border-radius: 6px; font-family: var(--mono); font-size: 11px;
+  cursor: pointer; border: 1px solid; transition: all 0.25s ease;
+  white-space: nowrap; position: relative;
+}
+.component:hover { transform: translateY(-2px); }
+.component .c-icon { font-size: 14px; flex-shrink: 0; }
+.c-keycloak { background: rgba(255,45,123,0.08); border-color: rgba(255,45,123,0.25); color: var(--pink); }
+.c-keycloak:hover,.c-keycloak.active { background: rgba(255,45,123,0.18); border-color: var(--pink); box-shadow: 0 0 16px rgba(255,45,123,0.25); }
+.c-spire { background: rgba(180,77,255,0.08); border-color: rgba(180,77,255,0.25); color: var(--purple); }
+.c-spire:hover,.c-spire.active { background: rgba(180,77,255,0.18); border-color: var(--purple); box-shadow: 0 0 16px rgba(180,77,255,0.25); }
+.c-exchange { background: rgba(0,240,255,0.06); border-color: rgba(0,240,255,0.2); color: var(--cyan); }
+.c-exchange:hover,.c-exchange.active { background: rgba(0,240,255,0.15); border-color: var(--cyan); box-shadow: 0 0 16px rgba(0,240,255,0.25); }
+.c-opa { background: rgba(255,225,77,0.06); border-color: rgba(255,225,77,0.2); color: var(--yellow); }
+.c-opa:hover,.c-opa.active { background: rgba(255,225,77,0.15); border-color: var(--yellow); box-shadow: 0 0 16px rgba(255,225,77,0.25); }
+.c-vault { background: rgba(255,157,46,0.06); border-color: rgba(255,157,46,0.2); color: var(--orange); }
+.c-vault:hover,.c-vault.active { background: rgba(255,157,46,0.15); border-color: var(--orange); box-shadow: 0 0 16px rgba(255,157,46,0.25); }
+.c-postgres { background: rgba(57,255,142,0.06); border-color: rgba(57,255,142,0.2); color: var(--green); }
+.c-postgres:hover,.c-postgres.active { background: rgba(57,255,142,0.15); border-color: var(--green); box-shadow: 0 0 16px rgba(57,255,142,0.25); }
+.c-agent { background: rgba(168,200,255,0.06); border-color: rgba(168,200,255,0.2); color: var(--ice); }
+.c-agent:hover,.c-agent.active { background: rgba(168,200,255,0.15); border-color: var(--ice); box-shadow: 0 0 16px rgba(168,200,255,0.25); }
+.c-gateway { background: rgba(255,68,68,0.05); border-color: rgba(255,68,68,0.2); color: var(--red); }
+.c-gateway:hover,.c-gateway.active { background: rgba(255,68,68,0.15); border-color: var(--red); box-shadow: 0 0 16px rgba(255,68,68,0.25); }
+.c-human { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #ccc; }
+.c-human:hover,.c-human.active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.25); box-shadow: 0 0 16px rgba(255,255,255,0.1); }
+
+/* Flow diagrams */
+.flow-diagram {
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; margin: 16px 0;
+  position: relative; overflow: hidden;
+}
+.flow-diagram::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  opacity: 0.3;
+}
+.flow-row {
+  display: flex; align-items: center; gap: 12px; padding: 8px 0;
+  flex-wrap: wrap; justify-content: center;
+}
+.flow-arrow {
+  color: #333; font-size: 16px; font-family: var(--mono); flex-shrink: 0;
+  transition: color 0.3s ease;
+}
+.flow-arrow.active { color: var(--cyan); }
+.flow-label {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
+  text-transform: uppercase; color: #555; text-align: center; padding: 4px 0;
+}
+
+/* Token cards */
+.token-card {
+  background: rgba(0,0,0,0.4); border: 1px solid var(--border);
+  border-radius: 8px; margin: 12px 0; overflow: hidden;
+  cursor: pointer; transition: all 0.3s ease;
+}
+.token-card:hover { border-color: rgba(255,255,255,0.12); }
+.token-card.expanded { border-color: rgba(0,240,255,0.3); }
+.token-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  font-family: var(--mono); font-size: 11px;
+}
+.token-badge {
+  font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 3px; border: 1px solid;
+  font-weight: 600; flex-shrink: 0;
+}
+.tb-oidc { color: var(--pink); border-color: rgba(255,45,123,0.3); background: rgba(255,45,123,0.08); }
+.tb-svid { color: var(--purple); border-color: rgba(180,77,255,0.3); background: rgba(180,77,255,0.08); }
+.tb-delegation { color: var(--cyan); border-color: rgba(0,240,255,0.3); background: rgba(0,240,255,0.08); }
+.tb-db { color: var(--green); border-color: rgba(57,255,142,0.3); background: rgba(57,255,142,0.08); }
+.tb-opa { color: var(--yellow); border-color: rgba(255,225,77,0.3); background: rgba(255,225,77,0.08); }
+.token-title { color: #999; flex: 1; }
+.token-toggle { color: #444; font-size: 12px; transition: transform 0.3s ease; }
+.token-card.expanded .token-toggle { transform: rotate(180deg); color: var(--cyan); }
+.token-body {
+  max-height: 0; overflow: hidden; transition: max-height 0.4s ease;
+  border-top: 1px solid transparent;
+}
+.token-card.expanded .token-body { max-height: 600px; border-top-color: var(--border); }
+.token-json {
+  padding: 14px 16px; font-family: var(--mono); font-size: 11px;
+  line-height: 1.6; color: #888; white-space: pre-wrap; word-break: break-all;
+}
+.token-json .j-key { color: var(--cyan); }
+.token-json .j-str { color: var(--green); }
+.token-json .j-num { color: var(--orange); }
+.token-json .j-bool { color: var(--purple); }
+.token-json .j-comment { color: #444; font-style: italic; }
+.token-json .j-highlight { color: var(--pink); font-weight: 600; }
+
+/* Info boxes */
+.info-box {
+  background: rgba(255,255,255,0.015); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 18px; margin: 12px 0;
+  font-size: 12px; color: #888; line-height: 1.6;
+}
+.info-box.security {
+  border-left: 3px solid var(--green);
+  background: rgba(57,255,142,0.02);
+}
+.info-box.warning {
+  border-left: 3px solid var(--orange);
+  background: rgba(255,157,46,0.02);
+}
+.info-box strong { color: #ccc; }
+
+/* Narrative text */
+.narrative {
+  font-size: 13.5px; color: #999; line-height: 1.7; margin: 14px 0;
+}
+.narrative strong { color: #ccc; }
+.narrative code {
+  font-family: var(--mono); font-size: 11.5px; padding: 1px 6px;
+  background: rgba(255,255,255,0.04); border-radius: 3px; color: var(--cyan);
+}
+
+/* Sequence diagram */
+.sequence {
+  background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px; margin: 16px 0;
+  font-family: var(--mono); font-size: 10px; line-height: 1.7;
+  color: #666; overflow-x: auto; white-space: pre;
+}
+.sequence .s-actor { color: var(--ice); font-weight: 600; }
+.sequence .s-action { color: #999; }
+.sequence .s-data { color: var(--cyan); }
+.sequence .s-arrow { color: #555; }
+.sequence .s-label { color: var(--orange); font-style: italic; }
+.sequence .s-num { color: var(--pink); font-weight: 700; }
+
+/* Terminal display */
+.terminal {
+  background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; margin: 14px 0;
+}
+.terminal-bar {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--border);
+}
+.terminal-dot { width: 8px; height: 8px; border-radius: 50%; }
+.terminal-title { font-family: var(--mono); font-size: 9px; color: #444; letter-spacing: 1px; margin-left: 8px; }
+.terminal-body {
+  padding: 14px 16px; font-family: var(--mono); font-size: 11px;
+  line-height: 1.6; color: #888; white-space: pre-wrap;
+}
+.terminal-body .t-prompt { color: var(--green); }
+.terminal-body .t-cmd { color: #ccc; }
+.terminal-body .t-output { color: #666; }
+.terminal-body .t-highlight { color: var(--cyan); }
+.terminal-body .t-warn { color: var(--orange); }
+.terminal-body .t-success { color: var(--green); }
+.terminal-body .t-error { color: var(--red); }
+
+/* SQL display */
+.sql-box {
+  background: rgba(0,0,0,0.4); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; margin: 12px 0;
+  font-family: var(--mono); font-size: 11px; line-height: 1.6; color: #888;
+}
+.sql-box .s-kw { color: var(--purple); font-weight: 600; }
+.sql-box .s-str { color: var(--green); }
+.sql-box .s-col { color: var(--cyan); }
+.sql-box .s-tbl { color: var(--orange); }
+.sql-box .s-comment { color: #444; font-style: italic; }
+
+/* Results table */
+.results-table {
+  width: 100%; border-collapse: collapse; margin: 12px 0;
+  font-family: var(--mono); font-size: 10px;
+}
+.results-table th {
+  text-align: left; padding: 6px 10px; font-weight: 600;
+  border-bottom: 2px solid rgba(255,255,255,0.08);
+  color: #666; font-size: 9px; letter-spacing: 0.8px; text-transform: uppercase;
+}
+.results-table td {
+  padding: 5px 10px; border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: #888; white-space: nowrap;
+}
+.results-table tr:hover td { background: rgba(255,255,255,0.015); }
+
+/* Trust boundary boxes */
+.trust-boundary {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px; margin: 10px 0; position: relative;
+  background: rgba(255,255,255,0.015);
+}
+.trust-boundary::before {
+  content: attr(data-label); position: absolute; top: -9px; left: 16px;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 2px;
+  text-transform: uppercase; padding: 0 8px; background: #0a0a12;
+}
+.tb-1 { border-color: rgba(255,45,123,0.2); }
+.tb-1::before { color: var(--pink); }
+.tb-2 { border-color: rgba(0,240,255,0.2); }
+.tb-2::before { color: var(--cyan); }
+.tb-3 { border-color: rgba(168,200,255,0.2); }
+.tb-3::before { color: var(--ice); }
+.tb-4 { border-color: rgba(57,255,142,0.2); }
+.tb-4::before { color: var(--green); }
+.tb-components {
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; padding: 4px 0;
+}
+.tb-desc {
+  font-size: 10px; color: #555; text-align: center; margin-top: 6px;
+  font-style: italic;
+}
+
+/* Audit trail */
+.audit-layer {
+  display: flex; align-items: stretch; margin: 4px 0;
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  transition: all 0.2s ease; cursor: default;
+}
+.audit-layer:hover { border-color: rgba(255,255,255,0.1); background: rgba(255,255,255,0.01); }
+.audit-name {
+  width: 100px; flex-shrink: 0; padding: 8px 12px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  display: flex; align-items: center; border-right: 1px solid var(--border);
+}
+.audit-detail {
+  flex: 1; padding: 8px 14px; font-size: 11px; color: #777; line-height: 1.5;
+}
+.audit-detail code {
+  font-family: var(--mono); font-size: 10px; padding: 1px 4px;
+  background: rgba(255,255,255,0.04); border-radius: 2px;
+}
+
+/* Comparison table */
+.comparison-table {
+  width: 100%; border-collapse: collapse; margin: 16px 0;
+  font-size: 12px;
+}
+.comparison-table th {
+  text-align: left; padding: 10px 14px; font-weight: 600;
+  border-bottom: 2px solid rgba(255,255,255,0.08);
+  font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+}
+.comparison-table th:first-child { color: var(--red); }
+.comparison-table th:last-child { color: var(--green); }
+.comparison-table td {
+  padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: #888; line-height: 1.5; vertical-align: top;
+}
+.comparison-table td:first-child { color: #666; }
+.comparison-table td:last-child { color: #aaa; }
+.comparison-table tr:hover td { background: rgba(255,255,255,0.015); }
+
+/* Navigation footer */
+#nav-footer {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 99;
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(10,10,18,0.97); border-top: 1px solid var(--border);
+  backdrop-filter: blur(14px); padding: 10px 28px; height: 56px;
+}
+.nav-btn {
+  display: flex; align-items: center; gap: 8px; padding: 8px 20px;
+  border-radius: 6px; font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.5px; cursor: pointer; border: 1px solid;
+  transition: all 0.25s ease; background: transparent;
+}
+.nav-btn:hover { transform: translateY(-1px); }
+.nav-btn.btn-back { color: #666; border-color: rgba(255,255,255,0.1); }
+.nav-btn.btn-back:hover { color: #999; border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.03); }
+.nav-btn.btn-next {
+  color: var(--cyan); border-color: rgba(0,240,255,0.3);
+  background: rgba(0,240,255,0.06);
+}
+.nav-btn.btn-next:hover {
+  background: rgba(0,240,255,0.12); border-color: var(--cyan);
+  box-shadow: 0 0 16px rgba(0,240,255,0.15);
+}
+.nav-btn:disabled { opacity: 0.3; cursor: default; transform: none !important; }
+.nav-progress {
+  font-family: var(--mono); font-size: 10px; color: #444;
+  letter-spacing: 1px;
+}
+
+/* Detail panel */
+#detail-panel {
+  position: fixed; top: 56px; right: 20px; width: 340px;
+  background: rgba(10,10,18,0.97); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 20px; z-index: 50;
+  backdrop-filter: blur(16px); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  transform: translateX(380px); opacity: 0; transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  pointer-events: none; max-height: calc(100vh - 130px); overflow-y: auto;
+}
+#detail-panel.visible { transform: translateX(0); opacity: 1; pointer-events: all; }
+#detail-panel::-webkit-scrollbar { width: 4px; }
+#detail-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+#detail-close {
+  position: absolute; top: 8px; right: 10px; width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center; border-radius: 4px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+  color: #555; font-size: 13px; cursor: pointer; transition: all 0.2s ease;
+}
+#detail-close:hover { background: rgba(255,255,255,0.08); color: #999; }
+#detail-name { font-family: var(--mono); font-size: 14px; font-weight: 700; padding-right: 28px; }
+#detail-role { font-size: 11px; color: #777; margin: 4px 0 8px; line-height: 1.5; }
+.detail-section { margin-top: 10px; }
+.detail-section-title {
+  font-family: var(--mono); font-size: 8px; font-weight: 700;
+  letter-spacing: 1.5px; text-transform: uppercase; color: #555; margin-bottom: 4px;
+}
+.detail-section-body { font-size: 11px; color: #888; line-height: 1.5; }
+.detail-section-body code {
+  font-family: var(--mono); font-size: 10px; padding: 1px 5px;
+  background: rgba(255,255,255,0.04); border-radius: 2px;
+}
+
+/* Grid background */
+.bg-canvas { position: fixed; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 0; }
+.bg-canvas canvas { width: 100%; height: 100%; opacity: 0.35; }
+
+/* Misc */
+.section-divider {
+  border: none; border-top: 1px solid var(--border); margin: 24px 0;
+}
+.cast-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px; margin: 12px 0;
+}
+.cast-card {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  background: rgba(255,255,255,0.015); border: 1px solid var(--border);
+  border-radius: 8px; transition: all 0.2s ease;
+}
+.cast-card:hover { border-color: rgba(255,255,255,0.1); }
+.cast-icon { font-size: 20px; flex-shrink: 0; width: 28px; text-align: center; }
+.cast-info { min-width: 0; }
+.cast-name { font-family: var(--mono); font-size: 11px; font-weight: 600; color: #ccc; }
+.cast-role { font-size: 10px; color: #666; margin-top: 1px; }
+
+/* Scope hierarchy */
+.scope-tree {
+  font-family: var(--mono); font-size: 11px; line-height: 1.8;
+  padding: 12px 16px; background: rgba(0,0,0,0.3); border-radius: 6px;
+  margin: 12px 0; color: #777;
+}
+.scope-tree .s-wide { color: var(--orange); }
+.scope-tree .s-narrow { color: var(--green); }
+
+@media (max-width: 768px) {
+  #nav { padding: 0 12px; }
+  .nav-title { display: none; }
+  .nav-step { padding: 0 8px; font-size: 9px; }
+  .nav-step .step-num { width: 16px; height: 16px; font-size: 8px; margin-right: 4px; }
+  .phase-content { padding: 0; }
+  .flow-row { gap: 6px; }
+  #detail-panel { width: calc(100vw - 40px); right: 20px; }
+  #nav-footer { padding: 10px 16px; }
+  .cast-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="bg-canvas"><canvas id="grid-canvas"></canvas></div>
+
+<!-- NAV -->
+<div id="nav">
+  <span class="nav-title">Identity Broker</span>
+  <div class="nav-steps" id="nav-steps"></div>
+</div>
+
+<div id="progress-bar"><div id="progress-fill"></div></div>
+
+<!-- ==================== PHASE 0: OVERVIEW ==================== -->
+<div id="phase-0" class="phase active">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Overview</div>
+      <h1 style="background:linear-gradient(135deg,var(--pink),var(--purple),var(--cyan),var(--green));background-size:300% 300%;background-clip:text;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:gradient-shift 5s ease infinite">
+        Vault Agentic Identity Broker
+      </h1>
+      <div class="subtitle">When an AI agent queries a database on behalf of a human, the system must know <strong>which human authorized the action</strong>, <strong>which agent performed it</strong>, and <strong>what permissions were granted</strong> &mdash; with cryptographic proof at every step.</div>
+    </div>
+
+    <div class="narrative" style="text-align:center;color:#666">
+      Alice asks her AI assistant: <em>"Show me all orders over $1,000 from the last 30 days."</em><br>
+      Simple question. Complex trust chain. Here's how it works.
+    </div>
+
+    <!-- Architecture -->
+    <div style="margin:20px 0">
+      <div class="trust-boundary tb-1" data-label="Trust Boundary 1 &mdash; Identity Infrastructure">
+        <div class="tb-components">
+          <div class="component c-keycloak" data-component="keycloak"><span class="c-icon">&#128273;</span> Keycloak</div>
+          <div class="component c-spire" data-component="spire"><span class="c-icon">&#128274;</span> SPIRE</div>
+          <div class="component c-opa" data-component="opa"><span class="c-icon">&#128220;</span> OPA</div>
+        </div>
+        <div class="tb-desc">"Who is the human? Who is the agent? Is this delegation allowed?"</div>
+      </div>
+
+      <div class="trust-boundary tb-2" data-label="Trust Boundary 2 &mdash; Proxy + Credential Broker">
+        <div class="tb-components">
+          <div class="component c-gateway" data-component="gateway"><span class="c-icon">&#128682;</span> AgentGateway</div>
+          <div class="component c-exchange" data-component="exchange"><span class="c-icon">&#128260;</span> Token Exchange</div>
+          <div class="component c-vault" data-component="vault"><span class="c-icon">&#128737;</span> Vault</div>
+        </div>
+        <div class="tb-desc">"Authenticate, validate, broker credentials, build the delegation chain"</div>
+      </div>
+
+      <div class="trust-boundary tb-3" data-label="Trust Boundary 3 &mdash; Agent Workloads">
+        <div class="tb-components">
+          <div class="component c-agent" data-component="query-agent"><span class="c-icon">&#129302;</span> Query Agent</div>
+          <div class="component c-agent" data-component="sql-executor"><span class="c-icon">&#9881;</span> SQL Executor</div>
+        </div>
+        <div class="tb-desc">"SPIFFE identity, RFC 8693 token exchange, dynamic DB credentials"</div>
+      </div>
+
+      <div class="trust-boundary tb-4" data-label="Trust Boundary 4 &mdash; Protected Resources">
+        <div class="tb-components">
+          <div class="component c-postgres" data-component="postgres"><span class="c-icon">&#128451;</span> PostgreSQL</div>
+        </div>
+        <div class="tb-desc">"Every query logged. Every role unique. Every credential expires."</div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- Cast -->
+    <div class="flow-label" style="text-align:center">Cast of Characters</div>
+    <div class="cast-grid">
+      <div class="cast-card"><div class="cast-icon">&#128105;&#8205;&#128187;</div><div class="cast-info"><div class="cast-name">Alice</div><div class="cast-role">Data analyst at Acme Corp</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#129302;</div><div class="cast-info"><div class="cast-name">Query Agent</div><div class="cast-role">AI assistant that runs DB queries</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#9881;</div><div class="cast-info"><div class="cast-name">SQL Executor</div><div class="cast-role">Sub-agent specializing in SQL</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128273;</div><div class="cast-info"><div class="cast-name">Keycloak</div><div class="cast-role">Corporate identity provider</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128274;</div><div class="cast-info"><div class="cast-name">SPIRE</div><div class="cast-role">Workload identity (passports for software)</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128260;</div><div class="cast-info"><div class="cast-name">Token Exchange</div><div class="cast-role">RFC 8693 delegation broker</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128220;</div><div class="cast-info"><div class="cast-name">OPA</div><div class="cast-role">Policy engine (the rule book)</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128737;</div><div class="cast-info"><div class="cast-name">Vault</div><div class="cast-role">Dynamic secrets manager</div></div></div>
+      <div class="cast-card"><div class="cast-icon">&#128451;</div><div class="cast-info"><div class="cast-name">PostgreSQL</div><div class="cast-role">The actual data</div></div></div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- Comparison -->
+    <div class="flow-label" style="text-align:center">Traditional vs. This System</div>
+    <div style="overflow-x:auto">
+      <table class="comparison-table">
+        <thead><tr><th>Traditional Approach</th><th>This System</th></tr></thead>
+        <tbody>
+          <tr><td>Shared database password in config file</td><td>Unique credentials per delegation, per session</td></tr>
+          <tr><td>Credentials live forever until rotated</td><td>Credentials auto-expire in 5 minutes</td></tr>
+          <tr><td>Agent has a service account with broad access</td><td>Agent gets exactly the permissions Alice's groups allow</td></tr>
+          <tr><td>"Who ran this query?" &mdash; Nobody knows</td><td>Every query traces back to a specific human through a cryptographic chain</td></tr>
+          <tr><td>Agent can do anything once authenticated</td><td>Policy engine evaluates every delegation request in real time</td></tr>
+          <tr><td>Sub-agent gets parent's full credentials</td><td>Sub-agent can only narrow scope, never widen it</td></tr>
+          <tr><td>Audit = application logs (maybe)</td><td>7-layer correlated audit trail across every component</td></tr>
+          <tr><td>Agent stores human's password</td><td>Agent never sees human's password (Device Flow)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 1: ALICE LOGS IN ==================== -->
+<div id="phase-1" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 1 of 7</div>
+      <h1 style="color:var(--pink)">Alice Logs In</h1>
+      <div class="subtitle">The agent never sees her password. She authenticates directly with the identity provider using the Device Authorization Flow.</div>
+    </div>
+
+    <div class="narrative">Alice opens her chat interface and types: <em>"Show me high-value orders from the last month."</em> The AI agent needs to query a database to answer this &mdash; but first, it needs Alice to <strong>prove who she is</strong> and <strong>consent to the agent acting on her behalf</strong>.</div>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dot" style="background:#ff5f56"></div>
+        <div class="terminal-dot" style="background:#ffbd2e"></div>
+        <div class="terminal-dot" style="background:#27c93f"></div>
+        <div class="terminal-title">Alice's terminal</div>
+      </div>
+      <div class="terminal-body"><span class="t-highlight">  HUMAN AUTHORIZATION REQUIRED</span>
+
+  Open this URL in your browser:
+  <span class="t-cmd">https://login.acme.com/device?code=ABCD-EFGH</span>
+
+  Enter code: <span class="t-warn">ABCD-EFGH</span>
+
+  <span class="t-output">(The agent does NOT have your password)</span></div>
+    </div>
+
+    <div class="narrative">Alice opens that link on her own machine &mdash; her own browser, her own password manager, her own MFA authenticator. She logs in, sees a consent screen, and clicks <strong>"Approve."</strong> The agent never touches her credentials. It just waits.</div>
+
+    <div class="info-box security">
+      <strong>OAuth 2.0 Device Authorization Grant (RFC 8628)</strong> &mdash; the same flow your smart TV uses when it asks you to visit a URL and enter a code. The agent receives a scoped, time-limited access token &mdash; never a password.
+    </div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Device Authorization Flow</div>
+      <div class="flow-row">
+        <div class="component c-human" data-component="alice"><span class="c-icon">&#128105;&#8205;&#128187;</span> Alice</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="component c-keycloak" data-component="keycloak"><span class="c-icon">&#128273;</span> Keycloak</div>
+        <div class="flow-arrow">&larr;</div>
+        <div class="component c-agent" data-component="query-agent"><span class="c-icon">&#129302;</span> Agent</div>
+      </div>
+      <div class="flow-label" style="font-size:8px;color:#444;margin-top:4px">Alice authenticates directly with Keycloak. Agent polls for the token.</div>
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-oidc">OIDC Token</span>
+        <span class="token-title">Alice's access token from Keycloak</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json">{
+  <span class="j-key">"sub"</span>: <span class="j-str">"alice@acme.com"</span>,
+  <span class="j-key">"email"</span>: <span class="j-str">"alice@acme.com"</span>,
+  <span class="j-key">"groups"</span>: [<span class="j-str">"data-analysts"</span>, <span class="j-str">"trading-team"</span>],
+  <span class="j-key">"may_act"</span>: {                          <span class="j-comment">// &#11088; delegation authorization</span>
+    <span class="j-key">"sub"</span>: <span class="j-str">"agent:query-agent-v2"</span>,
+    <span class="j-key">"client_id"</span>: <span class="j-str">"ai-agent-service"</span>
+  },
+  <span class="j-key">"exp"</span>: <span class="j-num">1740268800</span>,
+  <span class="j-key">"iss"</span>: <span class="j-str">"https://login.acme.com/realms/demo"</span>
+}</div>
+      </div>
+    </div>
+
+    <div class="info-box">
+      <strong>Two key claims:</strong><br>
+      <code>groups</code> &mdash; Alice belongs to <code>data-analysts</code> and <code>trading-team</code>. These determine what she can delegate.<br>
+      <code>may_act</code> &mdash; Set by her administrator, explicitly saying "this user is authorized to delegate to an AI agent." Without it, the entire flow stops here.
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 2: AGENT IDENTITY ==================== -->
+<div id="phase-2" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 2 of 7</div>
+      <h1 style="color:var(--purple)">Agent Proves Its Identity</h1>
+      <div class="subtitle">The agent can't just say "trust me." It needs a cryptographic identity tied to its actual workload &mdash; that's what SPIFFE provides.</div>
+    </div>
+
+    <div class="narrative">Alice has proven who she is. Now the agent needs to prove who <strong>it</strong> is. In a world of containers and microservices, a software process needs a <strong>cryptographic identity</strong> &mdash; verifiable by anyone, tied to the specific workload running on a specific machine.</div>
+
+    <div class="narrative"><strong>SPIFFE</strong> (Secure Production Identity Framework for Everyone) is a passport system for software: every workload gets a globally unique identity (a <strong>SPIFFE ID</strong>) and a short-lived, signed certificate (a <strong>SVID</strong>) that proves it.</div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Workload Attestation</div>
+      <div class="flow-row">
+        <div class="component c-agent" data-component="query-agent"><span class="c-icon">&#129302;</span> AI Agent</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="component c-spire" data-component="spire"><span class="c-icon">&#128274;</span> SPIRE Agent</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="component c-spire" data-component="spire-server"><span class="c-icon">&#128274;</span> SPIRE Server</div>
+      </div>
+      <div class="flow-label" style="font-size:8px;color:#444;margin-top:4px">Agent requests identity via Unix domain socket. SPIRE attests the workload and signs a JWT-SVID.</div>
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-svid">JWT-SVID</span>
+        <span class="token-title">Agent's SPIFFE identity</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json">{
+  <span class="j-key">"sub"</span>: <span class="j-highlight">"spiffe://demo.local/agent/query-agent"</span>,
+  <span class="j-key">"aud"</span>: [<span class="j-str">"token-exchange"</span>],
+  <span class="j-key">"exp"</span>: <span class="j-num">1740266100</span>,
+  <span class="j-key">"iat"</span>: <span class="j-num">1740265200</span>
+}
+
+<span class="j-comment">// This identity is:</span>
+<span class="j-comment">// - Cryptographically signed by SPIRE's certificate authority</span>
+<span class="j-comment">// - Short-lived (must be refreshed)</span>
+<span class="j-comment">// - Tied to the actual workload (not just a name)</span>
+<span class="j-comment">// - Verifiable by anyone who trusts demo.local</span></div>
+      </div>
+    </div>
+
+    <div class="info-box">
+      <strong>Registered SPIFFE IDs in this system:</strong><br>
+      <code>spiffe://demo.local/agent/query-agent</code> &mdash; Primary agent<br>
+      <code>spiffe://demo.local/agent/analysis-agent</code> &mdash; Analysis agent<br>
+      <code>spiffe://demo.local/subagent/sql-executor</code> &mdash; SQL sub-agent<br>
+      <code>spiffe://demo.local/subagent/result-formatter</code> &mdash; Result formatter
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 3: DELEGATION EXCHANGE ==================== -->
+<div id="phase-3" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 3 of 7</div>
+      <h1 style="color:var(--cyan)">The Delegation Exchange</h1>
+      <div class="subtitle">The agent bundles Alice's token and its own SPIFFE identity, then requests delegated access via RFC 8693 Token Exchange.</div>
+    </div>
+
+    <div class="narrative">The agent now has two things: <strong>Alice's OIDC token</strong> (proving a human authorized this) and <strong>its own SPIFFE identity</strong> (proving which agent is performing it). It sends both to the Token Exchange Service.</div>
+
+    <div class="token-card expanded">
+      <div class="token-header" onclick="toggleToken(this.parentElement)">
+        <span class="token-badge tb-delegation">RFC 8693</span>
+        <span class="token-title">Token Exchange Request</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body" style="max-height:600px;border-top-color:var(--border)">
+        <div class="token-json"><span class="j-key">"grant_type"</span>:         <span class="j-str">"urn:ietf:params:oauth:grant-type:token-exchange"</span>,
+<span class="j-key">"subject_token"</span>:      <span class="j-str">"&lt;Alice's OIDC JWT&gt;"</span>,        <span class="j-comment">// who authorized</span>
+<span class="j-key">"subject_token_type"</span>: <span class="j-str">"urn:ietf:params:oauth:token-type:access_token"</span>,
+<span class="j-key">"actor_token"</span>:        <span class="j-str">"&lt;Agent's SPIFFE JWT-SVID&gt;"</span>,  <span class="j-comment">// who is acting</span>
+<span class="j-key">"actor_token_type"</span>:   <span class="j-str">"urn:ietf:params:oauth:token-type:jwt"</span>,
+<span class="j-key">"scope"</span>:              <span class="j-str">"readonly"</span>,                    <span class="j-comment">// what access</span>
+<span class="j-key">"audience"</span>:           <span class="j-str">"database"</span>                     <span class="j-comment">// target resource</span></div>
+      </div>
+    </div>
+
+    <div class="narrative">In plain English: <em>"I am agent <code>query-agent</code>, acting on behalf of Alice, and I need <code>readonly</code> access to the database."</em></div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Multi-Step Validation</div>
+      <div style="display:flex;flex-direction:column;gap:6px;padding:8px 0">
+        <div class="flow-row" style="justify-content:flex-start">
+          <div class="component c-agent" data-component="query-agent" style="font-size:10px"><span class="c-icon">&#129302;</span> Agent</div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="component c-exchange" data-component="exchange" style="font-size:10px"><span class="c-icon">&#128260;</span> Token Exchange</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-left:8px">RFC 8693 request</div>
+        </div>
+        <div class="flow-row" style="justify-content:flex-start;padding-left:40px">
+          <div class="flow-arrow" style="color:var(--pink)">&rdsh;</div>
+          <div class="component c-keycloak" data-component="keycloak" style="font-size:10px"><span class="c-icon">&#128273;</span> Keycloak</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-left:8px">3a. Validate Alice's token</div>
+        </div>
+        <div class="flow-row" style="justify-content:flex-start;padding-left:40px">
+          <div class="flow-arrow" style="color:var(--purple)">&rdsh;</div>
+          <div class="component c-spire" data-component="spire" style="font-size:10px"><span class="c-icon">&#128274;</span> SPIRE</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-left:8px">3b. Verify agent SPIFFE identity</div>
+        </div>
+        <div class="flow-row" style="justify-content:flex-start;padding-left:40px">
+          <div class="flow-arrow" style="color:var(--yellow)">&rdsh;</div>
+          <div class="component c-opa" data-component="opa" style="font-size:10px"><span class="c-icon">&#128220;</span> OPA</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-left:8px">3c. Evaluate delegation policy</div>
+        </div>
+        <div class="flow-row" style="justify-content:flex-start;padding-left:40px">
+          <div class="flow-arrow" style="color:var(--orange)">&rdsh;</div>
+          <div class="component c-vault" data-component="vault" style="font-size:10px"><span class="c-icon">&#128737;</span> Vault</div>
+          <div style="font-family:var(--mono);font-size:9px;color:#555;margin-left:8px">3d. Issue dynamic credentials</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-opa">OPA Decision</span>
+        <span class="token-title">Policy evaluation result</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json"><span class="j-comment">// OPA evaluates 4 rules:</span>
+<span class="j-comment">// 1. Is Alice's token valid and unexpired?        &#10003;</span>
+<span class="j-comment">// 2. Is this a known, registered agent?            &#10003;</span>
+<span class="j-comment">// 3. Did Alice authorize delegation (may_act)?     &#10003;</span>
+<span class="j-comment">// 4. Can Alice's groups grant "readonly"?          &#10003;</span>
+
+{
+  <span class="j-key">"allow"</span>: <span class="j-bool">true</span>,
+  <span class="j-key">"decision"</span>: {
+    <span class="j-key">"human"</span>: <span class="j-str">"alice@acme.com"</span>,
+    <span class="j-key">"agent"</span>: <span class="j-str">"spiffe://demo.local/agent/query-agent"</span>,
+    <span class="j-key">"scope"</span>: <span class="j-str">"readonly"</span>,
+    <span class="j-key">"reason"</span>: <span class="j-str">"allowed"</span>
+  }
+}</div>
+      </div>
+    </div>
+
+    <div class="info-box warning">
+      <strong>If any check fails</strong> &mdash; unknown agent, insufficient group permissions, missing <code>may_act</code> claim, expired token &mdash; OPA returns <code>deny</code> and the entire flow stops. No credentials are issued.
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-db">Vault Credentials</span>
+        <span class="token-title">Dynamic PostgreSQL role created for this session</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json"><span class="j-comment">// Vault creates a BRAND NEW PostgreSQL user for this session:</span>
+
+<span class="s-kw">CREATE ROLE</span> <span class="j-str">"v-token-readonly-3ee8b521"</span>
+  <span class="s-kw">WITH LOGIN PASSWORD</span> <span class="j-str">'rV9z4k7xWpQ9mZ2L6vN3...'</span>
+  <span class="s-kw">VALID UNTIL</span> <span class="j-str">'2026-02-22 10:50:23'</span>     <span class="j-comment">// 5 minutes from now</span>
+  <span class="s-kw">INHERIT</span>;
+
+<span class="s-kw">GRANT USAGE ON SCHEMA</span> app <span class="s-kw">TO</span> <span class="j-str">"v-token-readonly-3ee8b521"</span>;
+<span class="s-kw">GRANT SELECT ON ALL TABLES IN SCHEMA</span> app <span class="s-kw">TO</span> <span class="j-str">"v-token-readonly-3ee8b521"</span>;
+
+<span class="j-comment">// Unique per session | Read-only | Time-limited | Traceable</span></div>
+      </div>
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-delegation">Delegation Token</span>
+        <span class="token-title">JWT with nested act claim (RFC 8693 Section 4.1)</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json">{
+  <span class="j-key">"iss"</span>: <span class="j-str">"http://token-exchange:8090"</span>,
+  <span class="j-key">"sub"</span>: <span class="j-str">"alice@acme.com"</span>,
+  <span class="j-key">"aud"</span>: <span class="j-str">"database"</span>,
+  <span class="j-key">"scope"</span>: <span class="j-str">"readonly"</span>,
+  <span class="j-key">"exp"</span>: <span class="j-num">1740265500</span>,
+  <span class="j-key">"act"</span>: {                                     <span class="j-comment">// &#11088; the actor claim</span>
+    <span class="j-key">"sub"</span>: <span class="j-highlight">"spiffe://demo.local/agent/query-agent"</span>
+  },
+  <span class="j-key">"delegation_chain"</span>: [
+    {
+      <span class="j-key">"subject"</span>: <span class="j-str">"alice@acme.com"</span>,
+      <span class="j-key">"actor"</span>: <span class="j-str">"spiffe://demo.local/agent/query-agent"</span>,
+      <span class="j-key">"scope"</span>: <span class="j-str">"readonly"</span>,
+      <span class="j-key">"depth"</span>: <span class="j-num">0</span>
+    }
+  ],
+  <span class="j-key">"session_id"</span>: <span class="j-str">"sess-3ee8b521a1b2c3d4"</span>
+}</div>
+      </div>
+    </div>
+
+    <div class="info-box">
+      This token is the <strong>receipt</strong> for the delegation. Anyone who inspects it can answer: <em>who authorized this?</em> (Alice), <em>who is acting?</em> (query-agent), <em>what can they do?</em> (readonly), <em>when does it expire?</em>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 4: DATABASE QUERY ==================== -->
+<div id="phase-4" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 4 of 7</div>
+      <h1 style="color:var(--green)">The Agent Queries the Database</h1>
+      <div class="subtitle">The agent connects using Vault-generated credentials &mdash; unique to this session, read-only, auto-expiring in 5 minutes.</div>
+    </div>
+
+    <div class="narrative">The agent receives the delegation token and temporary database credentials. It connects to PostgreSQL using the Vault-generated username and password, and executes Alice's query.</div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Database Query Flow</div>
+      <div class="flow-row">
+        <div class="component c-agent" data-component="query-agent"><span class="c-icon">&#129302;</span> Agent</div>
+        <div class="flow-arrow" style="color:var(--green)">&xrarr;</div>
+        <div class="component c-postgres" data-component="postgres"><span class="c-icon">&#128451;</span> PostgreSQL</div>
+      </div>
+      <div class="flow-label" style="font-size:8px;color:#444;margin-top:4px">Connects as <code style="color:var(--green);background:none;padding:0">v-token-readonly-3ee8b521</code> (5-min TTL)</div>
+    </div>
+
+    <div class="sql-box">
+<span class="s-kw">SELECT</span> <span class="s-col">customer_name</span>, <span class="s-col">product</span>, <span class="s-col">quantity</span>, <span class="s-col">unit_price</span>,
+       (<span class="s-col">quantity</span> * <span class="s-col">unit_price</span>) <span class="s-kw">AS</span> <span class="s-col">total_amount</span>,
+       <span class="s-col">order_date</span>, <span class="s-col">status</span>
+<span class="s-kw">FROM</span>   <span class="s-tbl">app.orders</span>
+<span class="s-kw">WHERE</span>  (<span class="s-col">quantity</span> * <span class="s-col">unit_price</span>) > <span class="j-num">1000</span>
+  <span class="s-kw">AND</span>  <span class="s-col">order_date</span> >= <span class="s-kw">NOW</span>() - <span class="s-kw">INTERVAL</span> <span class="j-str">'30 days'</span>
+<span class="s-kw">ORDER BY</span> <span class="s-col">total_amount</span> <span class="s-kw">DESC</span>;
+    </div>
+
+    <div style="overflow-x:auto">
+      <table class="results-table">
+        <thead>
+          <tr><th>customer_name</th><th>product</th><th>qty</th><th>unit_price</th><th>total</th><th>date</th><th>status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Acme Corp</td><td style="color:var(--cyan)">AI Processing Unit</td><td>10</td><td>$1,299.99</td><td style="color:var(--green)">$12,999.90</td><td>2026-02-16</td><td style="color:var(--green)">confirmed</td></tr>
+          <tr><td>Wayne Enterprises</td><td style="color:var(--cyan)">Security Scanner</td><td>25</td><td>$599.99</td><td style="color:var(--green)">$14,999.75</td><td>2026-02-13</td><td style="color:var(--orange)">shipped</td></tr>
+          <tr><td>Umbrella Corp</td><td style="color:var(--cyan)">Data Analyzer Suite</td><td>50</td><td>$299.99</td><td style="color:var(--green)">$14,999.50</td><td>2026-02-09</td><td style="color:var(--green)">confirmed</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="info-box security">
+      <strong>From Alice's perspective</strong>, she asked a question and got an answer. She didn't know &mdash; and didn't need to know &mdash; about SPIFFE, token exchange, OPA policies, or Vault leases. That's the point.
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 5: SUB-AGENT DELEGATION ==================== -->
+<div id="phase-5" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 5 of 7</div>
+      <h1 style="color:var(--orange)">Sub-Agent Delegation</h1>
+      <div class="subtitle">The chain extends: the query agent delegates to a specialized SQL executor via another RFC 8693 exchange. Scope can only narrow, never widen.</div>
+    </div>
+
+    <div class="narrative">Sometimes an agent needs help. The query agent delegates SQL execution to a <strong>sub-agent</strong> &mdash; a purpose-built agent that only knows how to run SQL. It doesn't hand the sub-agent Alice's original token. Instead, it performs <strong>another RFC 8693 token exchange</strong>, using its own delegation token as the <code>subject_token</code>.</div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Chain Extension</div>
+      <div class="flow-row">
+        <div class="component c-agent" data-component="query-agent"><span class="c-icon">&#129302;</span> Query Agent</div>
+        <div class="flow-arrow" style="color:var(--orange)">&rarr;</div>
+        <div class="component c-agent" data-component="sql-executor"><span class="c-icon">&#9881;</span> SQL Executor</div>
+        <div class="flow-arrow" style="color:var(--cyan)">&rarr;</div>
+        <div class="component c-exchange" data-component="exchange"><span class="c-icon">&#128260;</span> Token Exchange</div>
+      </div>
+      <div class="flow-row">
+        <div class="component c-opa" data-component="opa"><span class="c-icon">&#128220;</span> OPA</div>
+        <div class="flow-arrow">&larr;</div>
+        <div class="component c-exchange" data-component="exchange" style="font-size:10px"><span class="c-icon">&#128260;</span> Token Exchange</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="component c-vault" data-component="vault"><span class="c-icon">&#128737;</span> Vault</div>
+      </div>
+      <div class="flow-label" style="font-size:8px;color:#444;margin-top:4px">OPA checks: depth < max (3), scope must be equal or narrower</div>
+    </div>
+
+    <div class="narrative"><strong>How policy prevents abuse:</strong></div>
+
+    <div class="info-box">
+      <strong>1. Scope Narrowing</strong> &mdash; A sub-agent can never gain <em>more</em> access than its parent. The scope hierarchy is explicit:
+    </div>
+
+    <div class="scope-tree">
+<span class="s-wide">readwrite</span> ──&gt; <span class="s-narrow">readonly</span> ──&gt; <span class="s-narrow">db:read</span>
+    │                       <span class="s-narrow">db:query</span>
+    └──────&gt; <span class="s-narrow">db:write</span> ──&gt; <span class="s-narrow">db:read</span>
+
+<span class="j-comment">An arrow means "implies." Having readwrite implies readonly.
+But db:read never implies readwrite &mdash; you can't escalate upward.</span>
+    </div>
+
+    <div class="info-box">
+      <strong>2. Chain Depth Limit</strong> &mdash; Maximum delegation depth is configurable (default: 3).<br>
+      Human &rarr; Agent = depth 0. &nbsp; Agent &rarr; Sub-Agent = depth 1. &nbsp; Prevents infinite delegation chains.
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-delegation">Nested act Claim</span>
+        <span class="token-title">Sub-agent's delegation token &mdash; full chain embedded</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json">{
+  <span class="j-key">"sub"</span>: <span class="j-str">"alice@acme.com"</span>,
+  <span class="j-key">"act"</span>: {
+    <span class="j-key">"sub"</span>: <span class="j-highlight">"spiffe://demo.local/subagent/sql-executor"</span>,
+    <span class="j-key">"act"</span>: {
+      <span class="j-key">"sub"</span>: <span class="j-str">"spiffe://demo.local/agent/query-agent"</span>,
+      <span class="j-key">"act"</span>: {
+        <span class="j-key">"sub"</span>: <span class="j-str">"alice@acme.com"</span>
+      }
+    }
+  }
+}
+
+<span class="j-comment">// Read from the inside out:</span>
+<span class="j-comment">// Alice authorized query-agent,</span>
+<span class="j-comment">// which delegated to sql-executor,</span>
+<span class="j-comment">// which is now acting as Alice.</span>
+<span class="j-comment">// The complete chain of trust is in the token itself.</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 6: CREDENTIALS EXPIRE ==================== -->
+<div id="phase-6" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 6 of 7</div>
+      <h1 style="color:var(--red)">The Credentials Disappear</h1>
+      <div class="subtitle">Five minutes after issuance, Vault automatically revokes the database credentials. No manual rotation, no cleanup, no forgotten keys.</div>
+    </div>
+
+    <div class="narrative">Five minutes after issuance, Vault automatically revokes the database credentials:</div>
+
+    <div class="sql-box">
+<span class="s-kw">DROP ROLE IF EXISTS</span> <span class="j-str">"v-token-readonly-3ee8b521"</span>;
+    </div>
+
+    <div class="narrative">Any attempt to connect with those credentials fails:</div>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dot" style="background:#ff5f56"></div>
+        <div class="terminal-dot" style="background:#ffbd2e"></div>
+        <div class="terminal-dot" style="background:#27c93f"></div>
+        <div class="terminal-title">Connection attempt after expiry</div>
+      </div>
+      <div class="terminal-body"><span class="t-error">FATAL: role "v-token-readonly-3ee8b521" does not exist</span>
+
+<span class="t-output">Connection refused. Credentials ceased to exist.</span></div>
+    </div>
+
+    <div class="narrative">If the agent (or anyone who intercepted the credentials) tries to use them after expiry, they get <strong>nothing</strong>. There's no password to rotate, no key to revoke manually, no "forgot to clean up" scenario. The credentials simply <strong>cease to exist</strong>.</div>
+
+    <div class="info-box security">
+      <strong>Immediate revocation</strong> is also supported &mdash; the agent or an administrator can call:
+    </div>
+
+    <div class="token-card" onclick="toggleToken(this)">
+      <div class="token-header">
+        <span class="token-badge tb-delegation">Revoke API</span>
+        <span class="token-title">POST /v1/token/revoke</span>
+        <span class="token-toggle">&#9660;</span>
+      </div>
+      <div class="token-body">
+        <div class="token-json"><span class="j-key">POST</span> <span class="j-str">/v1/token/revoke</span>
+
+{
+  <span class="j-key">"token"</span>: <span class="j-str">"&lt;delegation_token&gt;"</span>
+}
+
+<span class="j-comment">// This revokes the Vault lease instantly,</span>
+<span class="j-comment">// dropping the database role before the TTL expires.</span></div>
+      </div>
+    </div>
+
+    <div class="flow-diagram">
+      <div class="flow-label">Credential Lifecycle</div>
+      <div style="display:flex;align-items:center;gap:0;padding:8px 16px;flex-wrap:wrap">
+        <div style="text-align:center;flex:1;min-width:100px">
+          <div style="font-family:var(--mono);font-size:16px;color:var(--green)">&#9679;</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--green);margin-top:2px">ISSUED</div>
+          <div style="font-size:8px;color:#555;margin-top:1px">10:45:31</div>
+        </div>
+        <div style="flex:2;height:3px;background:linear-gradient(90deg,var(--green),var(--orange));border-radius:2px;min-width:60px"></div>
+        <div style="text-align:center;flex:1;min-width:100px">
+          <div style="font-family:var(--mono);font-size:16px;color:var(--orange)">&#9679;</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--orange);margin-top:2px">ACTIVE</div>
+          <div style="font-size:8px;color:#555;margin-top:1px">5 min TTL</div>
+        </div>
+        <div style="flex:2;height:3px;background:linear-gradient(90deg,var(--orange),var(--red));border-radius:2px;min-width:60px"></div>
+        <div style="text-align:center;flex:1;min-width:100px">
+          <div style="font-family:var(--mono);font-size:16px;color:var(--red)">&#9679;</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--red);margin-top:2px">REVOKED</div>
+          <div style="font-size:8px;color:#555;margin-top:1px">10:50:31</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== PHASE 7: AUDIT TRAIL ==================== -->
+<div id="phase-7" class="phase">
+  <div class="phase-content">
+    <div class="phase-header">
+      <div class="phase-label">Phase 7 of 7</div>
+      <h1 style="color:var(--yellow)">The Audit Trail</h1>
+      <div class="subtitle">Every layer logged what happened &mdash; independently, with correlated identifiers. An auditor can trace the full story across seven layers.</div>
+    </div>
+
+    <div class="narrative">After the interaction is complete, every layer has logged what happened. The <strong>session ID</strong> (<code>sess-3ee8b521a1b2c3d4</code>) and the <strong>Vault-generated username</strong> (<code>v-token-readonly-3ee8b521</code>) serve as correlation keys across all systems.</div>
+
+    <div style="display:flex;flex-direction:column;gap:6px;margin:16px 0">
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--pink)">&#128273; Keycloak</div>
+        <div class="audit-detail"><code>alice@acme.com</code> authenticated via Device Flow. Groups: <code>[data-analysts, trading-team]</code>. Token issued 10:45:00, expires 10:50:00</div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--purple)">&#128274; SPIRE</div>
+        <div class="audit-detail">SVID issued to <code>spiffe://demo.local/agent/query-agent</code>. Workload attested via UID match.</div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--cyan)">&#128260; Exchange</div>
+        <div class="audit-detail">Session: <code>sess-3ee8b521a1b2c3d4</code>. Human: <code>alice@acme.com</code>. Agent: <code>query-agent</code>. Scope: <code>readonly</code>. Decision: <strong style="color:var(--green)">allowed</strong></div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--yellow)">&#128220; OPA</div>
+        <div class="audit-detail">Policy: <code>delegation.rego</code>. Input: human=alice, agent=query-agent, scope=readonly. Result: <code>allow=true</code></div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--orange)">&#128737; Vault</div>
+        <div class="audit-detail">Lease: <code>database/creds/ai-agent-readonly/hvs...</code> Entity metadata: <code>delegating_human=alice@acme.com</code>, <code>session_id=sess-3ee8b521</code>. TTL: 300s</div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--orange)">&#128737; Lease</div>
+        <div class="audit-detail">Created: 10:45:31. Expires: 10:50:31. Role: <code>v-token-readonly-3ee8b521</code>. Revoked: 10:50:31 (TTL expiry)</div>
+      </div>
+      <div class="audit-layer">
+        <div class="audit-name" style="color:var(--green)">&#128451; Postgres</div>
+        <div class="audit-detail">[pgaudit] user=<code>v-token-readonly-3ee8b521</code> SELECT customer_name, product FROM <code>app.orders</code> WHERE total_amount > 1000</div>
+      </div>
+    </div>
+
+    <div class="info-box security">
+      <strong>7-layer correlated audit trail.</strong> An auditor can start at any layer and trace forward or backward. The session ID and Vault-generated username serve as correlation keys across every system.
+    </div>
+
+    <div class="narrative" style="text-align:center;margin-top:24px;color:#666;font-style:italic">
+      <em>Every query traces back to a human, through a chain of delegated identities, each validated by policy, with cryptographic proof at every step.</em>
+    </div>
+
+    <hr class="section-divider">
+
+    <div style="text-align:center;margin-top:12px">
+      <div class="flow-label">Try It Yourself</div>
+      <div class="terminal" style="max-width:500px;margin:12px auto">
+        <div class="terminal-bar">
+          <div class="terminal-dot" style="background:#ff5f56"></div>
+          <div class="terminal-dot" style="background:#ffbd2e"></div>
+          <div class="terminal-dot" style="background:#27c93f"></div>
+          <div class="terminal-title">terminal</div>
+        </div>
+        <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker compose up -d</span>
+<span class="t-prompt">$</span> <span class="t-cmd">./scripts/bootstrap.sh</span>
+<span class="t-prompt">$</span> <span class="t-cmd">./scripts/demo.sh</span>
+
+<span class="t-output"># Or choose an auth mode:</span>
+<span class="t-prompt">$</span> <span class="t-cmd">AUTH_MODE=device   ./scripts/demo.sh</span>  <span class="t-success"># recommended</span>
+<span class="t-prompt">$</span> <span class="t-cmd">AUTH_MODE=token    ./scripts/demo.sh</span>  <span class="t-output"># pre-supplied</span>
+<span class="t-prompt">$</span> <span class="t-cmd">AUTH_MODE=password ./scripts/demo.sh</span>  <span class="t-warn"># demo only</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- NAV FOOTER -->
+<div id="nav-footer">
+  <button class="nav-btn btn-back" id="btn-back" onclick="navigate(-1)" disabled>
+    <span>&#8592;</span> Back
+  </button>
+  <span class="nav-progress" id="nav-progress">1 / 8</span>
+  <button class="nav-btn btn-next" id="btn-next" onclick="navigate(1)">
+    Next <span>&#8594;</span>
+  </button>
+</div>
+
+<!-- DETAIL PANEL -->
+<div id="detail-panel">
+  <div id="detail-close" onclick="closeDetail()">&#x2715;</div>
+  <div id="detail-name"></div>
+  <div id="detail-role"></div>
+  <div id="detail-sections"></div>
+</div>
+
+<script>
+/* === Phase navigation === */
+const phases = [
+  { id: 'phase-0', label: 'Overview', short: 'Overview' },
+  { id: 'phase-1', label: 'Alice Logs In', short: '1. Login' },
+  { id: 'phase-2', label: 'Agent Identity', short: '2. Identity' },
+  { id: 'phase-3', label: 'Delegation', short: '3. Exchange' },
+  { id: 'phase-4', label: 'DB Query', short: '4. Query' },
+  { id: 'phase-5', label: 'Sub-Agent', short: '5. Sub-Agent' },
+  { id: 'phase-6', label: 'Expiry', short: '6. Expiry' },
+  { id: 'phase-7', label: 'Audit Trail', short: '7. Audit' }
+];
+
+let currentPhase = 0;
+
+function buildNav() {
+  const nav = document.getElementById('nav-steps');
+  nav.innerHTML = phases.map((p, i) => {
+    const num = i === 0 ? '&#9776;' : i;
+    return `<button class="nav-step${i === 0 ? ' active' : ''}" data-phase="${i}">
+      <span class="step-num">${num}</span>${p.short}
+    </button>`;
+  }).join('');
+  nav.querySelectorAll('.nav-step').forEach(btn => {
+    btn.addEventListener('click', () => goToPhase(parseInt(btn.dataset.phase)));
+  });
+}
+
+function goToPhase(idx) {
+  if (idx < 0 || idx >= phases.length) return;
+  document.querySelectorAll('.phase').forEach(p => p.classList.remove('active'));
+  document.getElementById(phases[idx].id).classList.add('active');
+
+  document.querySelectorAll('.nav-step').forEach((s, i) => {
+    s.classList.remove('active');
+    if (i < idx) s.classList.add('visited');
+    if (i === idx) s.classList.add('active');
+  });
+
+  currentPhase = idx;
+  updateNavFooter();
+  updateProgress();
+  closeDetail();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function navigate(dir) {
+  goToPhase(currentPhase + dir);
+}
+
+function updateNavFooter() {
+  const back = document.getElementById('btn-back');
+  const next = document.getElementById('btn-next');
+  const prog = document.getElementById('nav-progress');
+  back.disabled = currentPhase === 0;
+  next.disabled = currentPhase === phases.length - 1;
+  prog.textContent = `${currentPhase + 1} / ${phases.length}`;
+
+  if (currentPhase === phases.length - 1) {
+    next.innerHTML = 'Done &#10003;';
+    next.disabled = true;
+  } else {
+    next.innerHTML = `${phases[Math.min(currentPhase + 1, phases.length - 1)].label} <span>&#8594;</span>`;
+  }
+}
+
+function updateProgress() {
+  const fill = document.getElementById('progress-fill');
+  const pct = ((currentPhase) / (phases.length - 1)) * 100;
+  fill.style.width = pct + '%';
+}
+
+/* === Token expand/collapse === */
+function toggleToken(card) {
+  card.classList.toggle('expanded');
+}
+
+/* === Component detail panel === */
+const componentData = {
+  'keycloak': {
+    name: 'Keycloak',
+    color: '#ff2d7b',
+    role: 'Human Identity Provider (OIDC)',
+    sections: [
+      { title: 'What it does', body: 'Authenticates humans via OAuth 2.0 / OpenID Connect. Issues access tokens with claims about group membership and delegation authorization.' },
+      { title: 'Configuration', body: 'Realm: <code>demo</code><br>Users: <code>alice</code> (data-analyst), <code>bob</code> (data-engineer)<br>Clients: <code>demo-cli</code> (public, device auth), <code>ai-agent-service</code> (confidential)' },
+      { title: 'Key claims', body: '<code>groups</code> &mdash; Group membership for RBAC<br><code>may_act</code> &mdash; Delegation authorization (RFC 8693)' },
+      { title: 'Port', body: '<code>:8080</code>' }
+    ]
+  },
+  'spire': {
+    name: 'SPIRE Server',
+    color: '#b44dff',
+    role: 'Workload Identity (SPIFFE Runtime Environment)',
+    sections: [
+      { title: 'What it does', body: 'Issues cryptographic workload identities (JWT-SVIDs) to attested workloads. Acts as the certificate authority for the <code>demo.local</code> trust domain.' },
+      { title: 'Attestation', body: 'Node attestation: Join token (demo; Kubernetes/AWS in prod)<br>Workload attestation: Unix UID (demo; K8s pod selectors in prod)' },
+      { title: 'Trust domain', body: '<code>demo.local</code>' },
+      { title: 'Port', body: '<code>:8081</code>' }
+    ]
+  },
+  'spire-server': {
+    name: 'SPIRE Server',
+    color: '#b44dff',
+    role: 'Certificate Authority for the trust domain',
+    sections: [
+      { title: 'What it does', body: 'Signs JWT-SVIDs for attested workloads. Maintains the root of trust for the <code>demo.local</code> trust domain.' },
+      { title: 'Port', body: '<code>:8081</code>' }
+    ]
+  },
+  'opa': {
+    name: 'OPA (Open Policy Agent)',
+    color: '#ffe14d',
+    role: 'Policy Engine &mdash; The Rule Book',
+    sections: [
+      { title: 'What it does', body: 'Evaluates delegation requests against company policy written in Rego. Answers: Is the token valid? Is the agent registered? Did the human authorize delegation? Does the scope match group permissions?' },
+      { title: 'Policy', body: '<code>delegation.rego</code> &mdash; evaluates human token, agent SPIFFE ID, scope, delegation chain depth, and scope narrowing' },
+      { title: 'Rules', body: 'Trusted issuers, registered agents, group-to-scope permissions, scope hierarchy, max delegation depth (3)' },
+      { title: 'Port', body: '<code>:8181</code>' }
+    ]
+  },
+  'gateway': {
+    name: 'AgentGateway',
+    color: '#ff4444',
+    role: 'MCP/A2A Proxy &mdash; Front Door',
+    sections: [
+      { title: 'What it does', body: 'Front-door proxy for AI agents. Handles OIDC authentication, RBAC with group-to-role mapping, rate limiting (60 req/min per identity), and routes to the Token Exchange Service.' },
+      { title: 'Runtime', body: 'Rust (<a style="color:var(--cyan)" href="https://github.com/agentgateway/agentgateway">agentgateway/agentgateway</a>)' },
+      { title: 'Ports', body: '<code>:9080</code> (MCP/HTTP), <code>:19000</code> (Admin)' }
+    ]
+  },
+  'exchange': {
+    name: 'Token Exchange Service',
+    color: '#00f0ff',
+    role: 'RFC 8693 Delegation Broker',
+    sections: [
+      { title: 'What it does', body: 'Orchestrates the multi-step delegation validation: validates human token (Keycloak), validates agent identity (SPIFFE), evaluates policy (OPA), builds delegation chain with nested <code>act</code> claim, and brokers Vault dynamic credentials.' },
+      { title: 'Endpoints', body: '<code>POST /v1/token/exchange</code> &mdash; RFC 8693 exchange<br><code>POST /v1/token/revoke</code> &mdash; Revoke credentials<br><code>GET /v1/delegation/chain</code> &mdash; Query chain<br><code>GET /v1/audit</code> &mdash; Audit trail' },
+      { title: 'Port', body: '<code>:8090</code>' }
+    ]
+  },
+  'vault': {
+    name: 'HashiCorp Vault',
+    color: '#ff9d2e',
+    role: 'Dynamic Secrets Manager',
+    sections: [
+      { title: 'What it does', body: 'Generates unique, time-limited database credentials for each delegation session. Creates a brand new PostgreSQL role with exactly the right permissions, set to auto-expire in 5 minutes.' },
+      { title: 'Auth', body: 'JWT auth (SPIRE OIDC) for production; token auth for demo' },
+      { title: 'Roles', body: '<code>ai-agent-readonly</code> (SELECT only, 5-min TTL)<br><code>ai-agent-readwrite</code>' },
+      { title: 'Port', body: '<code>:8200</code>' }
+    ]
+  },
+  'query-agent': {
+    name: 'Query Agent',
+    color: '#a8c8ff',
+    role: 'AI Agent (Python)',
+    sections: [
+      { title: 'What it does', body: 'The primary AI agent that processes user requests. Obtains SPIFFE identity from SPIRE, performs RFC 8693 token exchange, gets dynamic DB credentials from Vault, and executes queries.' },
+      { title: 'SPIFFE ID', body: '<code>spiffe://demo.local/agent/query-agent</code>' },
+      { title: 'Auth modes', body: '<code>device</code> (default, recommended)<br><code>token</code> (pre-supplied)<br><code>password</code> (demo only)' },
+      { title: 'Sub-agents', body: 'Can delegate to <code>sql-executor</code> sub-agent via chain extension' }
+    ]
+  },
+  'sql-executor': {
+    name: 'SQL Executor',
+    color: '#a8c8ff',
+    role: 'Sub-Agent (Python)',
+    sections: [
+      { title: 'What it does', body: 'Specialized sub-agent that receives delegation from the parent query agent. Performs its own RFC 8693 token exchange (extending the chain) and gets its own unique database credentials.' },
+      { title: 'SPIFFE ID', body: '<code>spiffe://demo.local/subagent/sql-executor</code>' },
+      { title: 'Chain depth', body: 'Operates at depth 1 (parent is depth 0). Cannot delegate further if max depth (3) is reached.' }
+    ]
+  },
+  'postgres': {
+    name: 'PostgreSQL 16',
+    color: '#39ff8e',
+    role: 'Protected Database',
+    sections: [
+      { title: 'What it does', body: 'The actual data store. Every connection uses a unique Vault-managed role with SELECT-only permissions and auto-expiring credentials.' },
+      { title: 'Auditing', body: '<code>pgaudit</code> extension logs every query with the Vault-generated username, enabling full traceability.' },
+      { title: 'Sample data', body: 'Schema: <code>app</code> (orders, customers, products)' },
+      { title: 'Port', body: '<code>:5432</code>' }
+    ]
+  },
+  'alice': {
+    name: 'Alice',
+    color: '#cccccc',
+    role: 'Human &mdash; Data Analyst at Acme Corp',
+    sections: [
+      { title: 'Who she is', body: 'A data analyst who needs answers from databases. She authenticates via the Device Authorization Flow and never shares her password with the agent.' },
+      { title: 'Groups', body: '<code>data-analysts</code>, <code>trading-team</code>' },
+      { title: 'Permissions', body: 'Her groups grant <code>readonly</code> scope for database delegation.' }
+    ]
+  }
+};
+
+function openDetail(compId) {
+  const data = componentData[compId];
+  if (!data) return;
+  const panel = document.getElementById('detail-panel');
+  const name = document.getElementById('detail-name');
+  const role = document.getElementById('detail-role');
+  const sections = document.getElementById('detail-sections');
+
+  name.textContent = data.name;
+  name.style.color = data.color;
+  panel.style.borderRight = `3px solid ${data.color}`;
+
+  role.textContent = data.role;
+
+  sections.innerHTML = data.sections.map(s =>
+    `<div class="detail-section">
+      <div class="detail-section-title">${s.title}</div>
+      <div class="detail-section-body">${s.body}</div>
+    </div>`
+  ).join('');
+
+  panel.classList.add('visible');
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('visible');
+  document.querySelectorAll('.component.active').forEach(c => c.classList.remove('active'));
+}
+
+/* Component click handlers */
+document.addEventListener('click', e => {
+  const comp = e.target.closest('.component');
+  if (comp) {
+    e.stopPropagation();
+    const id = comp.dataset.component;
+    if (!id) return;
+    document.querySelectorAll('.component.active').forEach(c => c.classList.remove('active'));
+    comp.classList.add('active');
+    openDetail(id);
+    return;
+  }
+  if (!e.target.closest('#detail-panel') && !e.target.closest('.token-card')) {
+    closeDetail();
+    document.querySelectorAll('.component.active').forEach(c => c.classList.remove('active'));
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeDetail();
+    document.querySelectorAll('.component.active').forEach(c => c.classList.remove('active'));
+  }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    if (!e.target.closest('.token-card') && !e.target.closest('input') && !e.target.closest('textarea')) {
+      e.preventDefault();
+      navigate(1);
+    }
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    if (!e.target.closest('.token-card') && !e.target.closest('input') && !e.target.closest('textarea')) {
+      e.preventDefault();
+      navigate(-1);
+    }
+  }
+});
+
+/* === Init === */
+buildNav();
+updateNavFooter();
+updateProgress();
+
+/* === Animated grid background === */
+(function() {
+  const canvas = document.getElementById('grid-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  let w, h;
+  const gap = 48;
+  function resize() { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; }
+  resize(); window.addEventListener('resize', resize);
+  let time = 0;
+  function draw() {
+    time += 0.003; ctx.clearRect(0, 0, w, h);
+    const cols = Math.ceil(w / gap) + 1, rows = Math.ceil(h / gap) + 1;
+    for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+      const x = i * gap, y = j * gap;
+      const d = Math.sqrt((x - w / 2) ** 2 + (y - h / 2) ** 2);
+      const pulse = Math.sin(d * 0.008 - time * 2) * 0.5 + 0.5;
+      ctx.fillStyle = `rgba(0,240,255,${0.012 + pulse * 0.02})`;
+      ctx.fillRect(x - 0.5, y - 0.5, 1, 1);
+    }
+    for (let j = 0; j < rows; j++) {
+      ctx.beginPath(); ctx.moveTo(0, j * gap); ctx.lineTo(w, j * gap);
+      ctx.strokeStyle = 'rgba(0,240,255,0.015)'; ctx.lineWidth = 0.5; ctx.stroke();
+    }
+    for (let i = 0; i < cols; i++) {
+      ctx.beginPath(); ctx.moveTo(i * gap, 0); ctx.lineTo(i * gap, h);
+      ctx.strokeStyle = 'rgba(0,240,255,0.015)'; ctx.lineWidth = 0.5; ctx.stroke();
+    }
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+</script>
+</body>
+</html>
