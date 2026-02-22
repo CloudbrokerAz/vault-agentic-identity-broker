@@ -146,7 +146,7 @@ class TestKeycloakRealmConfig(unittest.TestCase):
         )
         self.assertTrue(client["publicClient"])
         self.assertTrue(client["directAccessGrantsEnabled"])
-        self.assertFalse(client["standardFlowEnabled"])
+        self.assertTrue(client["standardFlowEnabled"])
 
     def test_client_count(self):
         """Should have exactly 2 clients: ai-agent-service and demo-cli."""
