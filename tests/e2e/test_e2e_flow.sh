@@ -15,6 +15,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "${SCRIPT_DIR}")")"
 
+# Select compose file based on network mode
+if [ "${HOST_NETWORK:-}" = "true" ]; then
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.host.yml"
+else
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
+fi
+COMPOSE="docker compose -f ${COMPOSE_FILE}"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -302,7 +310,6 @@ if [ -n "${CRED_RESULT}" ]; then
     fi
 
     # Test credentials against PostgreSQL
-    COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml"
     PG_TEST=$(${COMPOSE} exec -T -e PGPASSWORD="${DB_PASS}" postgresql \
         psql -U "${DB_USER}" -d appdb -t -c "SELECT COUNT(*) FROM app.orders" 2>/dev/null | tr -d ' \n' || echo "error")
 
@@ -348,7 +355,6 @@ fi
 echo ""
 echo "── Vault Audit Logging ──"
 
-COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml"
 AUDIT_LINE=$(${COMPOSE} exec -T vault sh -c "tail -1 /vault/logs/audit.log 2>/dev/null" 2>/dev/null || echo "")
 
 if [ -n "${AUDIT_LINE}" ]; then

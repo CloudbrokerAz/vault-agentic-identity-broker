@@ -261,6 +261,26 @@ services:
         condition: service_healthy
     network_mode: host
 
+  # ─── Test Runner ──────────────────────────────────────────────────────
+  test-runner:
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    profiles: ["test"]
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    environment:
+      PYTHONPATH: "/workspace"
+      HOST_NETWORK: "true"
+    network_mode: host
+    depends_on:
+      token-exchange:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
 volumes:
   spire-server-data:
   spire-agent-data:

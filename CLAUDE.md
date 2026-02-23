@@ -10,7 +10,7 @@ See `ARCHITECTURE.md` for detailed component diagrams and `DEMO-STORY.md` for a 
 
 ## Quick Reference
 
-### Deployment (Two Steps)
+### Deployment
 
 This project runs in Docker. There are two network modes:
 
@@ -18,15 +18,17 @@ This project runs in Docker. There are two network modes:
 ```bash
 docker compose -f docker-compose.host.yml up -d
 ./scripts/bootstrap.sh --host
+docker compose -f docker-compose.host.yml --profile test run --rm test-runner
 ```
 
 **Bridge network mode** (standard Docker networking):
 ```bash
 docker compose up -d
 ./scripts/bootstrap.sh
+docker compose --profile test run --rm test-runner
 ```
 
-The bootstrap script is idempotent — it detects already-initialized services and skips them.
+The bootstrap script is idempotent — it detects already-initialized services and skips them. The test runner validates the deployment (exit code 0 = all tests pass).
 
 ### Cleanup
 
@@ -97,6 +99,7 @@ scripts/
   bootstrap.sh                  # Initialize Vault, SPIRE, configure integrations
   demo.sh                       # Run the full delegation demo
   cleanup.sh                    # Tear down everything
+  run-tests.sh                  # Three-phase test orchestrator (offline → wait → E2E)
 token-exchange/
   token_exchange.py             # RFC 8693 Token Exchange Service (Python)
   Dockerfile
@@ -125,6 +128,8 @@ postgres/init/
   00-vault-user.sql             # Vault admin user for dynamic credential management
   01-init.sql                   # Sample schema (orders, customers, products)
 tests/
+  Dockerfile                    # Test runner container (python:3.12-slim + curl/jq/psql)
+  requirements.txt              # Python test dependencies
   config-validation/            # Offline config validation tests (pytest)
   e2e/                          # End-to-end integration tests (bash + pytest)
   test_token_exchange.py        # Token Exchange unit tests
@@ -211,7 +216,31 @@ Credentials saved by bootstrap:
 
 ## Testing
 
-### Config Validation Tests (Offline)
+### Run All Tests via Docker (Recommended)
+
+The `test-runner` service runs the full test suite (offline + E2E) in a single command. It uses the `test` profile so it won't start during normal `docker compose up`.
+
+```bash
+# Host network mode (after deploy + bootstrap):
+docker compose -f docker-compose.host.yml --profile test run --rm test-runner
+
+# Bridge network mode:
+docker compose --profile test run --rm test-runner
+
+# CI mode (auto-exit on completion):
+docker compose -f docker-compose.host.yml --profile test up --abort-on-container-exit test-runner
+```
+
+The test runner executes three phases:
+1. **Offline** — Config validation, token exchange unit tests, agent unit tests (no services needed)
+2. **Wait** — Polls for bootstrap completion (120s timeout)
+3. **E2E** — Full integration tests (only if bootstrap detected)
+
+Exit code 0 means all suites passed.
+
+### Run Individual Test Suites Manually
+
+#### Config Validation Tests (Offline)
 
 ```bash
 cd /workspace && python -m pytest tests/config-validation/ -v
@@ -219,7 +248,7 @@ cd /workspace && python -m pytest tests/config-validation/ -v
 
 These validate configuration files without running services: Keycloak realm JSON, OPA policy data, SPIRE configs, Vault policies, Docker Compose structure, PostgreSQL schema.
 
-### End-to-End Tests (Require Running Services)
+#### End-to-End Tests (Require Running Services)
 
 ```bash
 # After bootstrap:
@@ -228,13 +257,13 @@ bash tests/e2e/test_token_exchange_e2e.sh
 bash tests/e2e/test_native_e2e.sh
 ```
 
-### Token Exchange Unit Tests
+#### Token Exchange Unit Tests
 
 ```bash
 cd /workspace && python -m pytest tests/test_token_exchange.py -v
 ```
 
-### AI Agent Tests
+#### AI Agent Tests
 
 ```bash
 cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
@@ -265,7 +294,7 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | `DEMO_PASSWORD` | (none) | ai-agent | Demo password for password grant mode |
 | `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | token-exchange | Vault token for credential brokering |
 | `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
-| `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh | Set to `true` as alternative to `--host` flag |
+| `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh, test-runner, E2E tests | Set to `true` as alternative to `--host` flag |
 | `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | HMAC secret for delegation tokens |
 | `MAX_DELEGATION_DEPTH` | `3` | token-exchange | Maximum delegation chain depth |
 | `DEFAULT_TTL` | `300` | token-exchange | Default credential TTL in seconds |

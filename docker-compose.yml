@@ -319,6 +319,26 @@ services:
     networks:
       - identity-net
 
+  # ─── Test Runner ──────────────────────────────────────────────────────
+  test-runner:
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    profiles: ["test"]
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    environment:
+      PYTHONPATH: "/workspace"
+    depends_on:
+      token-exchange:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+    networks:
+      - identity-net
+
 volumes:
   spire-server-data:
   spire-agent-data:

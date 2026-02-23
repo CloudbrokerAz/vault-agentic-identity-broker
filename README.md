@@ -183,7 +183,10 @@ docker compose up -d
 # 2. Wait for services to be healthy, then bootstrap
 ./scripts/bootstrap.sh
 
-# 3. Run the demo (default: Device Authorization Flow)
+# 3. Verify the deployment
+docker compose --profile test run --rm test-runner
+
+# 4. Run the demo (default: Device Authorization Flow)
 ./scripts/demo.sh
 
 # Or choose an auth mode:
@@ -259,9 +262,16 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 │   └── init/                    # Database initialization
 │       ├── 00-vault-user.sql    # Vault admin user
 │       └── 01-init.sql          # Sample schema + data (orders, customers, products)
+├── tests/
+│   ├── Dockerfile               # Test runner container image
+│   ├── requirements.txt         # Python test dependencies
+│   ├── config-validation/       # Offline config validation tests (pytest)
+│   ├── e2e/                     # End-to-end integration tests (bash)
+│   └── test_token_exchange.py   # Token Exchange unit tests
 └── scripts/
     ├── bootstrap.sh             # Initialize Vault, configure all engines
     ├── demo.sh                  # Run the full delegation demo
+    ├── run-tests.sh             # Three-phase test orchestrator
     └── cleanup.sh               # Tear down everything
 ```
 
@@ -361,6 +371,26 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 | PostgreSQL | localhost:5432 | postgres / postgres-root-password |
 | AgentGateway | http://localhost:9080 | (OIDC auth) |
 | AgentGateway Admin | http://localhost:19000 | (no auth) |
+
+## Testing
+
+Run the full test suite (offline config validation + E2E integration) via the `test-runner` container:
+
+```bash
+# After deploy + bootstrap:
+docker compose -f docker-compose.host.yml --profile test run --rm test-runner
+
+# Bridge network mode:
+docker compose --profile test run --rm test-runner
+```
+
+The test runner uses the `test` profile and won't start during normal `docker compose up`. It executes three phases:
+
+1. **Offline** — Config validation, token exchange unit tests, agent unit tests
+2. **Wait** — Polls for bootstrap completion (120s timeout)
+3. **E2E** — Full integration tests against running services
+
+Exit code 0 = all suites passed. See `CLAUDE.md` for individual test suite commands.
 
 ## Cleanup
 
