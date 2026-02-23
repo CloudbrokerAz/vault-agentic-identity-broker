@@ -1,0 +1,272 @@
+# CLAUDE.md — Vault Agentic Identity Broker
+
+## What This Project Is
+
+A reference implementation for secure AI agent identity and delegated database access. The system ensures that when an AI agent queries a database on behalf of a human, there is cryptographic proof of **which human authorized the action**, **which agent performed it**, and **what permissions were granted** — with a full audit trail.
+
+The core flow: Human (Alice) logs in via Keycloak -> Agent gets SPIFFE identity from SPIRE -> RFC 8693 Token Exchange validates both, checks OPA policy, brokers Vault dynamic credentials -> Agent queries PostgreSQL with time-limited, scoped credentials that auto-expire.
+
+See `ARCHITECTURE.md` for detailed component diagrams and `DEMO-STORY.md` for a narrative walkthrough.
+
+## Quick Reference
+
+### Deployment (Two Steps)
+
+This project runs in Docker. There are two network modes:
+
+**Host network mode** (required in sandboxed/CI environments like this one):
+```bash
+docker compose -f docker-compose.host.yml up -d
+./scripts/bootstrap.sh --host
+```
+
+**Bridge network mode** (standard Docker networking):
+```bash
+docker compose up -d
+./scripts/bootstrap.sh
+```
+
+The bootstrap script is idempotent — it detects already-initialized services and skips them.
+
+### Cleanup
+
+```bash
+./scripts/cleanup.sh          # bridge mode
+./scripts/cleanup.sh --host   # host mode
+```
+
+This removes all containers, volumes, and generated credential files (`.vault-unseal-key`, `.vault-root-token`, `.gateway.env`).
+
+### Running the Demo
+
+```bash
+./scripts/demo.sh                      # Device Auth Flow (recommended)
+AUTH_MODE=token ./scripts/demo.sh      # Pre-supplied token
+AUTH_MODE=password ./scripts/demo.sh   # Password grant (demo only)
+```
+
+### Running the AI Agent Manually
+
+After bootstrap, the agent can be invoked directly:
+```bash
+source .gateway.env
+docker compose -f docker-compose.host.yml exec \
+  -e VAULT_TOKEN=$GATEWAY_VAULT_TOKEN \
+  -e AGENT_MODE=demo ai-agent python agent.py
+```
+
+## Architecture at a Glance
+
+10 services across 4 trust boundaries:
+
+| Service | Port | Role |
+|---|---|---|
+| **Keycloak** | :8080 | Human OIDC identity provider (admin/admin) |
+| **SPIRE Server** | :8081 | SPIFFE trust domain root (`demo.local`) |
+| **SPIRE Agent** | (socket) | Workload attestation, SVID distribution |
+| **SPIRE OIDC** | :8082 | JWKS endpoint for JWT-SVID verification |
+| **OPA** | :8181 | Policy engine (delegation.rego) |
+| **Vault** | :8200 | Dynamic secrets, JWT auth, audit logging |
+| **Token Exchange** | :8090 | RFC 8693 delegation broker (Python) |
+| **AgentGateway** | :9080 (API), :9090 (MCP, host mode) | Rust MCP/A2A proxy with RBAC |
+| **PostgreSQL** | :5432 | Target database (appdb, schema: app) |
+| **AI Agent** | (no port) | Python agent with sub-agent delegation |
+
+In host mode, AgentGateway MCP listens on **:9090** (not :8080) to avoid conflict with Keycloak.
+
+### Identity Delegation Flow
+
+```
+Human (Alice) --[OIDC token]--> Agent --[SPIFFE SVID]--> Token Exchange
+  Token Exchange: validate human token (Keycloak userinfo)
+                  validate agent identity (SPIFFE trust domain)
+                  evaluate OPA policy (groups, scope, may_act)
+                  broker Vault dynamic credentials (5-min TTL)
+                  mint delegation token with nested act{} claim
+Agent --[Vault-issued credentials]--> PostgreSQL (SELECT only, auto-expires)
+```
+
+Sub-agents extend the chain via a second RFC 8693 exchange using the parent's delegation token. Max depth: 3. Scope can only narrow, never widen.
+
+## Project Structure
+
+```
+docker-compose.yml              # Bridge network orchestration
+docker-compose.host.yml         # Host network orchestration (sandboxed/CI)
+scripts/
+  bootstrap.sh                  # Initialize Vault, SPIRE, configure integrations
+  demo.sh                       # Run the full delegation demo
+  cleanup.sh                    # Tear down everything
+token-exchange/
+  token_exchange.py             # RFC 8693 Token Exchange Service (Python)
+  Dockerfile
+ai-agent/
+  agent.py                      # AI agent with SPIFFE, RFC 8693, sub-agents
+  subagents/sql_executor.py     # SQL executor sub-agent
+  tests/test_agent.py
+  Dockerfile
+agentgateway/config/
+  gateway.yaml                  # AgentGateway config (bridge mode)
+  gateway-host.yaml             # AgentGateway config (host mode, localhost addrs)
+spire/
+  server/server.conf            # SPIRE server (trust domain: demo.local)
+  agent/agent.conf              # SPIRE agent (bridge mode)
+  agent/agent-host.conf         # SPIRE agent (host mode, discover_workload_path=false)
+  oidc/oidc-discovery-provider.conf  # OIDC JWKS endpoint config
+  entries/registration-entries.sh    # SPIRE workload registration script
+keycloak/realm/demo-realm.json  # Realm: demo, users: alice/bob, clients, mappers
+vault/
+  config/vault.hcl              # Vault server config (file storage, no TLS)
+  policies/*.hcl                # ACL policies (gateway, ai-agent-db-read, ai-agent-db-readwrite)
+opa/policies/
+  delegation.rego               # OPA delegation policy (Rego)
+  data.json                     # Policy data (agents, groups, scopes, max depth)
+postgres/init/
+  00-vault-user.sql             # Vault admin user for dynamic credential management
+  01-init.sql                   # Sample schema (orders, customers, products)
+tests/
+  config-validation/            # Offline config validation tests (pytest)
+  e2e/                          # End-to-end integration tests (bash + pytest)
+  test_token_exchange.py        # Token Exchange unit tests
+```
+
+## Key Implementation Details
+
+### SPIRE (Host Mode Specifics)
+
+- SPIRE server image runs as **UID 1000:1000**. The compose files include a `spire-init` alpine container that `chown`s the data volume before SPIRE starts.
+- The host-mode agent config (`agent-host.conf`) has `discover_workload_path = false` because cross-container `/proc/<PID>/exe` readlink fails due to PID/mount namespace boundaries. UID-based attestation (`unix:uid:N`) still works.
+- SPIRE 1.11.0 uses `-x509SVIDTTL` and `-jwtSVIDTTL` flags (not the removed `-ttl` flag).
+- The OIDC discovery provider is a distroless image (no shell, no wget, no curl). Its healthcheck is disabled; the bootstrap script verifies it externally via `curl http://localhost:8082/keys`.
+- The OIDC provider needs its own SPIRE registration entry (`unix:uid:1000`, SPIFFE ID: `spiffe://demo.local/oidc-provider`).
+- The `acme {}` block and `insecure_addr` are mutually exclusive in the OIDC config. For HTTP-only demo, use only `insecure_addr`.
+
+### Bootstrap Script (`scripts/bootstrap.sh`)
+
+The bootstrap runs 10 steps in order:
+1. Wait for infrastructure services (Vault, OPA, PostgreSQL, Keycloak)
+2. Initialize and unseal Vault (1 key share, threshold 1 for demo)
+3. Write Vault ACL policies
+4. Enable Vault audit logging (file device)
+5. Configure Vault database secrets engine (PostgreSQL connection, rotate root creds, create readonly/readwrite roles with 5-min TTL)
+6. Create a scoped Vault token for the Token Exchange Service
+7. Enable Vault JWT auth method and create JWT auth roles (gateway, agent-readonly, agent-readwrite)
+8. Register SPIRE entries (generate join token, start agent, register workloads including OIDC provider, start OIDC, configure Vault JWT JWKS URL)
+9. Restart Token Exchange Service with the Vault token
+10. Verify setup (test Keycloak auth, OPA policy, Vault dynamic credentials)
+
+**Important ordering**: JWT auth roles (Step 7) are created before SPIRE OIDC starts. The JWKS URL configuration happens in Step 8b after the OIDC provider is running and serving keys.
+
+Credentials saved by bootstrap:
+- `.vault-unseal-key` — Vault unseal key (chmod 600)
+- `.vault-root-token` — Vault root token (chmod 600)
+- `.gateway.env` — Token Exchange Service's Vault token
+
+### Token Exchange Service
+
+- Python service on port 8090
+- Key endpoints: `POST /v1/token/exchange` (RFC 8693), `POST /v1/delegate` (legacy), `POST /v1/token/revoke`, `GET /v1/delegation/chain`, `GET /v1/audit`, `GET /health`
+- Validates human tokens via Keycloak userinfo endpoint
+- Validates agent identity via SPIFFE trust domain check
+- Evaluates OPA policy at `http://opa:8181/v1/data/delegation/allow`
+- Brokers Vault credentials at `GET /v1/database/creds/ai-agent-{scope}`
+- Builds delegation tokens with nested `act{}` claims per RFC 8693 Section 4.1
+- Supports sub-agent chain extension with scope narrowing and depth limits
+
+### AgentGateway
+
+- Rust-based open-source MCP/A2A proxy ([agentgateway/agentgateway](https://github.com/agentgateway/agentgateway))
+- Two configs: `gateway.yaml` (bridge mode, Docker DNS names) and `gateway-host.yaml` (host mode, `127.0.0.1` addresses)
+- In host mode, MCP listener is on port **9090** (not 8080, which conflicts with Keycloak)
+- OIDC auth via Keycloak, rate limiting (60 req/min), CORS, routes to Token Exchange
+
+### OPA Policy
+
+- `delegation.rego` evaluates: valid human token, valid agent identity (registered agents + sub-agents), authorized delegation (may_act claim), scope permitted (group-to-scope mapping), chain depth limit (max 3), scope narrowing
+- `data.json` contains: trusted issuers, registered agents, registered sub-agents, group permissions, scope hierarchy, max delegation depth
+- Default deny — all rules must pass for `allow = true`
+
+### Vault
+
+- File storage backend (no TLS for demo)
+- Database secrets engine with PostgreSQL plugin
+- Dynamic roles: `ai-agent-readonly` (SELECT on schema app, 5-min TTL), `ai-agent-readwrite` (CRUD on schema app, 5-min TTL)
+- JWT auth method backed by SPIRE OIDC JWKS endpoint
+- Root credentials rotated after initial config (original password invalidated)
+
+### Keycloak
+
+- Realm: `demo`
+- Users: `alice` (password: `alice-demo-password`, groups: data-analysts, trading-team), `bob` (password: `bob-demo-password`, group: engineering)
+- Clients: `demo-cli` (public, supports device auth + direct access), `ai-agent-service` (confidential, token exchange enabled)
+- Custom protocol mappers: `groups` claim, `may_act` claim (hardcoded for demo)
+- Health on management port 9000, realm API on port 8080
+
+### PostgreSQL
+
+- Database: `appdb`, Schema: `app`
+- Tables: `orders`, `customers`, `products`; View: `order_summary`
+- Vault admin user (`vault_admin`) created in `00-vault-user.sql` with `CREATEROLE` privilege
+- Logging: `log_statement=all`, `log_connections=on`, `log_disconnections=on`
+
+## Testing
+
+### Config Validation Tests (Offline)
+
+```bash
+cd /workspace && python -m pytest tests/config-validation/ -v
+```
+
+These validate configuration files without running services: Keycloak realm JSON, OPA policy data, SPIRE configs, Vault policies, Docker Compose structure, PostgreSQL schema.
+
+### End-to-End Tests (Require Running Services)
+
+```bash
+# After bootstrap:
+bash tests/e2e/test_e2e_flow.sh
+bash tests/e2e/test_token_exchange_e2e.sh
+bash tests/e2e/test_native_e2e.sh
+```
+
+### Token Exchange Unit Tests
+
+```bash
+cd /workspace && python -m pytest tests/test_token_exchange.py -v
+```
+
+### AI Agent Tests
+
+```bash
+cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
+```
+
+## Common Issues and Fixes
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| SPIRE server crashes with "unable to open database file" | Volume owned by root, SPIRE runs as UID 1000 | The `spire-init` container handles this; if persists, `docker volume rm` and redeploy |
+| SPIRE entries silently fail to register | Using `-ttl` flag (removed in SPIRE 1.11) | Use `-x509SVIDTTL` and `-jwtSVIDTTL` instead |
+| OIDC provider crashes with "insecure_addr and acme mutually exclusive" | Config has both `acme {}` block and `insecure_addr` | Remove the `acme {}` block for HTTP-only mode |
+| SPIRE agent "no identity issued" for OIDC provider | Missing SPIRE registration entry for UID 1000 | Register entry with `-selector unix:uid:1000 -spiffeID spiffe://demo.local/oidc-provider` |
+| SPIRE agent "readlink /proc/PID/exe: permission denied" | `discover_workload_path = true` fails across container namespaces | Set `discover_workload_path = false` in `agent-host.conf` |
+| AgentGateway crashes with "failed to load JWKS: fetch keycloak:8080" | Host mode uses Docker DNS names that don't resolve | Use `gateway-host.yaml` with `127.0.0.1` addresses |
+| AgentGateway port conflict with Keycloak on 8080 | Both bind port 8080 in host mode | Host-mode gateway uses port 9090 for MCP listener |
+| SPIRE OIDC healthcheck always unhealthy | Distroless image has no wget/curl/shell | Healthcheck is disabled; bootstrap verifies externally |
+| Vault JWT auth config fails | SPIRE OIDC not running yet when JWT config runs | Bootstrap configures JWKS URL after OIDC is started (Step 8b) |
+| "PostgreSQL failed to start" during bootstrap | HTTP probe against PostgreSQL (doesn't speak HTTP) | Expected — bootstrap falls through to `pg_isready` check via docker exec |
+
+## Environment Variables
+
+| Variable | Default | Used By | Purpose |
+|---|---|---|---|
+| `AUTH_MODE` | `device` | ai-agent, demo.sh | Human auth mode: `device`, `token`, or `password` |
+| `HUMAN_ACCESS_TOKEN` | (none) | ai-agent | Pre-supplied OIDC token (for `AUTH_MODE=token`) |
+| `DEMO_USERNAME` | `alice` | ai-agent | Demo user for password grant mode |
+| `DEMO_PASSWORD` | (none) | ai-agent | Demo password for password grant mode |
+| `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | token-exchange | Vault token for credential brokering |
+| `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
+| `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh | Set to `true` as alternative to `--host` flag |
+| `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | HMAC secret for delegation tokens |
+| `MAX_DELEGATION_DEPTH` | `3` | token-exchange | Maximum delegation chain depth |
+| `DEFAULT_TTL` | `300` | token-exchange | Default credential TTL in seconds |
+| `MAX_TTL` | `1800` | token-exchange | Maximum credential TTL in seconds |
