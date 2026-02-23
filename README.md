@@ -323,7 +323,7 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 ### AI Agent (with Sub-Agent Delegation)
 
 - **Language**: Python
-- **SPIFFE**: py-spiffe library (falls back to demo mode without SPIRE)
+- **SPIFFE**: spiffe library (falls back to demo mode without SPIRE)
 - **Human auth**: Supports Device Flow (RFC 8628, recommended), pre-supplied token, or legacy password grant (demo only)
 - **Token exchange**: RFC 8693 client for delegation via Token Exchange Service
 - **Sub-agents**: `sql-executor` — can receive delegation from parent agent and extend the chain

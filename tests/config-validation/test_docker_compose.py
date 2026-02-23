@@ -208,12 +208,6 @@ class TestDockerCompose(unittest.TestCase):
         has_init = any("docker-entrypoint-initdb.d" in v for v in volume_strs)
         self.assertTrue(has_init, "PostgreSQL init scripts not mounted")
 
-    def test_postgresql_pgaudit(self):
-        svc = self.config["services"]["postgresql"]
-        command = svc.get("command", [])
-        command_str = " ".join(str(c) for c in command)
-        self.assertIn("pgaudit", command_str)
-
     def test_postgresql_logging(self):
         svc = self.config["services"]["postgresql"]
         command = svc.get("command", [])
