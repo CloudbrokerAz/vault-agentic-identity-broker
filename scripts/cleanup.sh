@@ -8,7 +8,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
-COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml --profile spire"
+
+# Use host-network compose file if --host flag is passed or HOST_NETWORK is set
+COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
+if [ "${1:-}" = "--host" ] || [ "${HOST_NETWORK:-}" = "true" ]; then
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.host.yml"
+fi
+COMPOSE="docker compose -f ${COMPOSE_FILE} --profile spire"
 
 echo "Stopping and removing all containers..."
 ${COMPOSE} down -v --remove-orphans 2>/dev/null || true

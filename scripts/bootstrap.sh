@@ -319,9 +319,11 @@ chmod 600 "${PROJECT_DIR}/.gateway.env"
 
 log_ok "Token Exchange credentials saved to .gateway.env"
 
-# ─── Step 7: Configure Vault JWT Auth (SPIRE OIDC) ────────────────────
+# ─── Step 7: Configure Vault JWT Auth (roles only) ────────────────────
+# The JWKS URL (SPIRE OIDC) is configured later in Step 8b once the OIDC
+# discovery provider is running.
 
-log_step 7 "Configuring Vault JWT auth method for SPIRE JWT-SVIDs"
+log_step 7 "Enabling Vault JWT auth method and creating roles"
 
 # Enable JWT auth method
 curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
@@ -333,31 +335,6 @@ curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
         "description": "SPIRE JWT-SVID authentication for agents"
     }' > /dev/null 2>&1 || log_warn "JWT auth method may already be enabled"
 log_ok "JWT auth method enabled"
-
-# Configure JWT auth with SPIRE OIDC Discovery Provider.
-# The spire-oidc service (port 8082) serves a JWKS endpoint backed by
-# the SPIRE trust bundle so Vault can cryptographically verify JWT-SVIDs.
-SPIRE_ISSUER="https://spire-server:8443"
-if [ "${HOST_MODE}" = "true" ]; then
-    SPIRE_JWKS_URL="http://127.0.0.1:8082/keys"
-else
-    SPIRE_JWKS_URL="http://spire-oidc:8082/keys"
-fi
-
-# Wait for the OIDC Discovery Provider to be ready
-wait_for_service "SPIRE OIDC Provider" "${SPIRE_JWKS_URL}" 20 || log_warn "SPIRE OIDC provider not reachable yet"
-
-log_info "Configuring JWT auth with SPIRE OIDC Discovery Provider..."
-curl -sf "${VAULT_ADDR}/v1/auth/jwt/config" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "jwks_url": "'"${SPIRE_JWKS_URL}"'",
-        "bound_issuer": "'"${SPIRE_ISSUER}"'",
-        "default_role": "spire-agent"
-    }' > /dev/null 2>&1 || log_warn "JWT auth config update failed"
-log_ok "JWT auth configured with SPIRE OIDC provider: ${SPIRE_JWKS_URL}"
 
 # Create JWT auth role for gateway (maps SPIFFE IDs to Vault policies)
 log_info "Creating JWT auth role for gateway..."
@@ -458,13 +435,14 @@ if [ -n "${JOIN_TOKEN}" ]; then
     done
     echo
 
-    # Register AI Agents
+    # Register AI Agents (SPIRE 1.11+ uses -x509SVIDTTL/-jwtSVIDTTL instead of -ttl)
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
         -parentID "spiffe://demo.local/spire-agent" \
         -spiffeID "spiffe://demo.local/agent/query-agent" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "Query Agent entry may already exist"
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "Query Agent entry may already exist"
     log_ok "Query Agent registered with SPIRE"
 
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
@@ -472,7 +450,8 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -spiffeID "spiffe://demo.local/agent/analysis-agent" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "Analysis Agent entry may already exist"
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "Analysis Agent entry may already exist"
     log_ok "Analysis Agent registered with SPIRE"
 
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
@@ -480,7 +459,8 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -spiffeID "spiffe://demo.local/agent/write-agent" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "Write Agent entry may already exist"
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "Write Agent entry may already exist"
     log_ok "Write Agent registered with SPIRE"
 
     # Register Sub-Agents
@@ -489,7 +469,8 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -spiffeID "spiffe://demo.local/subagent/sql-executor" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "SQL Executor entry may already exist"
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "SQL Executor entry may already exist"
     log_ok "SQL Executor Sub-Agent registered with SPIRE"
 
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
@@ -497,13 +478,47 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -spiffeID "spiffe://demo.local/subagent/result-formatter" \
         -selector "unix:uid:0" \
         -dns "ai-agent" \
-        -ttl 3600 2>/dev/null || log_warn "Result Formatter entry may already exist"
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "Result Formatter entry may already exist"
     log_ok "Result Formatter Sub-Agent registered with SPIRE"
+
+    # Register OIDC Discovery Provider (runs as UID 1000 in its own container)
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/oidc-provider" \
+        -selector "unix:uid:1000" \
+        -dns "spire-oidc" \
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "OIDC Provider entry may already exist"
+    log_ok "OIDC Discovery Provider registered with SPIRE"
 
     # Start SPIRE OIDC Discovery Provider
     log_info "Starting SPIRE OIDC Discovery Provider..."
     SPIRE_JOIN_TOKEN="${JOIN_TOKEN}" ${COMPOSE} --profile spire up -d spire-oidc 2>/dev/null
     log_ok "SPIRE OIDC Discovery Provider started"
+
+    # ─── Step 8b: Configure Vault JWT JWKS URL (needs running OIDC provider) ──
+    log_info "Configuring Vault JWT auth with SPIRE OIDC Discovery Provider..."
+
+    SPIRE_ISSUER="https://spire-server:8443"
+    if [ "${HOST_MODE}" = "true" ]; then
+        SPIRE_JWKS_URL="http://127.0.0.1:8082/keys"
+    else
+        SPIRE_JWKS_URL="http://spire-oidc:8082/keys"
+    fi
+
+    wait_for_service "SPIRE OIDC Provider" "${SPIRE_JWKS_URL}" 30
+
+    curl -sf "${VAULT_ADDR}/v1/auth/jwt/config" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "jwks_url": "'"${SPIRE_JWKS_URL}"'",
+            "bound_issuer": "'"${SPIRE_ISSUER}"'",
+            "default_role": "spire-agent"
+        }' > /dev/null
+    log_ok "Vault JWT auth configured with SPIRE OIDC: ${SPIRE_JWKS_URL}"
 else
     log_warn "Could not generate SPIRE join token (SPIRE may not be available)"
 fi
@@ -538,7 +553,10 @@ echo "  Vault:            http://localhost:8200  (UI available)"
 echo "  Keycloak:         http://localhost:8080  (admin/admin)"
 echo "  OPA:              http://localhost:8181"
 echo "  Token Exchange:   http://localhost:8090"
-echo "  AgentGateway:     http://localhost:9080"
+if [ "${HOST_MODE}" = "true" ]; then
+echo "  AgentGateway MCP: http://localhost:9090"
+fi
+echo "  AgentGateway API: http://localhost:9080"
 echo "  PostgreSQL:       localhost:5432 (appdb)"
 echo ""
 
