@@ -115,14 +115,19 @@ scope_narrowing_valid if {
 # ─── Scope Hierarchy Helpers ─────────────────────────────────────────────────
 
 # scope_implies checks if "parent" scope implies "child" scope using
-# the scope_hierarchy defined in data.json. Supports transitive implication.
+# the scope_hierarchy defined in data.json.
+# Supports up to 2 levels of transitive implication (direct + one intermediate).
+# OPA does not support recursion, so we unroll the transitive lookup.
+
+# Direct implication: parent -> child
 scope_implies(parent, child) if {
     child == data.config.scope_hierarchy[parent][_]
 }
 
+# One-level transitive: parent -> intermediate -> child
 scope_implies(parent, child) if {
     intermediate := data.config.scope_hierarchy[parent][_]
-    scope_implies(intermediate, child)
+    child == data.config.scope_hierarchy[intermediate][_]
 }
 
 # ─── Scope Validation ────────────────────────────────────────────────────────
