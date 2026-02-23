@@ -211,6 +211,7 @@ class DemoHandler(BaseHTTPRequestHandler):
 
         routes = {
             "/api/auth/login": self._handle_login,
+            "/api/auth/code-exchange": self._handle_code_exchange,
             "/api/auth/device-start": self._handle_device_start,
             "/api/auth/device-poll": self._handle_device_poll,
             "/api/auth/device-approve": self._handle_device_approve,
@@ -306,7 +307,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         all_healthy = all(s.get("status") == "healthy" for name, s in services.items() if name != "spire")
         self._send_json(200, {"overall": "healthy" if all_healthy else "degraded", "services": services})
 
-    # --- Auth: Password Grant ---
+    # --- Auth: Password Login (used by device flow server-side approval) ---
 
     def _handle_login(self):
         body = self._read_body()
@@ -322,6 +323,42 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "username": username,
                 "password": password,
                 "scope": "openid",
+            }, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+
+            if r.status_code != 200:
+                self._send_json(r.status_code, {"error": True, "service": "keycloak", "message": r.text, "elapsed_ms": elapsed})
+                return
+
+            data = r.json()
+            access_token = data.get("access_token", "")
+            decoded = decode_token_safe(access_token)
+
+            self._send_json(200, {
+                "access_token": access_token,
+                "token_type": data.get("token_type"),
+                "expires_in": data.get("expires_in"),
+                "decoded": decoded,
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            self._send_error(502, "keycloak", str(e))
+
+    # --- Auth: Authorization Code Exchange ---
+
+    def _handle_code_exchange(self):
+        body = self._read_body()
+        code = body.get("code", "")
+        redirect_uri = body.get("redirect_uri", "")
+
+        token_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+        start = time.time()
+        try:
+            r = requests.post(token_url, data={
+                "grant_type": "authorization_code",
+                "client_id": KEYCLOAK_CLIENT_ID,
+                "code": code,
+                "redirect_uri": redirect_uri,
             }, timeout=10)
             elapsed = int((time.time() - start) * 1000)
 

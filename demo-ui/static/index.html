@@ -586,31 +586,12 @@ label {
       <p class="panel-desc">Authenticate as a human user via Keycloak. The resulting OIDC access token proves the human's identity and group memberships.</p>
 
       <div class="auth-tabs">
-        <button class="auth-tab active" onclick="switchAuthMode('password')">Password Grant</button>
-        <button class="auth-tab" onclick="switchAuthMode('device')">Device Flow (RFC 8628)</button>
-      </div>
-
-      <!-- Password Mode -->
-      <div class="auth-panel visible" id="authPassword">
-        <div class="warning-box">Password grant is for demo purposes only. Production systems should use Device Authorization Flow or Authorization Code Flow.</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>User</label>
-            <select id="loginUser" onchange="updatePassword()">
-              <option value="alice" selected>alice (data-analysts, trading-team)</option>
-              <option value="bob">bob (engineering)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Password</label>
-            <input type="password" id="loginPass" value="alice-demo-password" style="width:200px;" />
-          </div>
-          <button class="btn btn-primary" onclick="doLogin()" id="loginBtn">Login</button>
-        </div>
+        <button class="auth-tab active" onclick="switchAuthMode('device')">Device Flow (RFC 8628)</button>
+        <button class="auth-tab" onclick="switchAuthMode('authcode')">Authorization Code Flow</button>
       </div>
 
       <!-- Device Mode -->
-      <div class="auth-panel" id="authDevice">
+      <div class="auth-panel visible" id="authDevice">
         <p class="panel-desc" style="margin-bottom:12px;">RFC 8628 Device Authorization Flow: the agent requests a device code, the human approves it in their browser, and the agent polls for the token.</p>
         <div class="controls">
           <button class="btn btn-primary" onclick="startDeviceFlow()" id="deviceStartBtn">Start Device Flow</button>
@@ -645,6 +626,17 @@ label {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Authorization Code Flow -->
+      <div class="auth-panel" id="authCode">
+        <p class="panel-desc" style="margin-bottom:12px;">OAuth 2.0 Authorization Code Flow: the user is redirected to Keycloak to log in, then Keycloak redirects back with an authorization code that is exchanged for tokens server-side.</p>
+        <div class="form-row">
+          <button class="btn btn-primary" onclick="startAuthCodeFlow()" id="authCodeBtn">Login with Keycloak</button>
+        </div>
+        <div id="authCodeStatus" style="display:none;margin-top:12px;">
+          <div class="poll-indicator" id="authCodeStatusText"></div>
         </div>
       </div>
 
@@ -1176,54 +1168,12 @@ async function checkHealth() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Auth — Password
-// ---------------------------------------------------------------------------
-function updatePassword() {
-  const user = document.getElementById('loginUser').value;
-  document.getElementById('loginPass').value = user === 'alice' ? 'alice-demo-password' : 'bob-demo-password';
-}
-
-async function doLogin() {
-  const user = document.getElementById('loginUser').value;
-  const pass = document.getElementById('loginPass').value;
-  btnLoading('loginBtn', 'Logging in...');
-
-  showJson('authRequest', { grant_type: 'password', client_id: 'demo-cli', username: user, password: '***', scope: 'openid' });
-  document.getElementById('authResults').style.display = '';
-
-  try {
-    const { status, data } = await api('POST', '/api/auth/login', { username: user, password: pass });
-    setTiming('authTiming', data.elapsed_ms || 0, status === 200);
-
-    if (status === 200 && data.access_token) {
-      state.user = user;
-      state.accessToken = data.access_token;
-      state.decodedToken = data.decoded;
-      showJson('authResponse', data.decoded);
-      renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
-      document.getElementById('authResponseCard').className = 'card success';
-      completeStep(1);
-      document.getElementById('svidBtn').disabled = false;
-    } else {
-      showJson('authResponse', data);
-      document.getElementById('authResponseCard').className = 'card error';
-      failStep(1);
-    }
-  } catch (e) {
-    showJson('authResponse', { error: e.message });
-    document.getElementById('authResponseCard').className = 'card error';
-    failStep(1);
-  }
-  btnRestore('loginBtn', 'Login');
-}
-
-// ---------------------------------------------------------------------------
 // Step 1: Auth — Device Flow
 // ---------------------------------------------------------------------------
 function switchAuthMode(mode) {
-  document.querySelectorAll('.auth-tab').forEach((t, i) => t.classList.toggle('active', (mode === 'password' ? i === 0 : i === 1)));
-  document.getElementById('authPassword').classList.toggle('visible', mode === 'password');
+  document.querySelectorAll('.auth-tab').forEach((t, i) => t.classList.toggle('active', (mode === 'device' ? i === 0 : i === 1)));
   document.getElementById('authDevice').classList.toggle('visible', mode === 'device');
+  document.getElementById('authCode').classList.toggle('visible', mode === 'authcode');
 }
 
 function updateDevicePassword() {
@@ -1354,6 +1304,102 @@ async function pollDevice() {
   }
   document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--yellow);">!</span> Polling timed out \u2014 try again';
   state.devicePolling = false;
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Auth — Authorization Code Flow
+// ---------------------------------------------------------------------------
+function startAuthCodeFlow() {
+  const state_param = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  sessionStorage.setItem('oauth_state', state_param);
+
+  const redirectUri = window.location.origin + '/';
+  showJson('authRequest', {
+    grant_type: 'authorization_code',
+    client_id: 'demo-cli',
+    response_type: 'code',
+    scope: 'openid',
+    redirect_uri: redirectUri,
+    state: state_param,
+  });
+  document.getElementById('authResults').style.display = '';
+
+  const authUrl = '/realms/demo/protocol/openid-connect/auth?' +
+    'client_id=demo-cli&response_type=code&scope=openid&' +
+    'redirect_uri=' + encodeURIComponent(redirectUri) +
+    '&state=' + encodeURIComponent(state_param);
+
+  window.location.href = authUrl;
+}
+
+async function handleAuthCodeCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const returnedState = params.get('state');
+
+  if (!code) return false;
+
+  // Clean the URL
+  window.history.replaceState({}, document.title, '/');
+
+  // Verify state parameter
+  const savedState = sessionStorage.getItem('oauth_state');
+  if (savedState && returnedState !== savedState) {
+    showJson('authResponse', { error: 'State mismatch — possible CSRF attack' });
+    document.getElementById('authResponseCard').className = 'card error';
+    failStep(1);
+    return true;
+  }
+  sessionStorage.removeItem('oauth_state');
+
+  // Switch to auth code tab and show step 1
+  showStep(1);
+  switchAuthMode('authcode');
+
+  const statusEl = document.getElementById('authCodeStatus');
+  const statusText = document.getElementById('authCodeStatusText');
+  statusEl.style.display = '';
+  statusText.innerHTML = '<span class="spinner"></span> Exchanging authorization code for tokens...';
+
+  document.getElementById('authResults').style.display = '';
+  showJson('authRequest', {
+    grant_type: 'authorization_code',
+    client_id: 'demo-cli',
+    code: code.substring(0, 20) + '...',
+    redirect_uri: window.location.origin + '/',
+  });
+
+  try {
+    const { status, data } = await api('POST', '/api/auth/code-exchange', {
+      code: code,
+      redirect_uri: window.location.origin + '/',
+    });
+    setTiming('authTiming', data.elapsed_ms || 0, status === 200);
+
+    if (status === 200 && data.access_token) {
+      state.user = data.decoded?.preferred_username || data.decoded?.sub || 'user';
+      state.accessToken = data.access_token;
+      state.decodedToken = data.decoded;
+      showJson('authResponse', data.decoded);
+      renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
+      document.getElementById('authResponseCard').className = 'card success';
+      statusText.innerHTML = '<span style="color:var(--green);">&#10003;</span> Authenticated as ' + escapeHtml(state.user) + '!';
+      completeStep(1);
+      document.getElementById('svidBtn').disabled = false;
+    } else {
+      showJson('authResponse', data);
+      document.getElementById('authResponseCard').className = 'card error';
+      statusText.innerHTML = '<span style="color:var(--red);">&#10007;</span> Authentication failed';
+      failStep(1);
+    }
+  } catch (e) {
+    showJson('authResponse', { error: e.message });
+    document.getElementById('authResponseCard').className = 'card error';
+    statusText.innerHTML = '<span style="color:var(--red);">&#10007;</span> Error: ' + escapeHtml(e.message);
+    failStep(1);
+  }
+
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1728,7 +1774,10 @@ async function verifyRevoked() {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-checkHealth();
+(async function init() {
+  await handleAuthCodeCallback();
+  checkHealth();
+})();
 </script>
 
 </body>
