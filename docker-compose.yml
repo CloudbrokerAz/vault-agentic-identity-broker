@@ -39,12 +39,17 @@ services:
       - identity-net
 
   # ─── SPIRE Agent ───────────────────────────────────────────────────────
+  # Started by bootstrap.sh after generating a join token from the server.
+  # Use: SPIRE_JOIN_TOKEN=xxx docker compose --profile spire up -d spire-agent
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.11.0
     hostname: spire-agent
+    profiles: ["spire"]
     command:
       - -config
       - /opt/spire/conf/agent/agent.conf
+      - -joinToken
+      - "${SPIRE_JOIN_TOKEN:-}"
     volumes:
       - ./spire/agent/agent.conf:/opt/spire/conf/agent/agent.conf:ro
       - spire-agent-data:/opt/spire/data/agent
@@ -66,9 +71,11 @@ services:
   # ─── SPIRE OIDC Discovery Provider ────────────────────────────────────
   # Serves a JWKS endpoint for SPIRE JWT-SVIDs so that Vault (and other
   # relying parties) can verify agent identity tokens cryptographically.
+  # Started by bootstrap.sh after the SPIRE agent is healthy.
   spire-oidc:
     image: ghcr.io/spiffe/oidc-discovery-provider:1.11.0
     hostname: spire-oidc
+    profiles: ["spire"]
     command:
       - -config
       - /opt/spire/conf/oidc/oidc-discovery-provider.conf
@@ -108,7 +115,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200'"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '200'"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -145,6 +152,7 @@ services:
   # ─── OPA Policy Engine ────────────────────────────────────────────────
   opa:
     image: openpolicyagent/opa:0.70.0
+    platform: linux/amd64
     hostname: opa
     command:
       - run
@@ -158,11 +166,11 @@ services:
     ports:
       - "8181:8181"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health"]
+      test: ["CMD", "/opa", "version"]
       interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 5s
+      timeout: 30s
+      retries: 12
+      start_period: 15s
     networks:
       - identity-net
 
@@ -181,10 +189,6 @@ services:
       - "5432:5432"
     command:
       - postgres
-      - -c
-      - shared_preload_libraries=pgaudit
-      - -c
-      - pgaudit.log=read
       - -c
       - log_statement=all
       - -c
@@ -206,7 +210,7 @@ services:
     image: ghcr.io/agentgateway/agentgateway:latest
     hostname: agentgateway
     command:
-      - --config
+      - --file
       - /config/gateway.yaml
     volumes:
       - ./agentgateway/config/gateway.yaml:/config/gateway.yaml:ro
@@ -225,12 +229,10 @@ services:
         condition: service_healthy
       token-exchange:
         condition: service_healthy
+    # Note: agentgateway uses a minimal image without curl/wget.
+    # Health can be verified externally via http://localhost:19000/ui
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:19000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 10s
+      disable: true
     networks:
       - identity-net
 

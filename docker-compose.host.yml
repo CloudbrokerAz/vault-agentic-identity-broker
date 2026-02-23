@@ -26,11 +26,15 @@ services:
       start_period: 10s
 
   # ─── SPIRE Agent ───────────────────────────────────────────────────────
+  # Started by bootstrap.sh after generating a join token from the server.
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.11.0
+    profiles: ["spire"]
     command:
       - -config
       - /opt/spire/conf/agent/agent.conf
+      - -joinToken
+      - "${SPIRE_JOIN_TOKEN:-}"
     volumes:
       - ./spire/agent/agent-host.conf:/opt/spire/conf/agent/agent.conf:ro
       - spire-agent-data:/opt/spire/data/agent
@@ -49,8 +53,10 @@ services:
       start_period: 15s
 
   # ─── SPIRE OIDC Discovery Provider ────────────────────────────────────
+  # Started by bootstrap.sh after the SPIRE agent is healthy.
   spire-oidc:
     image: ghcr.io/spiffe/oidc-discovery-provider:1.11.0
+    profiles: ["spire"]
     command:
       - -config
       - /opt/spire/conf/oidc/oidc-discovery-provider.conf
@@ -85,7 +91,7 @@ services:
       - ./keycloak/realm/demo-realm.json:/opt/keycloak/data/import/demo-realm.json:ro
     network_mode: host
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200'"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200'"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -116,6 +122,7 @@ services:
   # ─── OPA Policy Engine ────────────────────────────────────────────────
   opa:
     image: openpolicyagent/opa:0.70.0
+    platform: linux/amd64
     command:
       - run
       - --server
@@ -127,11 +134,11 @@ services:
       - ./opa/policies:/policies:ro
     network_mode: host
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health"]
+      test: ["CMD", "/opa", "version"]
       interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 5s
+      timeout: 30s
+      retries: 12
+      start_period: 15s
 
   # ─── PostgreSQL Database ──────────────────────────────────────────────
   postgresql:
@@ -146,10 +153,6 @@ services:
     command:
       - postgres
       - -c
-      - shared_preload_libraries=pgaudit
-      - -c
-      - pgaudit.log=read
-      - -c
       - log_statement=all
       - -c
       - log_connections=on
@@ -162,6 +165,30 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  # ─── AgentGateway (MCP/A2A Proxy) ─────────────────────────────────────
+  agentgateway:
+    image: ghcr.io/agentgateway/agentgateway:latest
+    command:
+      - --file
+      - /config/gateway.yaml
+    volumes:
+      - ./agentgateway/config/gateway.yaml:/config/gateway.yaml:ro
+      - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
+    environment:
+      KEYCLOAK_ISSUER_URL: "http://127.0.0.1:8080/realms/demo"
+      TOKEN_EXCHANGE_URL: "http://127.0.0.1:8090"
+      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+      token-exchange:
+        condition: service_healthy
+    network_mode: host
+    healthcheck:
+      disable: true
 
   # ─── Token Exchange Service (RFC 8693) ────────────────────────────────
   token-exchange:

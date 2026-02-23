@@ -1,16 +1,9 @@
 -- PostgreSQL initialization for the Identity Broker demo
 -- Creates sample schema and data that the AI agent will query
 
--- Enable pgaudit extension for audit logging
-CREATE EXTENSION IF NOT EXISTS pgaudit;
-
--- Configure pgaudit to log all reads
-ALTER SYSTEM SET pgaudit.log = 'read';
-ALTER SYSTEM SET pgaudit.log_catalog = 'off';
-ALTER SYSTEM SET pgaudit.log_parameter = 'on';
-ALTER SYSTEM SET pgaudit.log_statement_once = 'on';
-
-SELECT pg_reload_conf();
+-- Note: pgaudit is not available in postgres:alpine images.
+-- Audit logging is handled via PostgreSQL's native log_statement=all setting
+-- configured in the docker-compose command.
 
 -- Create the application schema
 CREATE SCHEMA IF NOT EXISTS app;
