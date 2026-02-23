@@ -203,7 +203,7 @@ services:
   # ─── AgentGateway (MCP/A2A Proxy) ─────────────────────────────────────
   # Open-source proxy (https://github.com/agentgateway/agentgateway)
   agentgateway:
-    image: ghcr.io/agentgateway/agentgateway:v0.3.2
+    image: ghcr.io/agentgateway/agentgateway:latest
     hostname: agentgateway
     command:
       - --config

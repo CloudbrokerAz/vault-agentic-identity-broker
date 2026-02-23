@@ -1,4 +1,4 @@
-py-spiffe==0.8.0
+spiffe>=0.2.3
 requests>=2.31.0
 psycopg2-binary>=2.9.9
 PyJWT>=2.8.0
