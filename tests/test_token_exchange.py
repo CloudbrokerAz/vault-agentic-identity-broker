@@ -1217,5 +1217,413 @@ class TestErrorResponseFormat(unittest.TestCase):
         self.assertEqual(len(result), 2)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. Security Boundary Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSecurityBoundaries(unittest.TestCase):
+    """Tests for security boundary behaviors: Keycloak fallback, OPA fail-open, Vault failures."""
+
+    def setUp(self):
+        self.service = _make_service()
+
+    # ── Keycloak fallback bypass (6 tests) ─────────────────────────────────
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_401_falls_back_to_unverified_decode(self, mock_get):
+        """When Keycloak returns 401, the service falls back to unverified JWT decode."""
+        resp = MagicMock()
+        resp.status_code = 401
+        mock_get.return_value = resp
+
+        human_token = _human_jwt(sub="alice@acme.com")
+        result = self.service._validate_keycloak_token(human_token)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["sub"], "alice@acme.com")
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_timeout_rejects_forged_token(self, mock_get):
+        """When Keycloak times out and the token is not a valid JWT, an error is returned."""
+        import requests as real_requests
+        mock_get.side_effect = real_requests.exceptions.Timeout("timed out")
+
+        result = self.service._validate_keycloak_token("not-a-jwt-token")
+
+        self.assertIn("error", result)
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_down_rejects_corrupted_base64(self, mock_get):
+        """When Keycloak is down and the token looks like a JWT but has bad base64, an error is returned."""
+        import requests as real_requests
+        mock_get.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        result = self.service._validate_keycloak_token("aaa.bbb.ccc")
+
+        self.assertIn("error", result)
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_down_rejects_empty_token(self, mock_get):
+        """When Keycloak is down and token is empty, fallback decode also fails."""
+        import requests as real_requests
+        mock_get.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        result = self.service._validate_keycloak_token("")
+
+        self.assertIn("error", result)
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_500_with_valid_jwt_extracts_claims(self, mock_get):
+        """When Keycloak returns 500, a valid JWT is still decoded via fallback."""
+        resp = MagicMock()
+        resp.status_code = 500
+        mock_get.return_value = resp
+
+        human_token = _human_jwt(sub="bob@acme.com", groups=["engineering"])
+        result = self.service._validate_keycloak_token(human_token)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["sub"], "bob@acme.com")
+        self.assertIn("engineering", result["groups"])
+
+    @patch("token_exchange.requests.get")
+    def test_keycloak_unavailable_accepts_expired_jwt_in_fallback(self, mock_get):
+        """When Keycloak is unavailable, expired JWTs pass through unverified fallback (known gap).
+
+        Documents that pyjwt.decode with verify_signature=False also skips exp
+        verification, so expired tokens are accepted in fallback/demo mode.
+        """
+        import requests as real_requests
+        mock_get.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        # Create a JWT that expired 1 hour ago
+        expired_token = _human_jwt(exp_offset=-3600)
+        result = self.service._validate_keycloak_token(expired_token)
+
+        # Known gap: pyjwt with verify_signature=False skips exp check too,
+        # so expired tokens are silently accepted in fallback mode.
+        self.assertNotIn("error", result)
+        self.assertEqual(result["sub"], "alice@acme.com")
+
+    # ── OPA fail-open (4 tests) ────────────────────────────────────────────
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post")
+    def test_opa_connection_error_fails_open(self, mock_post, mock_get):
+        """When OPA is unreachable (ConnectionError), the exchange fails open and succeeds."""
+        import requests as real_requests
+        mock_get.side_effect = _mock_get_keycloak_and_vault()
+        mock_post.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post")
+    def test_opa_timeout_fails_open(self, mock_post, mock_get):
+        """When OPA times out, the exchange fails open and succeeds."""
+        import requests as real_requests
+        mock_get.side_effect = _mock_get_keycloak_and_vault()
+        mock_post.side_effect = real_requests.exceptions.Timeout("timed out")
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post")
+    def test_opa_500_fails_open(self, mock_post, mock_get):
+        """When OPA returns HTTP 500, the non-200 path falls through to fail-open."""
+        mock_get.side_effect = _mock_get_keycloak_and_vault()
+        opa_resp = MagicMock()
+        opa_resp.status_code = 500
+        mock_post.return_value = opa_resp
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_deny("unauthorized_delegation"))
+    def test_opa_deny_blocks_exchange(self, mock_post, mock_get):
+        """When OPA explicitly denies, the exchange returns access_denied."""
+        mock_get.return_value = _mock_keycloak_success()
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "access_denied")
+        self.assertIn("unauthorized_delegation", result["error_description"])
+
+    # ── Vault credential failures (4 tests) ────────────────────────────────
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_vault_returns_403_no_credentials(self, mock_post, mock_get):
+        """When Vault returns 403, exchange succeeds but without db_credential."""
+        def _get_side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "userinfo" in url:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "sub": "alice-uuid",
+                    "email": "alice@acme.com",
+                    "groups": ["data-analysts"],
+                }
+            elif "database/creds" in url:
+                resp.status_code = 403
+                resp.text = "permission denied"
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {}
+            return resp
+
+        mock_get.side_effect = _get_side_effect
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+        self.assertNotIn("db_credential", result)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_vault_connection_error_no_credentials(self, mock_post, mock_get):
+        """When Vault raises ConnectionError for creds, exchange succeeds without db_credential."""
+        import requests as real_requests
+
+        def _get_side_effect(url, **kwargs):
+            if "userinfo" in url:
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "sub": "alice-uuid",
+                    "email": "alice@acme.com",
+                    "groups": ["data-analysts"],
+                }
+                return resp
+            elif "database/creds" in url:
+                raise real_requests.exceptions.ConnectionError("vault down")
+            else:
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.json.return_value = {}
+                return resp
+
+        mock_get.side_effect = _get_side_effect
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+        self.assertNotIn("db_credential", result)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_vault_missing_data_fields_raises(self, mock_post, mock_get):
+        """When Vault returns 200 with empty data dict, KeyError is raised (documents bug)."""
+        def _get_side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "userinfo" in url:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "sub": "alice-uuid",
+                    "email": "alice@acme.com",
+                    "groups": ["data-analysts"],
+                }
+            elif "database/creds" in url:
+                resp.status_code = 200
+                resp.json.return_value = {"data": {}}
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {}
+            return resp
+
+        mock_get.side_effect = _get_side_effect
+
+        params = _valid_exchange_params()
+        with self.assertRaises(KeyError):
+            self.service.exchange_token(params)
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_vault_no_lease_id(self, mock_post, mock_get):
+        """When Vault returns creds without a lease_id, exchange succeeds with empty lease_id."""
+        def _get_side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "userinfo" in url:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "sub": "alice-uuid",
+                    "email": "alice@acme.com",
+                    "groups": ["data-analysts"],
+                }
+            elif "database/creds" in url:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "data": {
+                        "username": "v-test-user",
+                        "password": "v-test-pass",
+                    },
+                    # No lease_id key at all
+                    "lease_duration": 300,
+                }
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {}
+            return resp
+
+        mock_get.side_effect = _get_side_effect
+
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+
+        self.assertNotIn("error", result)
+        self.assertIn("db_credential", result)
+        self.assertEqual(result["db_credential"]["lease_id"], "")
+        self.assertEqual(result["db_credential"]["username"], "v-test-user")
+
+    # ── Revocation edge cases (2 tests) ────────────────────────────────────
+
+    @patch("token_exchange.requests.put")
+    @patch("token_exchange.requests.get", side_effect=_mock_vault_creds())
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_vault_revocation_failure_still_marks_revoked(self, mock_post, mock_get, mock_put):
+        """When Vault lease revocation raises an exception, the session is still marked revoked."""
+        mock_put.side_effect = Exception("vault connection lost")
+
+        # Create a valid session with vault credentials
+        params = _valid_exchange_params()
+        result = self.service.exchange_token(params)
+        self.assertNotIn("error", result)
+        token = result["access_token"]
+        session_id = result["session_id"]
+
+        # Revoke should succeed despite Vault failure
+        revoke_result = self.service.revoke_token(token)
+
+        self.assertEqual(revoke_result["status"], "revoked")
+        self.assertEqual(revoke_result["session_id"], session_id)
+        session = self.service.sessions[session_id]
+        self.assertTrue(session.revoked)
+
+    def test_revoke_nonexistent_token(self):
+        """Revoking a token that was never issued returns not_found."""
+        result = self.service.revoke_token("completely-random-nonexistent-token")
+        self.assertEqual(result["status"], "not_found")
+
+    # ── Expired delegation chain extension (2 tests) ───────────────────────
+
+    @patch("token_exchange.requests.get")
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_expired_delegation_token_accepted_in_chain(self, mock_post, mock_get):
+        """An expired delegation token is accepted via unverified fallback (known gap).
+
+        The expired delegation token fails pyjwt.decode with verify_exp (signed path),
+        then falls through to _validate_keycloak_token. Keycloak is down, so the
+        unverified fallback is used. Since pyjwt with verify_signature=False skips
+        exp verification, the expired token is silently accepted and the chain is extended.
+        """
+        import requests as real_requests
+
+        # Keycloak is unreachable so the fallback path is exercised
+        mock_get.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        # Create an expired delegation token signed with the service's signing secret
+        now = int(time.time())
+        expired_claims = {
+            "iss": self.service.issuer,
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "delegation_chain": [
+                {
+                    "subject": "alice@acme.com",
+                    "actor": f"spiffe://{TRUST_DOMAIN}/agent/query-agent",
+                    "actor_type": "agent",
+                    "scope": "readonly",
+                    "depth": 0,
+                }
+            ],
+            "exp": now - 3600,  # Expired 1 hour ago
+            "iat": now - 7200,
+            "groups": ["data-analysts"],
+        }
+        expired_token = pyjwt.encode(expired_claims, SIGNING_SECRET, algorithm="HS256")
+
+        sub_agent_jwt = _agent_jwt(sub=f"spiffe://{TRUST_DOMAIN}/subagent/sql-executor")
+        params = {
+            "grant_type": GRANT_TYPE_TOKEN_EXCHANGE,
+            "subject_token": expired_token,
+            "subject_token_type": TOKEN_TYPE_DELEGATION,
+            "actor_token": sub_agent_jwt,
+            "actor_token_type": TOKEN_TYPE_JWT,
+            "scope": "readonly",
+            "audience": "database",
+        }
+        result = self.service.exchange_token(params)
+
+        # Known gap: expired delegation token passes through unverified fallback.
+        # The chain is extended as if the token were valid.
+        self.assertNotIn("error", result)
+        self.assertIn("access_token", result)
+        # The chain should include both the original link and the new sub-agent link
+        self.assertEqual(len(result["delegation_chain"]), 2)
+
+    @patch("token_exchange.requests.get", side_effect=_mock_vault_creds())
+    @patch("token_exchange.requests.post", side_effect=_mock_opa_allow())
+    def test_max_depth_enforced_on_chain_extension(self, mock_post, mock_get):
+        """A delegation token at max chain depth cannot be extended further."""
+        service = _make_service(max_delegation_depth=2)
+
+        # Step 1: human -> agent (depth 0, chain length 1)
+        params1 = _valid_exchange_params()
+        result1 = service.exchange_token(params1)
+        self.assertNotIn("error", result1)
+
+        # Step 2: agent -> sub-agent (depth 1, chain length 2)
+        delegation_token_1 = result1["access_token"]
+        sub_agent_jwt = _agent_jwt(sub=f"spiffe://{TRUST_DOMAIN}/subagent/sql-executor")
+        params2 = {
+            "grant_type": GRANT_TYPE_TOKEN_EXCHANGE,
+            "subject_token": delegation_token_1,
+            "subject_token_type": TOKEN_TYPE_DELEGATION,
+            "actor_token": sub_agent_jwt,
+            "actor_token_type": TOKEN_TYPE_JWT,
+            "scope": "readonly",
+            "audience": "database",
+        }
+        result2 = service.exchange_token(params2)
+        self.assertNotIn("error", result2)
+
+        # Step 3: sub-agent -> sub-sub-agent (depth 2, chain length would be 3, exceeds max of 2)
+        delegation_token_2 = result2["access_token"]
+        sub_sub_agent_jwt = _agent_jwt(sub=f"spiffe://{TRUST_DOMAIN}/subagent/formatter")
+        params3 = {
+            "grant_type": GRANT_TYPE_TOKEN_EXCHANGE,
+            "subject_token": delegation_token_2,
+            "subject_token_type": TOKEN_TYPE_DELEGATION,
+            "actor_token": sub_sub_agent_jwt,
+            "actor_token_type": TOKEN_TYPE_JWT,
+            "scope": "readonly",
+            "audience": "database",
+        }
+        result3 = service.exchange_token(params3)
+
+        self.assertIn("error", result3)
+        self.assertEqual(result3["error"], "invalid_request")
+        self.assertIn("depth", result3["error_description"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

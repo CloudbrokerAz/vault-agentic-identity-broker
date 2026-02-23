@@ -692,5 +692,344 @@ class TestQueryMappings(unittest.TestCase):
                 self.assertIn("app.", sql)
 
 
+class TestDeviceFlowEdgeCases(unittest.TestCase):
+    """Tests for Device Authorization Flow edge cases."""
+
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_slow_down_increases_poll_interval(self, mock_post, mock_sleep):
+        """Slow_down response should increase poll interval before succeeding."""
+        fake_token = pyjwt.encode(
+            {"sub": "alice", "exp": int(time.time()) + 300},
+            "secret",
+            algorithm="HS256",
+        )
+
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEV-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 5,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        slow_down_response = MagicMock()
+        slow_down_response.json.return_value = {"error": "slow_down"}
+
+        token_response = MagicMock()
+        token_response.json.return_value = {"access_token": fake_token}
+
+        mock_post.side_effect = [device_response, slow_down_response, token_response]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+        result = auth.authenticate(auth_mode="device")
+
+        self.assertEqual(result, fake_token)
+        self.assertEqual(mock_post.call_count, 3)
+        # First sleep uses the original interval (5), second should be 6 (5+1)
+        sleep_calls = [call.args[0] for call in mock_sleep.call_args_list]
+        self.assertEqual(sleep_calls[0], 5)
+        self.assertEqual(sleep_calls[1], 6)
+
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_expired_token_raises_runtime_error(self, mock_post, mock_sleep):
+        """Expired token error from Keycloak should raise RuntimeError."""
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEV-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 1,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        expired_response = MagicMock()
+        expired_response.json.return_value = {
+            "error": "expired_token",
+            "error_description": "The device code has expired",
+        }
+
+        mock_post.side_effect = [device_response, expired_response]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="device")
+        self.assertIn("expired_token", str(ctx.exception))
+
+    @patch("agent.time.time")
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_deadline_expiry_raises_timeout(self, mock_post, mock_sleep, mock_time):
+        """Should raise RuntimeError when device authorization times out."""
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEV-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 1,
+            "expires_in": 10,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        pending_response = MagicMock()
+        pending_response.json.return_value = {"error": "authorization_pending"}
+
+        mock_post.side_effect = [device_response, pending_response, pending_response]
+
+        # Simulate time progression: first call sets deadline, then exceed it
+        # time.time() is called: once for deadline = time.time() + expires_in,
+        # then in the while loop condition
+        mock_time.side_effect = [
+            100.0,   # deadline = 100.0 + 10 = 110.0
+            105.0,   # while check: 105 < 110 → enter loop
+            115.0,   # while check: 115 < 110 → False, exit loop
+        ]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="device")
+        self.assertIn("timed out", str(ctx.exception))
+
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_network_failure_retries(self, mock_post, mock_sleep):
+        """Network failure during polling should be retried."""
+        import requests as real_requests
+
+        fake_token = pyjwt.encode(
+            {"sub": "alice", "exp": int(time.time()) + 300},
+            "secret",
+            algorithm="HS256",
+        )
+
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEV-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 1,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        token_response = MagicMock()
+        token_response.json.return_value = {"access_token": fake_token}
+
+        mock_post.side_effect = [
+            device_response,
+            real_requests.exceptions.ConnectionError("Connection refused"),
+            token_response,
+        ]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+        result = auth.authenticate(auth_mode="device")
+
+        self.assertEqual(result, fake_token)
+        self.assertEqual(mock_post.call_count, 3)
+
+    @patch("agent.time.sleep")
+    @patch("agent.requests.post")
+    def test_access_denied_raises_error(self, mock_post, mock_sleep):
+        """Access denied error should raise RuntimeError."""
+        device_response = MagicMock()
+        device_response.status_code = 200
+        device_response.json.return_value = {
+            "device_code": "DEV-123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "http://localhost:8080/device",
+            "interval": 1,
+            "expires_in": 600,
+        }
+        device_response.raise_for_status = MagicMock()
+
+        denied_response = MagicMock()
+        denied_response.json.return_value = {
+            "error": "access_denied",
+            "error_description": "User denied the request",
+        }
+
+        mock_post.side_effect = [device_response, denied_response]
+
+        config = AgentConfig()
+        auth = HumanAuthenticator(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            auth.authenticate(auth_mode="device")
+        self.assertIn("access_denied", str(ctx.exception))
+
+
+class TestTokenExchangeClientErrors(unittest.TestCase):
+    """Tests for TokenExchangeClient error handling."""
+
+    @patch("agent.requests.post")
+    def test_missing_db_credential_creates_empty_session(self, mock_post):
+        """Response without db_credential should produce session with empty username."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "session_id": "sess-no-cred",
+            "access_token": "delegation-token-xyz",
+            "delegation_chain": [
+                {"subject": "alice@acme.com", "actor": "agent", "depth": 0}
+            ],
+            "expires_in": 300,
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        session = client.exchange_token("human-tok", "agent-svid")
+
+        self.assertEqual(session.db_username, "")
+        self.assertEqual(session.db_password, "")
+        self.assertEqual(session.lease_id, "")
+
+    @patch("agent.requests.post")
+    def test_empty_delegation_chain_sets_unknown_subject(self, mock_post):
+        """Empty delegation_chain should set human_subject to 'unknown'."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "session_id": "sess-no-chain",
+            "access_token": "delegation-token-xyz",
+            "delegation_chain": [],
+            "expires_in": 300,
+            "db_credential": {
+                "username": "v-user",
+                "password": "pw",
+                "host": "localhost",
+                "port": 5432,
+                "database": "appdb",
+                "lease_id": "lease-1",
+            },
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        session = client.exchange_token("human-tok", "agent-svid")
+
+        self.assertEqual(session.human_subject, "unknown")
+
+    @patch("agent.requests.post")
+    def test_null_db_credential_raises(self, mock_post):
+        """Response with db_credential=None should raise AttributeError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "session_id": "sess-null-cred",
+            "access_token": "delegation-token-xyz",
+            "delegation_chain": [],
+            "expires_in": 300,
+            "db_credential": None,
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+
+        with self.assertRaises(AttributeError):
+            client.exchange_token("human-tok", "agent-svid")
+
+    @patch("agent.requests.post")
+    def test_http_500_with_error_key_raises(self, mock_post):
+        """Response containing 'error' key should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {
+            "error": "server_error",
+            "error_description": "internal failure",
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            client.exchange_token("human-tok", "agent-svid")
+        self.assertIn("Token exchange failed", str(ctx.exception))
+        self.assertIn("server_error", str(ctx.exception))
+
+
+class TestNaturalLanguageSecurity(unittest.TestCase):
+    """Tests for SQL injection safety in NL-to-SQL mapping."""
+
+    def test_sql_injection_string_returns_default(self):
+        """SQL injection attempt should not match any pattern."""
+        sql = map_natural_language_to_sql("'; DROP TABLE orders;--")
+        self.assertEqual(sql, DEFAULT_QUERY)
+
+    def test_very_long_input_returns_default(self):
+        """Extremely long input should return default query."""
+        sql = map_natural_language_to_sql("a" * 10000)
+        self.assertEqual(sql, DEFAULT_QUERY)
+
+    def test_empty_input_returns_default(self):
+        """Whitespace-only input should return default query."""
+        sql = map_natural_language_to_sql("   ")
+        self.assertEqual(sql, DEFAULT_QUERY)
+
+
+class TestDatabaseQuerierExpiry(unittest.TestCase):
+    """Tests for DatabaseQuerier session expiry handling."""
+
+    def test_connect_with_expired_session_raises(self):
+        """Connecting with an expired session should raise RuntimeError."""
+        session = DelegationSession(
+            session_id="sess-expired",
+            human_subject="alice@acme.com",
+            scope="readonly",
+            db_username="v-expired-user",
+            db_password="expired-pw",
+            db_host="localhost",
+            db_port=5432,
+            db_name="testdb",
+            lease_id="lease-expired",
+            ttl_seconds=300,
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=600),
+        )
+        querier = DatabaseQuerier(session)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            querier.connect()
+        self.assertIn("expired", str(ctx.exception))
+
+    def test_query_with_expired_session_raises(self):
+        """Querying with an expired session should raise RuntimeError even if connected."""
+        session = DelegationSession(
+            session_id="sess-expired",
+            human_subject="alice@acme.com",
+            scope="readonly",
+            db_username="v-expired-user",
+            db_password="expired-pw",
+            db_host="localhost",
+            db_port=5432,
+            db_name="testdb",
+            lease_id="lease-expired",
+            ttl_seconds=300,
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=600),
+        )
+        querier = DatabaseQuerier(session)
+        querier._conn = MagicMock()  # Pretend we're connected
+
+        with self.assertRaises(RuntimeError) as ctx:
+            querier.query("SELECT 1")
+        self.assertIn("expired", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
