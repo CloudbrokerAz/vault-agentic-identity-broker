@@ -25,9 +25,9 @@ import string
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-KEYCLOAK_PORT = 8080
-OPA_PORT = 8181
-VAULT_PORT = 8200
+KEYCLOAK_PORT = int(os.environ.get("MOCK_KEYCLOAK_PORT", "8080"))
+OPA_PORT = int(os.environ.get("MOCK_OPA_PORT", "8181"))
+VAULT_PORT = int(os.environ.get("MOCK_VAULT_PORT", "8200"))
 
 # Demo users and their credentials/groups
 USERS = {
@@ -52,8 +52,8 @@ USERS = {
 # OPA delegation policy data (mirrors opa/policies/data.json)
 OPA_CONFIG = {
     "trusted_issuers": [
-        "http://127.0.0.1:8080/realms/demo",
-        "http://localhost:8080/realms/demo",
+        f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo",
+        f"http://localhost:{KEYCLOAK_PORT}/realms/demo",
         "http://keycloak:8080/realms/demo",
     ],
     "registered_agents": [
@@ -308,15 +308,61 @@ def _random_password(length=20):
     return "".join(secrets.choice(chars) for _ in range(length))
 
 
+def _run_psql(sql):
+    """Run SQL against PostgreSQL, trying multiple connection methods."""
+    import subprocess
+    import shutil
+    pg_password = os.environ.get("PG_PASSWORD", "postgres-root-password")
+    pg_user = os.environ.get("PG_USER", "postgres")
+
+    # Try native psql via TCP first
+    if shutil.which("psql"):
+        try:
+            result = subprocess.run(
+                ["psql", "-h", PG_HOST, "-p", PG_PORT, "-U", pg_user, "-d", PG_DB, "-c", sql],
+                capture_output=True, text=True, timeout=5,
+                env={**os.environ, "PGPASSWORD": pg_password},
+            )
+            if result.returncode == 0:
+                return True
+        except Exception:
+            pass
+
+    # Try docker compose exec (works when PostgreSQL is in Docker)
+    for compose_file in ["docker-compose.host.yml", "docker-compose.yml"]:
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f", compose_file, "exec", "-T",
+                 "-e", f"PGPASSWORD={pg_password}",
+                 "postgresql", "psql", "-U", pg_user, "-d", PG_DB, "-c", sql],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return True
+        except Exception:
+            pass
+
+    # Fallback to sudo (works in native environments)
+    try:
+        result = subprocess.run(
+            ["sudo", "-u", "postgres", "psql", "-d", PG_DB, "-c", sql],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return True
+        print(f"[vault-mock] PG stderr: {result.stderr}", file=sys.stderr)
+    except Exception as e:
+        print(f"[vault-mock] Warning: Could not run psql: {e}", file=sys.stderr)
+
+    return False
+
+
 def _create_pg_role(role_name, username, password):
     """Create an actual PostgreSQL role for dynamic credentials."""
-    import subprocess
+    from datetime import datetime, timedelta, timezone
     try:
-        # Compute expiry timestamp as a string
-        from datetime import datetime, timedelta, timezone
         expiry = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S+00")
 
-        # Create the role with proper VALID UNTIL string literal
         create_sql = f"""
             CREATE ROLE "{username}" WITH LOGIN PASSWORD '{password}'
             VALID UNTIL '{expiry}' INHERIT;
@@ -332,13 +378,7 @@ def _create_pg_role(role_name, username, password):
                 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO "{username}";
                 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{username}";
             """
-        result = subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", PG_DB, "-c", create_sql],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0:
-            print(f"[vault-mock] PG role creation stderr: {result.stderr}", file=sys.stderr)
-        return result.returncode == 0
+        return _run_psql(create_sql)
     except Exception as e:
         print(f"[vault-mock] Warning: Could not create PG role: {e}", file=sys.stderr)
         return False
@@ -346,7 +386,6 @@ def _create_pg_role(role_name, username, password):
 
 def _drop_pg_role(username):
     """Drop a PostgreSQL role (revoke privileges first)."""
-    import subprocess
     try:
         revoke_sql = f"""
             REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA app FROM "{username}";
@@ -355,10 +394,7 @@ def _drop_pg_role(username):
             REVOKE USAGE ON SCHEMA app FROM "{username}";
             DROP ROLE IF EXISTS "{username}";
         """
-        subprocess.run(
-            ["sudo", "-u", "postgres", "psql", "-d", PG_DB, "-c", revoke_sql],
-            capture_output=True, text=True, timeout=5,
-        )
+        _run_psql(revoke_sql)
     except Exception:
         pass
 

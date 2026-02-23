@@ -115,8 +115,17 @@ echo ""
 
 section "Starting Services"
 
-# Start mock services (Keycloak on 8080, OPA on 8181, Vault on 8200)
-info "Starting mock services (Keycloak:8080, OPA:8181, Vault:8200)..."
+# Use alternate ports to avoid conflicts with live Docker services
+MOCK_KC_PORT=18080
+MOCK_OPA_PORT=18181
+MOCK_VAULT_PORT=18200
+TE_PORT=18090
+
+# Start mock services on alternate ports
+info "Starting mock services (Keycloak:${MOCK_KC_PORT}, OPA:${MOCK_OPA_PORT}, Vault:${MOCK_VAULT_PORT})..."
+MOCK_KEYCLOAK_PORT=${MOCK_KC_PORT} \
+MOCK_OPA_PORT=${MOCK_OPA_PORT} \
+MOCK_VAULT_PORT=${MOCK_VAULT_PORT} \
 python3 "${SCRIPT_DIR}/mock_services.py" > /tmp/mock-services-e2e.log 2>&1 &
 MOCK_PID=$!
 sleep 2
@@ -130,13 +139,13 @@ info "Mock services started (PID: ${MOCK_PID})"
 # Get Vault root token for the token exchange service
 VAULT_ROOT_TOKEN=$(cat /tmp/mock-vault-root-token 2>/dev/null || echo "hvs.mock-root-token-for-testing")
 
-# Start Token Exchange Service on port 8090
-info "Starting Token Exchange Service on port 8090..."
-LISTEN_PORT=8090 \
-KEYCLOAK_URL="http://127.0.0.1:8080" \
+# Start Token Exchange Service on alternate port
+info "Starting Token Exchange Service on port ${TE_PORT}..."
+LISTEN_PORT=${TE_PORT} \
+KEYCLOAK_URL="http://127.0.0.1:${MOCK_KC_PORT}" \
 KEYCLOAK_REALM="demo" \
-OPA_ENDPOINT="http://127.0.0.1:8181" \
-VAULT_ADDR="http://127.0.0.1:8200" \
+OPA_ENDPOINT="http://127.0.0.1:${MOCK_OPA_PORT}" \
+VAULT_ADDR="http://127.0.0.1:${MOCK_VAULT_PORT}" \
 VAULT_TOKEN="${VAULT_ROOT_TOKEN}" \
 TRUST_DOMAIN="demo.local" \
 SIGNING_SECRET="test-signing-secret-for-e2e" \
@@ -166,7 +175,7 @@ token = jwt.encode({
     'email': 'alice@acme.com',
     'groups': ['data-analysts', 'trading-team'],
     'may_act': {'sub': 'agent:query-agent-v2', 'client_id': 'ai-agent-service'},
-    'iss': 'http://127.0.0.1:8080/realms/demo',
+    'iss': 'http://127.0.0.1:${MOCK_KC_PORT}/realms/demo',
     'exp': int(time.time()) + 300,
     'iat': int(time.time()),
 }, '${KEYCLOAK_SECRET}', algorithm='HS256')
@@ -212,7 +221,7 @@ token = jwt.encode({
     'email': 'alice@acme.com',
     'groups': ['data-analysts'],
     'may_act': {'sub': 'agent:query-agent-v2', 'client_id': 'ai-agent-service'},
-    'iss': 'http://127.0.0.1:8080/realms/demo',
+    'iss': 'http://127.0.0.1:${MOCK_KC_PORT}/realms/demo',
     'exp': int(time.time()) - 600,
     'iat': int(time.time()) - 900,
 }, '${KEYCLOAK_SECRET}', algorithm='HS256')
@@ -242,7 +251,7 @@ token = jwt.encode({
     'email': 'bob@acme.com',
     'groups': ['engineering'],
     'may_act': {'sub': 'agent:query-agent-v2', 'client_id': 'ai-agent-service'},
-    'iss': 'http://127.0.0.1:8080/realms/demo',
+    'iss': 'http://127.0.0.1:${MOCK_KC_PORT}/realms/demo',
     'exp': int(time.time()) + 300,
     'iat': int(time.time()),
 }, '${KEYCLOAK_SECRET}', algorithm='HS256')
@@ -260,10 +269,10 @@ section "Service Health (3 tests)"
 # Test 1: Token Exchange service health check
 test_token_exchange_health() {
     local RESP
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8090/health" 2>/dev/null)
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TE_PORT}/health" 2>/dev/null)
     if [ "${RESP}" = "200" ]; then
         local BODY
-        BODY=$(curl -s "http://127.0.0.1:8090/health" 2>/dev/null)
+        BODY=$(curl -s "http://127.0.0.1:${TE_PORT}/health" 2>/dev/null)
         local STATUS
         STATUS=$(echo "${BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
         if [ "${STATUS}" = "healthy" ]; then
@@ -280,7 +289,7 @@ test_token_exchange_health
 # Test 2: Mock Keycloak health
 test_keycloak_health() {
     local RESP
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/health/ready" 2>/dev/null)
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${MOCK_KC_PORT}/health/ready" 2>/dev/null)
     if [ "${RESP}" = "200" ]; then
         pass_test "Mock Keycloak health check (port 8080)"
     else
@@ -292,7 +301,7 @@ test_keycloak_health
 # Test 3: Mock OPA health
 test_opa_health() {
     local RESP
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8181/health" 2>/dev/null)
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${MOCK_OPA_PORT}/health" 2>/dev/null)
     if [ "${RESP}" = "200" ]; then
         pass_test "Mock OPA health check (port 8181)"
     else
@@ -311,7 +320,7 @@ section "RFC 8693 Token Exchange (8 tests)"
 # Test 4: Valid token exchange with human token + agent SPIFFE SVID
 test_valid_token_exchange() {
     local RESP
-    RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -383,7 +392,7 @@ test_exchange_returns_db_creds
 # Test 7: Token exchange with readwrite scope (bob - engineering)
 test_exchange_readwrite_scope() {
     local RESP
-    RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -410,7 +419,7 @@ test_exchange_readwrite_scope
 # Test 8: Token exchange denied for unregistered agent
 test_exchange_denied_unregistered_agent() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -439,7 +448,7 @@ test_exchange_denied_unregistered_agent
 # Test 9: Token exchange denied for expired human token
 test_exchange_denied_expired_token() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -468,7 +477,7 @@ test_exchange_denied_expired_token
 # Test 10: Token exchange denied for missing subject_token
 test_exchange_denied_missing_subject() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -494,7 +503,7 @@ test_exchange_denied_missing_subject
 # Test 11: Token exchange denied for invalid grant_type
 test_exchange_denied_invalid_grant_type() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "authorization_code",
@@ -527,7 +536,7 @@ test_exchange_denied_invalid_grant_type
 section "Delegation Chain Extension (6 tests)"
 
 # First, do an initial token exchange to get a delegation token for chain extension
-INITIAL_EXCHANGE_RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+INITIAL_EXCHANGE_RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
     -H "Content-Type: application/json" \
     -d '{
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -557,7 +566,7 @@ test_subagent_chain_extension() {
     fi
 
     local RESP
-    RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+    RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -637,7 +646,7 @@ test_max_chain_depth_enforcement() {
 
     # Extend the chain again: depth 2 -> depth 3 (should succeed since max is 3, and 2 < 3)
     local DEPTH2_RESP
-    DEPTH2_RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+    DEPTH2_RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -666,7 +675,7 @@ test_max_chain_depth_enforcement() {
 
     # Now try depth 4 (must be rejected since max_delegation_depth=3)
     local DEPTH3_RESP
-    DEPTH3_RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+    DEPTH3_RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
         -H "Content-Type: application/json" \
         -d '{
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -724,7 +733,7 @@ test_get_delegation_chain() {
     fi
 
     local RESP
-    RESP=$(curl -s "http://127.0.0.1:8090/v1/delegation/chain?session_id=${CHAIN_EXT_SESSION}" 2>/dev/null)
+    RESP=$(curl -s "http://127.0.0.1:${TE_PORT}/v1/delegation/chain?session_id=${CHAIN_EXT_SESSION}" 2>/dev/null)
 
     local SESSION_BACK
     SESSION_BACK=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
@@ -752,7 +761,7 @@ section "Legacy Delegation API (4 tests)"
 LEGACY_RESP=""
 test_legacy_delegate_works() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/delegate \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/delegate \
         -H "Content-Type: application/json" \
         -d '{
             "human_token": "'"${HUMAN_TOKEN}"'",
@@ -816,7 +825,7 @@ test_legacy_has_db_credential
 # Test 21: Legacy denied for unauthorized agent
 test_legacy_denied_unauthorized() {
     local RESP HTTP_CODE
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:8090/v1/delegate \
+    RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:${TE_PORT}/v1/delegate \
         -H "Content-Type: application/json" \
         -d '{
             "human_token": "'"${HUMAN_TOKEN}"'",
@@ -847,7 +856,7 @@ test_legacy_denied_unauthorized
 section "Token Revocation (3 tests)"
 
 # First, create a fresh delegation to revoke
-REVOKE_EXCHANGE_RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/exchange \
+REVOKE_EXCHANGE_RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/exchange \
     -H "Content-Type: application/json" \
     -d '{
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -870,7 +879,7 @@ test_revoke_token() {
     fi
 
     local RESP
-    RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/revoke \
+    RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/revoke \
         -H "Content-Type: application/json" \
         -d '{"token": "'"${REVOKE_TOKEN}"'"}' 2>/dev/null)
 
@@ -893,7 +902,7 @@ test_revoked_session_status() {
     fi
 
     local RESP
-    RESP=$(curl -s "http://127.0.0.1:8090/v1/delegation/chain?session_id=${REVOKE_SESSION_ID}" 2>/dev/null)
+    RESP=$(curl -s "http://127.0.0.1:${TE_PORT}/v1/delegation/chain?session_id=${REVOKE_SESSION_ID}" 2>/dev/null)
 
     local REVOKED
     REVOKED=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('revoked', False))" 2>/dev/null)
@@ -909,7 +918,7 @@ test_revoked_session_status
 # Test 24: Revoke non-existent token returns not_found
 test_revoke_nonexistent_token() {
     local RESP
-    RESP=$(curl -s -X POST http://127.0.0.1:8090/v1/token/revoke \
+    RESP=$(curl -s -X POST http://127.0.0.1:${TE_PORT}/v1/token/revoke \
         -H "Content-Type: application/json" \
         -d '{"token": "this-is-not-a-real-token-at-all-definitely-fake"}' 2>/dev/null)
 
@@ -932,7 +941,7 @@ test_revoke_nonexistent_token
 section "Audit Trail (2 tests)"
 
 # Fetch the audit log from the token exchange service
-AUDIT_LOG=$(curl -s "http://127.0.0.1:8090/v1/audit" 2>/dev/null)
+AUDIT_LOG=$(curl -s "http://127.0.0.1:${TE_PORT}/v1/audit" 2>/dev/null)
 
 # Test 25: Audit log records token exchange events
 test_audit_has_exchange_events() {
