@@ -1,0 +1,2328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault Agentic Identity Broker — Interactive Demo</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-elevated: #1c2128;
+    --border: #30363d;
+    --border-bright: #484f58;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --text-bright: #f0f6fc;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb33;
+    --green: #3fb950;
+    --green-dim: #23863533;
+    --red: #f85149;
+    --red-dim: #da363333;
+    --yellow: #d29922;
+    --yellow-dim: #9e6a0333;
+    --purple: #bc8cff;
+    --purple-dim: #8957e533;
+    --orange: #f0883e;
+    --cyan: #39d2c0;
+    --pink: #f778ba;
+    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    --step-active: var(--accent);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+
+  .header-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header-title h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+
+  .header-title .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    font-weight: 500;
+  }
+
+  .header-controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .control-group label {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  select {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  select:focus { border-color: var(--accent); }
+
+  /* ── Layout ── */
+  .app {
+    display: flex;
+    height: calc(100vh - 63px);
+  }
+
+  /* ── Step Nav ── */
+  .step-nav {
+    width: 260px;
+    min-width: 260px;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    padding: 16px 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .nav-section-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 8px 20px 4px;
+    font-weight: 600;
+  }
+
+  .step-btn {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 20px;
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    transition: all 0.15s ease;
+    position: relative;
+  }
+
+  .step-btn:hover { background: var(--bg-elevated); color: var(--text); }
+
+  .step-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .step-btn.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--mono);
+    border: 1.5px solid currentColor;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .step-btn.active .step-num {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  .step-btn.completed .step-num {
+    background: var(--green);
+    color: var(--bg);
+    border-color: var(--green);
+  }
+
+  .step-btn.completed { color: var(--green); }
+
+  .step-label { flex: 1; }
+  .step-label .step-title { font-weight: 500; }
+  .step-label .step-subtitle { font-size: 11px; opacity: 0.7; margin-top: 1px; }
+
+  /* ── Main Content ── */
+  .main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .phase-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+
+  .phase-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+  }
+
+  .phase-header h2 {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+
+  .phase-header p {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-body { padding: 16px; }
+
+  /* ── Sequence Diagram ── */
+  .sequence-diagram {
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow-x: auto;
+    padding: 20px;
+    position: relative;
+  }
+
+  .seq-participants {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .seq-participant {
+    text-align: center;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 11px;
+    min-width: 90px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    position: relative;
+  }
+
+  .seq-participant::after {
+    content: '';
+    position: absolute;
+    bottom: -200px;
+    left: 50%;
+    width: 1px;
+    height: 200px;
+    background: var(--border);
+    opacity: 0.4;
+  }
+
+  .seq-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .seq-msg {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all 0.4s ease;
+  }
+
+  .seq-msg.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .seq-msg .arrow {
+    color: var(--accent);
+    font-weight: bold;
+    min-width: 24px;
+    text-align: center;
+  }
+
+  .seq-msg .msg-label {
+    flex: 1;
+    color: var(--text);
+  }
+
+  .seq-msg .msg-detail {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .seq-msg.highlight {
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+  }
+
+  .seq-msg.success {
+    background: var(--green-dim);
+    border: 1px solid var(--green);
+  }
+
+  .seq-msg.error {
+    background: var(--red-dim);
+    border: 1px solid var(--red);
+  }
+
+  .seq-msg.warning {
+    background: var(--yellow-dim);
+    border: 1px solid var(--yellow);
+  }
+
+  /* ── Flow Diagrams ── */
+  .flow-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .flow-node {
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: center;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    transition: all 0.3s ease;
+    flex-shrink: 0;
+  }
+
+  .flow-node.active-node {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-dim);
+  }
+
+  .flow-node.success-node {
+    border-color: var(--green);
+    background: var(--green-dim);
+    color: var(--green);
+  }
+
+  .flow-node.error-node {
+    border-color: var(--red);
+    background: var(--red-dim);
+    color: var(--red);
+  }
+
+  .flow-arrow {
+    color: var(--text-dim);
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  .flow-arrow.active-arrow { color: var(--accent); }
+
+  /* ── JSON Inspector ── */
+  .json-inspector {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 16px;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .json-key { color: var(--accent); }
+  .json-string { color: var(--green); }
+  .json-number { color: var(--orange); }
+  .json-bool { color: var(--purple); }
+  .json-null { color: var(--text-dim); }
+  .json-bracket { color: var(--text-dim); }
+  .json-highlight { background: var(--yellow-dim); border-radius: 3px; padding: 1px 3px; }
+
+  /* ── Policy Evaluator ── */
+  .policy-rules {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .policy-rule {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    transition: all 0.3s ease;
+  }
+
+  .policy-rule .rule-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+
+  .policy-rule.pass { border-color: var(--green); }
+  .policy-rule.pass .rule-icon { background: var(--green-dim); color: var(--green); }
+  .policy-rule.fail { border-color: var(--red); }
+  .policy-rule.fail .rule-icon { background: var(--red-dim); color: var(--red); }
+  .policy-rule.pending .rule-icon { background: var(--bg-elevated); color: var(--text-dim); }
+
+  .rule-content { flex: 1; }
+  .rule-name { font-weight: 600; color: var(--text-bright); }
+  .rule-detail { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+  /* ── Credential Lifecycle ── */
+  .timeline {
+    position: relative;
+    padding: 20px;
+    padding-left: 40px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    bottom: 20px;
+    width: 2px;
+    background: var(--border);
+  }
+
+  .timeline-event {
+    position: relative;
+    padding: 10px 0 20px 24px;
+    opacity: 0;
+    transform: translateX(-8px);
+    transition: all 0.4s ease;
+  }
+
+  .timeline-event.visible {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .timeline-event::before {
+    content: '';
+    position: absolute;
+    left: -7px;
+    top: 14px;
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    border: 2px solid var(--border);
+    z-index: 1;
+  }
+
+  .timeline-event.active::before { border-color: var(--accent); background: var(--accent); }
+  .timeline-event.success-evt::before { border-color: var(--green); background: var(--green); }
+  .timeline-event.danger-evt::before { border-color: var(--red); background: var(--red); }
+
+  .timeline-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .timeline-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-top: 2px;
+  }
+
+  .timeline-desc {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
+  /* ── TTL Bar ── */
+  .ttl-container {
+    padding: 16px;
+  }
+
+  .ttl-bar-bg {
+    height: 24px;
+    background: var(--bg);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .ttl-bar-fill {
+    height: 100%;
+    border-radius: 11px;
+    transition: width 1s linear;
+    background: linear-gradient(90deg, var(--green) 0%, var(--yellow) 60%, var(--red) 100%);
+  }
+
+  .ttl-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+  }
+
+  .ttl-label-center {
+    text-align: center;
+    font-size: 18px;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--text-bright);
+    margin-top: 8px;
+  }
+
+  /* ── Audit Trail ── */
+  .audit-layers {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .audit-layer {
+    display: flex;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    transition: all 0.3s ease;
+    cursor: pointer;
+    overflow: hidden;
+  }
+
+  .audit-layer:first-child { border-radius: 8px 8px 0 0; }
+  .audit-layer:last-child { border-radius: 0 0 8px 8px; }
+  .audit-layer:hover { border-color: var(--border-bright); }
+  .audit-layer.expanded { border-color: var(--accent); }
+
+  .audit-layer-label {
+    min-width: 140px;
+    padding: 10px 14px;
+    font-weight: 600;
+    font-size: 12px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-elevated);
+  }
+
+  .audit-layer-icon { font-size: 14px; }
+
+  .audit-layer-content {
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text-dim);
+    flex: 1;
+    font-family: var(--mono);
+    line-height: 1.6;
+  }
+
+  .audit-layer-content .highlight-val {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* ── Explanation blocks ── */
+  .explanation {
+    padding: 16px;
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.7;
+  }
+
+  .explanation strong { color: var(--text-bright); }
+
+  .callout {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 8px 0;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .callout-icon { font-size: 16px; flex-shrink: 0; margin-top: 2px; }
+  .callout.info { background: var(--accent-dim); border: 1px solid #1f6feb55; }
+  .callout.success { background: var(--green-dim); border: 1px solid #23863555; }
+  .callout.warning { background: var(--yellow-dim); border: 1px solid #9e6a0355; }
+  .callout.danger { background: var(--red-dim); border: 1px solid #da363355; }
+
+  /* ── Architecture overview ── */
+  .arch-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .arch-service {
+    padding: 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    transition: all 0.3s ease;
+    cursor: default;
+  }
+
+  .arch-service:hover {
+    border-color: var(--border-bright);
+    transform: translateY(-2px);
+  }
+
+  .arch-service .svc-icon { font-size: 20px; margin-bottom: 6px; }
+  .arch-service .svc-name { font-weight: 600; font-size: 13px; color: var(--text-bright); }
+  .arch-service .svc-port { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-top: 2px; }
+  .arch-service .svc-desc { font-size: 11px; color: var(--text-dim); margin-top: 4px; line-height: 1.4; }
+
+  .arch-service.highlight-svc {
+    border-color: var(--accent);
+    box-shadow: 0 0 16px var(--accent-dim);
+  }
+
+  /* ── Trust boundary ── */
+  .trust-boundary {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin: 8px 0;
+  }
+
+  .trust-boundary .tb-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  /* ── Two-column layout ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 1200px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+
+  /* ── Play button ── */
+  .play-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--sans);
+    cursor: pointer;
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+    transition: all 0.2s ease;
+    margin: 8px 0;
+  }
+
+  .play-btn:hover { background: var(--accent); color: var(--bg); }
+  .play-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Code block ── */
+  .code-block {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-dim);
+  }
+
+  .code-block .kw { color: var(--purple); }
+  .code-block .fn { color: var(--accent); }
+  .code-block .str { color: var(--green); }
+  .code-block .num { color: var(--orange); }
+  .code-block .cmt { color: #484f58; font-style: italic; }
+  .code-block .op { color: var(--text); }
+
+  /* ── Decision badge ── */
+  .decision-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: var(--mono);
+  }
+
+  .decision-badge.allow {
+    background: var(--green-dim);
+    color: var(--green);
+    border: 1px solid var(--green);
+  }
+
+  .decision-badge.deny {
+    background: var(--red-dim);
+    color: var(--red);
+    border: 1px solid var(--red);
+  }
+
+  /* ── Scope hierarchy ── */
+  .scope-tree {
+    padding: 16px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 2;
+    color: var(--text-dim);
+  }
+
+  .scope-node {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    margin: 2px;
+    transition: all 0.3s;
+  }
+
+  .scope-node.active-scope {
+    border-color: var(--green);
+    color: var(--green);
+    background: var(--green-dim);
+  }
+
+  .scope-node.denied-scope {
+    border-color: var(--red);
+    color: var(--red);
+    background: var(--red-dim);
+    text-decoration: line-through;
+  }
+
+  /* ── Navigation buttons ── */
+  .nav-buttons {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+
+  .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--sans);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text);
+    transition: all 0.2s ease;
+  }
+
+  .nav-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .nav-btn.primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  .nav-btn.primary:hover { opacity: 0.9; }
+
+  /* ── Step hidden ── */
+  .step-content { display: none; }
+  .step-content.active { display: flex; flex-direction: column; gap: 20px; }
+
+  /* ── Animated pulsing dot ── */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+  /* ── Data table ── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .data-table th {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .data-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .data-table tr:hover td { background: var(--bg-elevated); }
+
+  /* ── Inline badge ── */
+  .ibadge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-weight: 500;
+  }
+
+  .ibadge.blue { background: var(--accent-dim); color: var(--accent); }
+  .ibadge.green { background: var(--green-dim); color: var(--green); }
+  .ibadge.red { background: var(--red-dim); color: var(--red); }
+  .ibadge.yellow { background: var(--yellow-dim); color: var(--yellow); }
+  .ibadge.purple { background: var(--purple-dim); color: var(--purple); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-title">
+    <h1>Vault Agentic Identity Broker</h1>
+    <span class="badge">Interactive Demo</span>
+  </div>
+  <div class="header-controls">
+    <div class="control-group">
+      <label>User</label>
+      <select id="userSelect" onchange="updateScenario()">
+        <option value="alice">Alice (data-analysts)</option>
+        <option value="bob">Bob (engineering)</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Agent</label>
+      <select id="agentSelect" onchange="updateScenario()">
+        <option value="query-agent">query-agent</option>
+        <option value="write-agent">write-agent</option>
+        <option value="analysis-agent">analysis-agent</option>
+        <option value="rogue-agent">rogue-agent (unregistered)</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Scope</label>
+      <select id="scopeSelect" onchange="updateScenario()">
+        <option value="readonly">readonly</option>
+        <option value="readwrite">readwrite</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="app">
+  <nav class="step-nav">
+    <div class="nav-section-label">Overview</div>
+    <button class="step-btn active" onclick="showStep(0)" data-step="0">
+      <span class="step-num">0</span>
+      <span class="step-label">
+        <span class="step-title">Architecture</span>
+        <span class="step-subtitle">10 services, 4 trust boundaries</span>
+      </span>
+    </button>
+    <div class="nav-section-label" style="margin-top:8px">Delegation Flow</div>
+    <button class="step-btn" onclick="showStep(1)" data-step="1">
+      <span class="step-num">1</span>
+      <span class="step-label">
+        <span class="step-title">Human Authentication</span>
+        <span class="step-subtitle">OIDC Device Auth Flow</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(2)" data-step="2">
+      <span class="step-num">2</span>
+      <span class="step-label">
+        <span class="step-title">Agent Identity</span>
+        <span class="step-subtitle">SPIFFE/SPIRE attestation</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(3)" data-step="3">
+      <span class="step-num">3</span>
+      <span class="step-label">
+        <span class="step-title">Token Exchange</span>
+        <span class="step-subtitle">RFC 8693 delegation</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(4)" data-step="4">
+      <span class="step-num">4</span>
+      <span class="step-label">
+        <span class="step-title">Policy Evaluation</span>
+        <span class="step-subtitle">OPA Rego rules</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(5)" data-step="5">
+      <span class="step-num">5</span>
+      <span class="step-label">
+        <span class="step-title">Dynamic Credentials</span>
+        <span class="step-subtitle">Vault issues DB creds</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(6)" data-step="6">
+      <span class="step-num">6</span>
+      <span class="step-label">
+        <span class="step-title">Database Query</span>
+        <span class="step-subtitle">Agent queries PostgreSQL</span>
+      </span>
+    </button>
+    <button class="step-btn" onclick="showStep(7)" data-step="7">
+      <span class="step-num">7</span>
+      <span class="step-label">
+        <span class="step-title">Audit & Revocation</span>
+        <span class="step-subtitle">7-layer audit trail</span>
+      </span>
+    </button>
+    <div class="nav-section-label" style="margin-top:8px">Advanced</div>
+    <button class="step-btn" onclick="showStep(8)" data-step="8">
+      <span class="step-num">+</span>
+      <span class="step-label">
+        <span class="step-title">Sub-Agent Chains</span>
+        <span class="step-subtitle">Delegation depth &amp; scope</span>
+      </span>
+    </button>
+  </nav>
+
+  <div class="main" id="mainContent">
+
+    <!-- ═══ STEP 0: Architecture Overview ═══ -->
+    <div class="step-content active" id="step-0">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--accent-dim);color:var(--accent)">&#9881;</div>
+        <div>
+          <h2>System Architecture</h2>
+          <p>10 services across 4 trust boundaries ensure every query traces back to a human</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        Alice asks her AI agent: <strong>"Show me all orders over $1,000."</strong><br>
+        Behind this simple question, a chain of identity verification, policy evaluation, and credential brokering ensures <strong>who authorized it</strong>, <strong>who performed it</strong>, and <strong>what permissions were granted</strong> &mdash; with a full audit trail.
+      </div>
+
+      <div class="card">
+        <div class="card-header">Trust Boundary 1 &mdash; Identity Infrastructure</div>
+        <div class="arch-grid">
+          <div class="arch-service" data-svc="keycloak">
+            <div class="svc-icon">&#128273;</div>
+            <div class="svc-name">Keycloak</div>
+            <div class="svc-port">:8080</div>
+            <div class="svc-desc">Human OIDC identity provider. Users log in here. Issues JWT tokens with groups and may_act claims.</div>
+          </div>
+          <div class="arch-service" data-svc="spire">
+            <div class="svc-icon">&#128737;</div>
+            <div class="svc-name">SPIRE Server</div>
+            <div class="svc-port">:8081</div>
+            <div class="svc-desc">SPIFFE trust domain root (demo.local). Issues cryptographic workload identities (SVIDs) to agents.</div>
+          </div>
+          <div class="arch-service" data-svc="opa">
+            <div class="svc-icon">&#128220;</div>
+            <div class="svc-name">OPA</div>
+            <div class="svc-port">:8181</div>
+            <div class="svc-desc">Open Policy Agent. Evaluates Rego rules: groups, scopes, delegation chains, depth limits.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">Trust Boundary 2 &mdash; Proxy &amp; Credential Broker</div>
+        <div class="arch-grid">
+          <div class="arch-service" data-svc="gateway">
+            <div class="svc-icon">&#128295;</div>
+            <div class="svc-name">AgentGateway</div>
+            <div class="svc-port">:9080 / :9090</div>
+            <div class="svc-desc">Rust MCP/A2A proxy. OIDC auth, RBAC, rate limiting (60 req/min), routes to Token Exchange.</div>
+          </div>
+          <div class="arch-service" data-svc="token-exchange">
+            <div class="svc-icon">&#128260;</div>
+            <div class="svc-name">Token Exchange</div>
+            <div class="svc-port">:8090</div>
+            <div class="svc-desc">RFC 8693 delegation broker. Validates both tokens, checks OPA policy, brokers Vault credentials.</div>
+          </div>
+          <div class="arch-service" data-svc="vault">
+            <div class="svc-icon">&#128274;</div>
+            <div class="svc-name">Vault</div>
+            <div class="svc-port">:8200</div>
+            <div class="svc-desc">HashiCorp Vault. Dynamic secrets engine. Mints unique, time-limited PostgreSQL credentials (5-min TTL).</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-header">Trust Boundary 3 &mdash; Agent Workloads</div>
+          <div class="arch-grid">
+            <div class="arch-service" data-svc="agent">
+              <div class="svc-icon">&#129302;</div>
+              <div class="svc-name">AI Agent</div>
+              <div class="svc-port">no listen port</div>
+              <div class="svc-desc">Python agent with SPIFFE identity, RFC 8693 exchange, sub-agent delegation support.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">Trust Boundary 4 &mdash; Protected Resources</div>
+          <div class="arch-grid">
+            <div class="arch-service" data-svc="postgres">
+              <div class="svc-icon">&#128451;</div>
+              <div class="svc-name">PostgreSQL</div>
+              <div class="svc-port">:5432</div>
+              <div class="svc-desc">Database: appdb. Tables: orders, customers, products. Every query logged via pgaudit.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon">&#128161;</span>
+        <div>Use the <strong>User</strong>, <strong>Agent</strong>, and <strong>Scope</strong> controls at the top to change the scenario. As you step through each phase, the tokens, policy decisions, and credentials update in real time to show what happens when different combinations are tried &mdash; including failures.</div>
+      </div>
+
+      <div class="nav-buttons">
+        <div></div>
+        <button class="nav-btn primary" onclick="showStep(1)">Start the Demo &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 1: Human Authentication ═══ -->
+    <div class="step-content" id="step-1">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--green-dim);color:var(--green)">&#128100;</div>
+        <div>
+          <h2>Phase 1: Human Authentication</h2>
+          <p>The human proves their identity via Keycloak OIDC &mdash; the agent never sees the password</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        <span id="userName" style="color:var(--accent);font-weight:600">Alice</span> asks her AI agent: <em>"Show me all orders over $1,000 from last month."</em>
+        Before the agent touches the database, <span id="userName2" style="color:var(--accent)">Alice</span> must prove who she is and consent to the agent acting on her behalf.
+        This uses the <strong>OAuth 2.0 Device Authorization Grant (RFC 8628)</strong> &mdash; the same flow smart TVs use.
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#9655; Device Authorization Flow</div>
+        <div class="card-body">
+          <button class="play-btn" onclick="animateStep1()" id="playStep1">&#9654; Animate Flow</button>
+          <div class="sequence-diagram" style="margin-top:12px">
+            <div id="step1-msgs" style="display:flex;flex-direction:column;gap:6px">
+              <div class="seq-msg" data-delay="0"><span class="arrow">1</span><span class="msg-label"><span class="ibadge blue">Agent</span> &rarr; <span class="ibadge purple">Keycloak</span></span><span class="msg-detail">POST /auth/device {client_id: "demo-cli"}</span></div>
+              <div class="seq-msg" data-delay="400"><span class="arrow">2</span><span class="msg-label"><span class="ibadge purple">Keycloak</span> &rarr; <span class="ibadge blue">Agent</span></span><span class="msg-detail">device_code + user_code: "ABCD-EFGH"</span></div>
+              <div class="seq-msg highlight" data-delay="800"><span class="arrow">3</span><span class="msg-label"><span class="ibadge blue">Agent</span> displays URL + code to human</span><span class="msg-detail">&#x1F4BB; "Open this URL and enter code ABCD-EFGH"</span></div>
+              <div class="seq-msg" data-delay="1200"><span class="arrow">4</span><span class="msg-label"><span class="ibadge green">Human</span> &rarr; <span class="ibadge purple">Keycloak</span></span><span class="msg-detail">Opens browser, logs in with password + MFA, clicks "Approve"</span></div>
+              <div class="seq-msg" data-delay="1600"><span class="arrow">5</span><span class="msg-label"><span class="ibadge blue">Agent</span> &rarr; <span class="ibadge purple">Keycloak</span></span><span class="msg-detail">Polls: POST /token {grant_type: device_code} (every 5s)</span></div>
+              <div class="seq-msg success" data-delay="2000"><span class="arrow">6</span><span class="msg-label"><span class="ibadge purple">Keycloak</span> &rarr; <span class="ibadge blue">Agent</span></span><span class="msg-detail">access_token (JWT) &mdash; agent never saw the password</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout success">
+        <span class="callout-icon">&#128272;</span>
+        <div><strong>Key security property:</strong> The agent never touches the human's credentials. The human authenticates directly with Keycloak in their own browser. The agent just polls until it receives a scoped, time-limited token.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128269; JWT Access Token (decoded)</div>
+        <div class="card-body">
+          <div class="json-inspector" id="humanTokenJson"></div>
+        </div>
+      </div>
+
+      <div class="explanation">
+        Two critical claims to notice:
+        <br>&bull; <strong>groups</strong> &mdash; determines what scopes the human can delegate (e.g., data-analysts can delegate readonly).
+        <br>&bull; <strong>may_act</strong> &mdash; explicitly authorizes delegation to AI agents. Without it, the entire flow stops.
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(0)">&larr; Architecture</button>
+        <button class="nav-btn primary" onclick="showStep(2)">Agent Identity &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 2: Agent Identity ═══ -->
+    <div class="step-content" id="step-2">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--purple-dim);color:var(--purple)">&#128737;</div>
+        <div>
+          <h2>Phase 2: Agent Identity (SPIFFE/SPIRE)</h2>
+          <p>The agent proves its own identity via cryptographic workload attestation</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        The human has proven who they are. Now the agent must prove who <em>it</em> is.
+        A software process can't just claim "I'm the query agent &mdash; trust me." It needs a <strong>cryptographic identity</strong> tied to the specific workload running on a specific machine.
+        This is what <strong>SPIFFE</strong> (Secure Production Identity Framework for Everyone) provides.
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#9655; SPIRE Workload Attestation</div>
+        <div class="card-body">
+          <button class="play-btn" onclick="animateStep2()" id="playStep2">&#9654; Animate Flow</button>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px" id="step2-msgs">
+            <div class="seq-msg" data-delay="0"><span class="arrow">1</span><span class="msg-label"><span class="ibadge blue">Agent</span> &rarr; <span class="ibadge purple">SPIRE Agent</span></span><span class="msg-detail">FetchJWTSVID via Unix domain socket</span></div>
+            <div class="seq-msg" data-delay="500"><span class="arrow">2</span><span class="msg-label"><span class="ibadge purple">SPIRE Agent</span> attests the workload</span><span class="msg-detail">Checks process UID, container labels, registration entries</span></div>
+            <div class="seq-msg" data-delay="1000"><span class="arrow">3</span><span class="msg-label"><span class="ibadge purple">SPIRE Agent</span> &rarr; <span class="ibadge yellow">SPIRE Server</span></span><span class="msg-detail">Request JWT-SVID signing for matched SPIFFE ID</span></div>
+            <div class="seq-msg" data-delay="1500"><span class="arrow">4</span><span class="msg-label"><span class="ibadge yellow">SPIRE Server</span> &rarr; <span class="ibadge purple">SPIRE Agent</span></span><span class="msg-detail">Signed JWT-SVID (1-hour TTL, auto-rotated)</span></div>
+            <div class="seq-msg success" data-delay="2000"><span class="arrow">5</span><span class="msg-label"><span class="ibadge purple">SPIRE Agent</span> &rarr; <span class="ibadge blue">Agent</span></span><span class="msg-detail">JWT-SVID returned &mdash; cryptographic proof of workload identity</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128737; Agent SPIFFE Identity</div>
+        <div class="card-body">
+          <div class="json-inspector" id="agentSvidJson"></div>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <span class="callout-icon">&#128274;</span>
+        <div>
+          <strong>Why SPIFFE?</strong> Unlike API keys or shared secrets, a SPIFFE SVID is:
+          <br>&bull; <strong>Cryptographically signed</strong> by the SPIRE CA
+          <br>&bull; <strong>Short-lived</strong> &mdash; auto-rotates, can't be stockpiled
+          <br>&bull; <strong>Attested</strong> &mdash; tied to the actual running workload, not just a name
+          <br>&bull; <strong>Verifiable by anyone</strong> who trusts the demo.local trust domain
+        </div>
+      </div>
+
+      <div id="agentRegistrationStatus" class="card">
+        <div class="card-header">Registered Agents &amp; Sub-Agents</div>
+        <div class="card-body" style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr><th>SPIFFE ID</th><th>Type</th><th>Status</th></tr>
+            </thead>
+            <tbody id="agentRegistrationTable"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(1)">&larr; Human Auth</button>
+        <button class="nav-btn primary" onclick="showStep(3)">Token Exchange &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 3: Token Exchange ═══ -->
+    <div class="step-content" id="step-3">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--yellow-dim);color:var(--yellow)">&#128260;</div>
+        <div>
+          <h2>Phase 3: RFC 8693 Token Exchange</h2>
+          <p>The agent bundles both identities and requests delegated access</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        The agent now has two things: <strong>the human's OIDC token</strong> (proving who authorized this) and <strong>its own SPIFFE identity</strong> (proving which agent is acting). It sends both to the <strong>Token Exchange Service</strong> following <strong>RFC 8693</strong> (OAuth 2.0 Token Exchange).
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128228; RFC 8693 Token Exchange Request</div>
+        <div class="card-body">
+          <div class="json-inspector" id="tokenExchangeRequest"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#9655; Token Exchange Orchestration</div>
+        <div class="card-body">
+          <button class="play-btn" onclick="animateStep3()" id="playStep3">&#9654; Animate Flow</button>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px" id="step3-msgs">
+            <div class="seq-msg" data-delay="0"><span class="arrow">1</span><span class="msg-label"><span class="ibadge blue">Agent</span> &rarr; <span class="ibadge yellow">Token Exchange</span></span><span class="msg-detail">POST /v1/token/exchange {subject_token, actor_token, scope}</span></div>
+            <div class="seq-msg" data-delay="500"><span class="arrow">2</span><span class="msg-label"><span class="ibadge yellow">Token Exchange</span> &rarr; <span class="ibadge purple">Keycloak</span></span><span class="msg-detail">Validate subject_token via userinfo endpoint</span></div>
+            <div class="seq-msg" data-delay="1000"><span class="arrow">3</span><span class="msg-label"><span class="ibadge yellow">Token Exchange</span> validates actor_token</span><span class="msg-detail">SPIFFE trust domain check + registered agent lookup</span></div>
+            <div class="seq-msg" data-delay="1500"><span class="arrow">4</span><span class="msg-label"><span class="ibadge yellow">Token Exchange</span> &rarr; <span class="ibadge green">OPA</span></span><span class="msg-detail">POST /v1/data/delegation {human, agent, scope} &rarr; policy evaluation</span></div>
+            <div class="seq-msg" data-delay="2000" id="step3-opa-result"><span class="arrow">5</span><span class="msg-label"><span class="ibadge green">OPA</span> &rarr; <span class="ibadge yellow">Token Exchange</span></span><span class="msg-detail" id="step3-opa-detail">Decision: ...</span></div>
+            <div class="seq-msg" data-delay="2500" id="step3-vault-req"><span class="arrow">6</span><span class="msg-label"><span class="ibadge yellow">Token Exchange</span> &rarr; <span class="ibadge red">Vault</span></span><span class="msg-detail">GET /v1/database/creds/ai-agent-{scope}</span></div>
+            <div class="seq-msg" data-delay="3000" id="step3-final"><span class="arrow">7</span><span class="msg-label"><span class="ibadge yellow">Token Exchange</span> &rarr; <span class="ibadge blue">Agent</span></span><span class="msg-detail" id="step3-final-detail">Delegation token + DB credentials</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="delegationTokenCard" class="card">
+        <div class="card-header">&#128196; Delegation Token (minted by Token Exchange)</div>
+        <div class="card-body">
+          <div class="json-inspector" id="delegationTokenJson"></div>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(2)">&larr; Agent Identity</button>
+        <button class="nav-btn primary" onclick="showStep(4)">Policy Evaluation &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 4: Policy Evaluation ═══ -->
+    <div class="step-content" id="step-4">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--green-dim);color:var(--green)">&#128220;</div>
+        <div>
+          <h2>Phase 4: OPA Policy Evaluation</h2>
+          <p>Every delegation request is evaluated against Rego policy rules &mdash; default deny</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        OPA evaluates four independent rules. <strong>All must pass</strong> for the delegation to be approved. The policy is written in <strong>Rego</strong>, a purpose-built policy language. Change the controls above to see how different combinations produce different decisions.
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-header">&#128269; Policy Input</div>
+          <div class="card-body">
+            <div class="json-inspector" id="opaInputJson"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">Decision <span id="opaDecisionBadge" style="margin-left:auto"></span></div>
+          <div class="card-body">
+            <div class="policy-rules" id="policyRules"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128208; Scope Hierarchy &amp; Group Permissions</div>
+        <div class="card-body">
+          <div class="two-col" style="gap:24px">
+            <div>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;font-weight:600">SCOPE HIERARCHY (implies &darr;)</div>
+              <div class="scope-tree" id="scopeTree"></div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;font-weight:600">GROUP PERMISSIONS</div>
+              <table class="data-table" style="font-size:12px">
+                <thead><tr><th>Group</th><th>Allowed Scopes</th></tr></thead>
+                <tbody>
+                  <tr><td>data-analysts</td><td><span class="ibadge green">readonly</span> <span class="ibadge blue">db:read</span> <span class="ibadge blue">db:query</span></td></tr>
+                  <tr><td>trading-team</td><td><span class="ibadge green">readonly</span> <span class="ibadge blue">db:read</span> <span class="ibadge blue">db:query</span></td></tr>
+                  <tr><td>engineering</td><td><span class="ibadge green">readonly</span> <span class="ibadge yellow">readwrite</span> <span class="ibadge blue">db:read</span> <span class="ibadge blue">db:write</span> <span class="ibadge blue">db:query</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128221; OPA Decision Response</div>
+        <div class="card-body">
+          <div class="json-inspector" id="opaResponseJson"></div>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(3)">&larr; Token Exchange</button>
+        <button class="nav-btn primary" onclick="showStep(5)">Dynamic Credentials &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 5: Dynamic Credentials ═══ -->
+    <div class="step-content" id="step-5">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--yellow-dim);color:var(--yellow)">&#128274;</div>
+        <div>
+          <h2>Phase 5: Vault Dynamic Credentials</h2>
+          <p>Vault creates a unique PostgreSQL user with time-limited, scoped permissions</p>
+        </div>
+      </div>
+
+      <div id="step5-denied" style="display:none">
+        <div class="callout danger">
+          <span class="callout-icon">&#9940;</span>
+          <div><strong>This step is skipped.</strong> OPA denied the delegation request, so no credentials are issued. Change the scenario controls to see a successful flow.</div>
+        </div>
+      </div>
+
+      <div id="step5-allowed">
+        <div class="explanation">
+          With policy approval, Vault doesn't hand out a shared password. Instead, it creates a <strong>brand new PostgreSQL role</strong> specifically for this session &mdash; unique per delegation, auto-expires in 5 minutes.
+        </div>
+
+        <div class="card">
+          <div class="card-header">&#128451; Vault CREATE ROLE (executed in PostgreSQL)</div>
+          <div class="card-body">
+            <div class="code-block" id="vaultSqlBlock"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">&#9201; Credential TTL &mdash; 5-Minute Countdown</div>
+          <div class="ttl-container">
+            <div class="ttl-bar-bg">
+              <div class="ttl-bar-fill" id="ttlBar" style="width:100%"></div>
+            </div>
+            <div class="ttl-labels">
+              <span>T=0 (issued)</span>
+              <span>T=150s</span>
+              <span>T=300s (expires)</span>
+            </div>
+            <div class="ttl-label-center" id="ttlCountdown">5:00 remaining</div>
+            <div style="text-align:center;margin-top:8px">
+              <button class="play-btn" onclick="startTtlCountdown()" id="playTtl">&#9654; Simulate TTL Countdown</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">&#128269; Vault Credential Response</div>
+          <div class="card-body">
+            <div class="json-inspector" id="vaultCredsJson"></div>
+          </div>
+        </div>
+
+        <div class="callout info">
+          <span class="callout-icon">&#128161;</span>
+          <div>
+            <strong>What this achieves:</strong>
+            <br>&bull; <strong>Unique per session</strong> &mdash; every delegation gets its own database user
+            <br>&bull; <strong>Scoped</strong> &mdash; readonly role can only SELECT, never INSERT/UPDATE/DELETE
+            <br>&bull; <strong>Time-limited</strong> &mdash; role expires in 5 minutes, even if nobody revokes it
+            <br>&bull; <strong>Traceable</strong> &mdash; any query from this user can be correlated back to Alice's delegation
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(4)">&larr; Policy Evaluation</button>
+        <button class="nav-btn primary" onclick="showStep(6)">Database Query &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 6: Database Query ═══ -->
+    <div class="step-content" id="step-6">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--cyan);color:var(--bg)">&#128451;</div>
+        <div>
+          <h2>Phase 6: Database Query</h2>
+          <p>The agent queries PostgreSQL using the Vault-issued dynamic credentials</p>
+        </div>
+      </div>
+
+      <div id="step6-denied" style="display:none">
+        <div class="callout danger">
+          <span class="callout-icon">&#9940;</span>
+          <div><strong>No credentials available.</strong> The delegation was denied in an earlier step. Change the scenario to see query results.</div>
+        </div>
+      </div>
+
+      <div id="step6-allowed">
+        <div class="explanation">
+          The agent connects to PostgreSQL using the unique Vault-generated username and password. From <span id="step6-user" style="color:var(--accent)">Alice</span>'s perspective, she asked a question and gets an answer. She didn't need to know about SPIFFE, token exchange, or OPA policies. <strong>That's the point.</strong>
+        </div>
+
+        <div class="card">
+          <div class="card-header">&#128269; SQL Query (executed by agent)</div>
+          <div class="card-body">
+            <div class="code-block"><span class="cmt">-- Connected as: <span id="sqlUser">v-token-readonly-3ee8b521</span></span>
+<span class="cmt">-- Database: appdb | Schema: app</span>
+<span class="cmt">-- Permissions: <span id="sqlPerms">SELECT only</span></span>
+
+<span class="kw">SELECT</span> customer_name, product, quantity, unit_price,
+       (quantity * unit_price) <span class="kw">AS</span> total_amount,
+       order_date, status
+<span class="kw">FROM</span>   app.orders
+<span class="kw">WHERE</span>  (quantity * unit_price) > <span class="num">1000</span>
+  <span class="kw">AND</span>  order_date >= <span class="fn">NOW</span>() - <span class="kw">INTERVAL</span> <span class="str">'30 days'</span>
+<span class="kw">ORDER BY</span> total_amount <span class="kw">DESC</span>;</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">&#128202; Query Results</div>
+          <div class="card-body" style="overflow-x:auto">
+            <table class="data-table">
+              <thead>
+                <tr><th>customer_name</th><th>product</th><th>qty</th><th>unit_price</th><th>total_amount</th><th>order_date</th><th>status</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Wayne Enterprises</td><td>Security Scanner</td><td>25</td><td>$599.99</td><td style="color:var(--green);font-weight:600">$14,999.75</td><td>2026-02-13</td><td><span class="ibadge green">shipped</span></td></tr>
+                <tr><td>Umbrella Corp</td><td>Data Analyzer Suite</td><td>50</td><td>$299.99</td><td style="color:var(--green);font-weight:600">$14,999.50</td><td>2026-02-09</td><td><span class="ibadge blue">confirmed</span></td></tr>
+                <tr><td>Acme Corp</td><td>AI Processing Unit</td><td>10</td><td>$1,299.99</td><td style="color:var(--green);font-weight:600">$12,999.90</td><td>2026-02-16</td><td><span class="ibadge blue">confirmed</span></td></tr>
+              </tbody>
+            </table>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:8px;font-family:var(--mono)">(3 rows)</div>
+          </div>
+        </div>
+
+        <div id="writeAttemptCard" class="card" style="display:none">
+          <div class="card-header" style="color:var(--red)">&#9888; Write Attempt (blocked by scope)</div>
+          <div class="card-body">
+            <div class="code-block"><span class="kw">INSERT INTO</span> app.orders (customer_name, product)
+<span class="kw">VALUES</span> (<span class="str">'Evil Corp'</span>, <span class="str">'Malicious Payload'</span>);</div>
+            <div class="callout danger" style="margin-top:12px">
+              <span class="callout-icon">&#128683;</span>
+              <div><strong>ERROR: permission denied for table orders</strong><br>The readonly role can only SELECT. INSERT, UPDATE, DELETE are all rejected by PostgreSQL.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(5)">&larr; Dynamic Credentials</button>
+        <button class="nav-btn primary" onclick="showStep(7)">Audit &amp; Revocation &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 7: Audit & Revocation ═══ -->
+    <div class="step-content" id="step-7">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--red-dim);color:var(--red)">&#128209;</div>
+        <div>
+          <h2>Phase 7: Audit Trail &amp; Credential Revocation</h2>
+          <p>7-layer correlated audit trail + automatic credential lifecycle management</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        After the interaction, every layer has logged what happened &mdash; independently, with correlated identifiers. An auditor can start at any layer and trace the full chain. The <strong>session ID</strong> and <strong>Vault-generated username</strong> serve as correlation keys across all systems.
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128209; 7-Layer Audit Correlation Chain</div>
+        <div class="card-body" style="padding:0">
+          <div class="audit-layers" id="auditLayers"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128683; Credential Revocation</div>
+        <div class="card-body">
+          <div class="timeline" id="revocationTimeline">
+            <div class="timeline-event visible active">
+              <div class="timeline-time">T = 0s</div>
+              <div class="timeline-title">Credentials Issued</div>
+              <div class="timeline-desc">Vault creates PostgreSQL role with 5-minute TTL. Agent begins using credentials.</div>
+            </div>
+            <div class="timeline-event visible">
+              <div class="timeline-time">T = 0&ndash;300s</div>
+              <div class="timeline-title">Active Usage</div>
+              <div class="timeline-desc">Agent queries database. pgaudit logs every query with the Vault-generated username.</div>
+            </div>
+            <div class="timeline-event visible success-evt">
+              <div class="timeline-time">T = 300s (or manual)</div>
+              <div class="timeline-title">Automatic Revocation</div>
+              <div class="timeline-desc"><code>DROP ROLE IF EXISTS "v-token-readonly-3ee8b521";</code><br>All new connections fail. Existing connections closed on next query.</div>
+            </div>
+            <div class="timeline-event visible danger-evt">
+              <div class="timeline-time">T > 300s</div>
+              <div class="timeline-title">Credentials Cease to Exist</div>
+              <div class="timeline-desc"><code>FATAL: role "v-token-readonly-3ee8b521" does not exist</code><br>No password to rotate, no key to revoke manually. The credentials simply disappear.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout success">
+        <span class="callout-icon">&#9989;</span>
+        <div>
+          <strong>Demo complete!</strong> The full chain is verified:
+          <br>&bull; Human authorized via Device Flow (agent never saw password)
+          <br>&bull; Agent attested via SPIFFE (SPIRE)
+          <br>&bull; Delegation approved by OPA policy
+          <br>&bull; Dynamic credentials issued by Vault (5-min TTL)
+          <br>&bull; Database queried with delegated identity
+          <br>&bull; Full audit trail preserved across all 7 layers
+          <br>&bull; Credentials auto-revoked after use
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(6)">&larr; Database Query</button>
+        <button class="nav-btn primary" onclick="showStep(8)">Sub-Agent Chains &rarr;</button>
+      </div>
+    </div>
+
+    <!-- ═══ STEP 8: Sub-Agent Chains ═══ -->
+    <div class="step-content" id="step-8">
+      <div class="phase-header">
+        <div class="phase-icon" style="background:var(--pink);color:var(--bg)">&#128279;</div>
+        <div>
+          <h2>Sub-Agent Delegation Chains</h2>
+          <p>Agents can delegate to specialized sub-agents &mdash; scope can only narrow, never widen</p>
+        </div>
+      </div>
+
+      <div class="explanation">
+        Sometimes an agent needs help. The query agent might delegate SQL execution to a specialized <strong>sub-agent</strong>. This uses another RFC 8693 exchange, with the parent's delegation token as the subject_token. Two critical rules prevent abuse: <strong>scope narrowing</strong> (sub-agents can't gain more access than their parent) and <strong>chain depth limits</strong> (default max: 3).
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128279; Delegation Chain Extension</div>
+        <div class="card-body" style="padding:20px">
+          <div style="display:flex;flex-direction:column;gap:16px;align-items:center">
+            <div class="flow-node success-node" style="min-width:220px">
+              <div style="font-size:11px;opacity:0.7">HUMAN (Subject)</div>
+              <div style="font-weight:700">alice@acme.com</div>
+              <div style="font-size:11px;margin-top:4px"><span class="ibadge green">groups: data-analysts, trading-team</span></div>
+            </div>
+            <div style="font-size:20px;color:var(--text-dim)">&darr; <span style="font-size:11px;color:var(--accent)">OIDC Token (may_act)</span></div>
+            <div class="flow-node active-node" style="min-width:220px">
+              <div style="font-size:11px;opacity:0.7">AGENT (Depth 0)</div>
+              <div style="font-weight:700">spiffe://demo.local/agent/query-agent</div>
+              <div style="font-size:11px;margin-top:4px"><span class="ibadge blue">scope: readonly</span></div>
+            </div>
+            <div style="font-size:20px;color:var(--text-dim)">&darr; <span style="font-size:11px;color:var(--yellow)">RFC 8693 (delegation token as subject)</span></div>
+            <div class="flow-node" style="min-width:220px;border-color:var(--purple);color:var(--purple)">
+              <div style="font-size:11px;opacity:0.7">SUB-AGENT (Depth 1)</div>
+              <div style="font-weight:700">spiffe://demo.local/subagent/sql-executor</div>
+              <div style="font-size:11px;margin-top:4px"><span class="ibadge blue">scope: readonly</span> <span class="ibadge green">narrowed or same</span></div>
+            </div>
+            <div style="font-size:20px;color:var(--text-dim)">&darr; <span style="font-size:11px;color:var(--green)">Query with own Vault credentials</span></div>
+            <div class="flow-node" style="min-width:220px;border-color:var(--cyan);color:var(--cyan)">
+              <div style="font-size:11px;opacity:0.7">DATABASE</div>
+              <div style="font-weight:700">PostgreSQL (appdb)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">&#128279; Nested act{} Claim (full chain in the token)</div>
+        <div class="card-body">
+          <div class="json-inspector" id="nestedActJson"></div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-header">&#9940; Chain Depth Limits</div>
+          <div class="card-body">
+            <div style="font-family:var(--mono);font-size:13px;line-height:2.2">
+              <div>Depth 0: Human &rarr; Agent <span class="ibadge green">allowed</span></div>
+              <div>Depth 1: Agent &rarr; Sub-Agent <span class="ibadge green">allowed</span></div>
+              <div>Depth 2: Sub-Agent &rarr; Sub-Sub <span class="ibadge green">allowed</span></div>
+              <div>Depth 3+: <span class="ibadge red">DENIED &mdash; max_delegation_depth_exceeded</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">&#128281; Scope Narrowing Rules</div>
+          <div class="card-body">
+            <div style="font-family:var(--mono);font-size:13px;line-height:2.2">
+              <div>readwrite &rarr; readonly <span class="ibadge green">allowed (narrowing)</span></div>
+              <div>readonly &rarr; readonly <span class="ibadge green">allowed (same)</span></div>
+              <div>readonly &rarr; db:read <span class="ibadge green">allowed (narrowing)</span></div>
+              <div>readonly &rarr; readwrite <span class="ibadge red">DENIED &mdash; scope_narrowing_violation</span></div>
+              <div>db:read &rarr; readwrite <span class="ibadge red">DENIED &mdash; scope_narrowing_violation</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <span class="callout-icon">&#9888;</span>
+        <div><strong>Key principle:</strong> Each level in the delegation chain can only <em>narrow</em> permissions, never widen them. This ensures that no matter how many levels of delegation occur, the sub-agent can never gain more access than the original human authorized.</div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="nav-btn" onclick="showStep(7)">&larr; Audit &amp; Revocation</button>
+        <button class="nav-btn primary" onclick="showStep(0)">Back to Architecture &#8634;</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ═══ STATE ═══
+const state = {
+  currentStep: 0,
+  user: 'alice',
+  agent: 'query-agent',
+  scope: 'readonly',
+  ttlInterval: null,
+};
+
+const USERS = {
+  alice: {
+    name: 'Alice',
+    email: 'alice@acme.com',
+    lastName: 'Analyst',
+    groups: ['data-analysts', 'trading-team'],
+    mayAct: { sub: 'agent:query-agent-v2', client_id: 'ai-agent-service' },
+  },
+  bob: {
+    name: 'Bob',
+    email: 'bob@acme.com',
+    lastName: 'Builder',
+    groups: ['engineering'],
+    mayAct: { sub: 'agent:query-agent-v2', client_id: 'ai-agent-service' },
+  },
+};
+
+const REGISTERED_AGENTS = [
+  'spiffe://demo.local/agent/query-agent',
+  'spiffe://demo.local/agent/analysis-agent',
+  'spiffe://demo.local/agent/write-agent',
+];
+
+const REGISTERED_SUBAGENTS = [
+  'spiffe://demo.local/subagent/sql-executor',
+  'spiffe://demo.local/subagent/result-formatter',
+];
+
+const GROUP_PERMS = {
+  'data-analysts': ['readonly', 'db:read', 'db:query'],
+  'trading-team': ['readonly', 'db:read', 'db:query'],
+  'engineering': ['readonly', 'readwrite', 'db:read', 'db:write', 'db:query'],
+};
+
+const SCOPE_HIERARCHY = {
+  readwrite: ['readonly', 'db:read', 'db:write', 'db:query'],
+  readonly: ['db:read', 'db:query'],
+  'db:write': ['db:read'],
+  'db:read': [],
+  'db:query': [],
+};
+
+function getSpiffeId(agent) {
+  if (agent === 'rogue-agent') return 'spiffe://evil.corp/agent/rogue-agent';
+  return `spiffe://demo.local/agent/${agent}`;
+}
+
+function isAgentRegistered(agent) {
+  const sid = getSpiffeId(agent);
+  return REGISTERED_AGENTS.includes(sid) || REGISTERED_SUBAGENTS.includes(sid);
+}
+
+function evaluatePolicy() {
+  const user = USERS[state.user];
+  const spiffeId = getSpiffeId(state.agent);
+  const scope = state.scope;
+
+  const validToken = true; // Always valid for demo
+  const validAgent = isAgentRegistered(state.agent);
+  const authorizedDelegation = !!user.mayAct && user.mayAct.sub !== '';
+  let scopePermitted = false;
+  for (const g of user.groups) {
+    const perms = GROUP_PERMS[g] || [];
+    if (perms.includes(scope)) { scopePermitted = true; break; }
+    // Check implied scopes
+    for (const p of perms) {
+      if (scopeImplies(p, scope)) { scopePermitted = true; break; }
+    }
+    if (scopePermitted) break;
+  }
+
+  const allowed = validToken && validAgent && authorizedDelegation && scopePermitted;
+  let reason = 'allowed';
+  if (!validToken) reason = 'invalid_human_token';
+  else if (!validAgent) reason = 'invalid_agent_identity';
+  else if (!authorizedDelegation) reason = 'unauthorized_delegation';
+  else if (!scopePermitted) reason = 'scope_not_permitted';
+
+  return { allowed, reason, validToken, validAgent, authorizedDelegation, scopePermitted };
+}
+
+function scopeImplies(parent, child) {
+  const directChildren = SCOPE_HIERARCHY[parent] || [];
+  if (directChildren.includes(child)) return true;
+  for (const intermediate of directChildren) {
+    const transChildren = SCOPE_HIERARCHY[intermediate] || [];
+    if (transChildren.includes(child)) return true;
+  }
+  return false;
+}
+
+function randomHex(len) {
+  const chars = '0123456789abcdef';
+  let r = '';
+  for (let i = 0; i < len; i++) r += chars[Math.floor(Math.random() * 16)];
+  return r;
+}
+
+function getVaultUsername() {
+  const role = state.scope === 'readwrite' ? 'readwrite' : 'readonly';
+  return `v-token-ai-agent-${role.charAt(0)}-${randomHex(6)}`;
+}
+
+// ═══ RENDERING ═══
+
+function syntaxHighlightJson(obj, indent = 2, highlightKeys = []) {
+  const raw = JSON.stringify(obj, null, indent);
+  return raw.replace(
+    /("(?:\\.|[^"\\])*")\s*:/g,
+    (match, key) => {
+      const cleanKey = key.slice(1, -1);
+      const cls = highlightKeys.includes(cleanKey) ? 'json-key json-highlight' : 'json-key';
+      return `<span class="${cls}">${key}</span>:`;
+    }
+  ).replace(
+    /:\s*("(?:\\.|[^"\\])*")/g,
+    (match, val) => `: <span class="json-string">${val}</span>`
+  ).replace(
+    /:\s*(\d+\.?\d*)/g,
+    (match, val) => `: <span class="json-number">${val}</span>`
+  ).replace(
+    /:\s*(true|false)/g,
+    (match, val) => `: <span class="json-bool">${val}</span>`
+  ).replace(
+    /:\s*(null)/g,
+    (match, val) => `: <span class="json-null">${val}</span>`
+  );
+}
+
+function updateScenario() {
+  state.user = document.getElementById('userSelect').value;
+  state.agent = document.getElementById('agentSelect').value;
+  state.scope = document.getElementById('scopeSelect').value;
+  renderCurrentStep();
+}
+
+function showStep(n) {
+  state.currentStep = n;
+  // Update nav
+  document.querySelectorAll('.step-btn').forEach((btn, i) => {
+    btn.classList.remove('active');
+    if (parseInt(btn.dataset.step) === n) btn.classList.add('active');
+  });
+  // Mark visited steps as completed
+  document.querySelectorAll('.step-btn').forEach(btn => {
+    const s = parseInt(btn.dataset.step);
+    if (s < n && s > 0) btn.classList.add('completed');
+  });
+  // Show/hide step content
+  document.querySelectorAll('.step-content').forEach((el, i) => {
+    el.classList.toggle('active', i === n);
+  });
+  // Scroll to top
+  document.getElementById('mainContent').scrollTop = 0;
+  renderCurrentStep();
+}
+
+function renderCurrentStep() {
+  const user = USERS[state.user];
+  const decision = evaluatePolicy();
+
+  // Step 1: Human Token
+  if (state.currentStep === 1 || true) {
+    const names = document.querySelectorAll('#userName, #userName2');
+    names.forEach(el => el.textContent = user.name);
+
+    const expTime = Math.floor(Date.now() / 1000) + 300;
+    const tokenObj = {
+      sub: user.email,
+      email: user.email,
+      groups: user.groups,
+      may_act: user.mayAct,
+      exp: expTime,
+      iss: 'http://keycloak:8080/realms/demo',
+      aud: 'demo-cli',
+      typ: 'Bearer',
+    };
+    document.getElementById('humanTokenJson').innerHTML = syntaxHighlightJson(tokenObj, 2, ['groups', 'may_act']);
+  }
+
+  // Step 2: Agent SVID
+  {
+    const spiffeId = getSpiffeId(state.agent);
+    const svidObj = {
+      sub: spiffeId,
+      aud: ['token-exchange'],
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      iat: Math.floor(Date.now() / 1000),
+      iss: 'https://spire-oidc.demo.local',
+    };
+    document.getElementById('agentSvidJson').innerHTML = syntaxHighlightJson(svidObj, 2, ['sub']);
+
+    // Registration table
+    const tbody = document.getElementById('agentRegistrationTable');
+    let html = '';
+    const allAgents = [...REGISTERED_AGENTS.map(a => [a, 'Agent']), ...REGISTERED_SUBAGENTS.map(a => [a, 'Sub-Agent'])];
+    for (const [id, type] of allAgents) {
+      const isCurrent = id === spiffeId;
+      html += `<tr style="${isCurrent ? 'background:var(--accent-dim)' : ''}">
+        <td style="font-family:var(--mono);font-size:11px">${id}</td>
+        <td><span class="ibadge ${type === 'Agent' ? 'blue' : 'purple'}">${type}</span></td>
+        <td>${isCurrent ? '<span class="ibadge green">current</span>' : ''}</td>
+      </tr>`;
+    }
+    if (!isAgentRegistered(state.agent)) {
+      html += `<tr style="background:var(--red-dim)">
+        <td style="font-family:var(--mono);font-size:11px">${spiffeId}</td>
+        <td><span class="ibadge red">Unknown</span></td>
+        <td><span class="ibadge red">NOT REGISTERED</span></td>
+      </tr>`;
+    }
+    tbody.innerHTML = html;
+  }
+
+  // Step 3: Token Exchange
+  {
+    const reqObj = {
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token: `<${user.name}'s OIDC JWT>`,
+      subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+      actor_token: `<Agent's SPIFFE JWT-SVID>`,
+      actor_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      scope: state.scope,
+      audience: 'database',
+    };
+    document.getElementById('tokenExchangeRequest').innerHTML = syntaxHighlightJson(reqObj, 2, ['scope', 'subject_token', 'actor_token']);
+
+    // Update step3 messages
+    const opaDetail = document.getElementById('step3-opa-detail');
+    const opaResult = document.getElementById('step3-opa-result');
+    const vaultReq = document.getElementById('step3-vault-req');
+    const finalMsg = document.getElementById('step3-final');
+    const finalDetail = document.getElementById('step3-final-detail');
+
+    if (decision.allowed) {
+      opaDetail.textContent = `Decision: ALLOW (${user.email} -> ${state.agent} -> ${state.scope})`;
+      opaResult.className = 'seq-msg success';
+      vaultReq.style.display = '';
+      finalMsg.style.display = '';
+      finalMsg.className = 'seq-msg success';
+      finalDetail.textContent = 'Delegation token + dynamic DB credentials (5-min TTL)';
+    } else {
+      opaDetail.textContent = `Decision: DENY (reason: ${decision.reason})`;
+      opaResult.className = 'seq-msg error';
+      vaultReq.style.display = 'none';
+      finalMsg.style.display = '';
+      finalMsg.className = 'seq-msg error';
+      finalDetail.textContent = `Delegation denied: ${decision.reason}`;
+    }
+
+    // Delegation token
+    if (decision.allowed) {
+      document.getElementById('delegationTokenCard').style.display = '';
+      const delegTokenObj = {
+        iss: 'http://token-exchange:8090',
+        sub: user.email,
+        aud: 'database',
+        scope: state.scope,
+        exp: Math.floor(Date.now() / 1000) + 300,
+        act: {
+          sub: getSpiffeId(state.agent),
+        },
+        delegation_chain: [{
+          subject: user.email,
+          actor: getSpiffeId(state.agent),
+          scope: state.scope,
+          depth: 0,
+        }],
+        session_id: `sess-${randomHex(12)}`,
+      };
+      document.getElementById('delegationTokenJson').innerHTML = syntaxHighlightJson(delegTokenObj, 2, ['act', 'delegation_chain', 'session_id']);
+    } else {
+      document.getElementById('delegationTokenCard').style.display = 'none';
+    }
+  }
+
+  // Step 4: OPA Policy
+  {
+    const spiffeId = getSpiffeId(state.agent);
+    const opaInput = {
+      human_token: {
+        sub: user.email,
+        groups: user.groups,
+        may_act: user.mayAct,
+        exp: Math.floor(Date.now() / 1000) + 300,
+        iss: 'http://keycloak:8080/realms/demo',
+      },
+      agent_spiffe_id: spiffeId,
+      requested_scope: state.scope,
+      current_time: Math.floor(Date.now() / 1000),
+    };
+    document.getElementById('opaInputJson').innerHTML = syntaxHighlightJson(opaInput, 2, ['groups', 'agent_spiffe_id', 'requested_scope', 'may_act']);
+
+    // Policy rules
+    const rules = [
+      {
+        name: 'valid_human_token',
+        pass: decision.validToken,
+        passDetail: `Token sub="${user.email}", issuer trusted, not expired`,
+        failDetail: 'Token is invalid, expired, or from an untrusted issuer',
+      },
+      {
+        name: 'valid_agent_identity',
+        pass: decision.validAgent,
+        passDetail: `${spiffeId} is in the registered agents list`,
+        failDetail: `${spiffeId} is NOT registered &mdash; unknown workload identity`,
+      },
+      {
+        name: 'authorized_delegation',
+        pass: decision.authorizedDelegation,
+        passDetail: `may_act claim present: {sub: "${user.mayAct.sub}"}`,
+        failDetail: 'No may_act claim or sub is empty &mdash; human has not authorized delegation',
+      },
+      {
+        name: 'scope_permitted',
+        pass: decision.scopePermitted,
+        passDetail: `Groups ${JSON.stringify(user.groups)} permit scope "${state.scope}"`,
+        failDetail: `Groups ${JSON.stringify(user.groups)} do NOT permit scope "${state.scope}"`,
+      },
+    ];
+
+    let rulesHtml = '';
+    for (const r of rules) {
+      const cls = r.pass ? 'pass' : 'fail';
+      const icon = r.pass ? '&#10003;' : '&#10007;';
+      const detail = r.pass ? r.passDetail : r.failDetail;
+      rulesHtml += `<div class="policy-rule ${cls}">
+        <div class="rule-icon">${icon}</div>
+        <div class="rule-content">
+          <div class="rule-name" style="font-family:var(--mono);font-size:13px">${r.name}</div>
+          <div class="rule-detail">${detail}</div>
+        </div>
+      </div>`;
+    }
+    document.getElementById('policyRules').innerHTML = rulesHtml;
+
+    // Decision badge
+    const badge = decision.allowed
+      ? '<span class="decision-badge allow">&#10003; ALLOW</span>'
+      : `<span class="decision-badge deny">&#10007; DENY</span>`;
+    document.getElementById('opaDecisionBadge').innerHTML = badge;
+
+    // OPA response
+    const opaResp = {
+      result: {
+        allow: decision.allowed,
+        decision: {
+          allowed: decision.allowed,
+          human: user.email,
+          agent: spiffeId,
+          scope: state.scope,
+          reason: decision.reason,
+          delegation_depth: 0,
+        },
+      },
+    };
+    document.getElementById('opaResponseJson').innerHTML = syntaxHighlightJson(opaResp, 2, ['allow', 'reason']);
+
+    // Scope tree
+    renderScopeTree();
+  }
+
+  // Step 5: Vault Credentials
+  {
+    const denied = !decision.allowed;
+    document.getElementById('step5-denied').style.display = denied ? '' : 'none';
+    document.getElementById('step5-allowed').style.display = denied ? 'none' : '';
+
+    if (!denied) {
+      const role = state.scope === 'readwrite' ? 'readwrite' : 'readonly';
+      const vaultUser = getVaultUsername();
+      const grants = role === 'readonly'
+        ? `<span class="kw">GRANT</span> <span class="fn">USAGE</span> <span class="kw">ON SCHEMA</span> app <span class="kw">TO</span> <span class="str">"${vaultUser}"</span>;
+<span class="kw">GRANT</span> <span class="fn">SELECT</span> <span class="kw">ON ALL TABLES IN SCHEMA</span> app <span class="kw">TO</span> <span class="str">"${vaultUser}"</span>;`
+        : `<span class="kw">GRANT</span> <span class="fn">USAGE</span> <span class="kw">ON SCHEMA</span> app <span class="kw">TO</span> <span class="str">"${vaultUser}"</span>;
+<span class="kw">GRANT</span> <span class="fn">SELECT</span>, <span class="fn">INSERT</span>, <span class="fn">UPDATE</span>, <span class="fn">DELETE</span> <span class="kw">ON ALL TABLES IN SCHEMA</span> app <span class="kw">TO</span> <span class="str">"${vaultUser}"</span>;`;
+
+      const validUntil = new Date(Date.now() + 300000).toISOString().replace('T', ' ').slice(0, 19);
+
+      document.getElementById('vaultSqlBlock').innerHTML =
+`<span class="kw">CREATE ROLE</span> <span class="str">"${vaultUser}"</span>
+  <span class="kw">WITH LOGIN PASSWORD</span> <span class="str">'${randomHex(16)}...'</span>
+  <span class="kw">VALID UNTIL</span> <span class="str">'${validUntil}'</span>    <span class="cmt">-- 5 minutes from now</span>
+  <span class="kw">INHERIT</span>;
+
+${grants}`;
+
+      const credsObj = {
+        request_id: randomHex(8) + '-' + randomHex(4) + '-' + randomHex(4),
+        lease_id: `database/creds/ai-agent-${role}/hvs.${randomHex(24)}`,
+        renewable: true,
+        lease_duration: 300,
+        data: {
+          username: vaultUser,
+          password: `${randomHex(20)}...`,
+        },
+      };
+      document.getElementById('vaultCredsJson').innerHTML = syntaxHighlightJson(credsObj, 2, ['username', 'lease_duration', 'lease_id']);
+
+      // Step 6 refs
+      document.getElementById('sqlUser').textContent = vaultUser;
+      document.getElementById('sqlPerms').textContent = role === 'readonly' ? 'SELECT only' : 'SELECT, INSERT, UPDATE, DELETE';
+    }
+  }
+
+  // Step 6
+  {
+    const denied = !decision.allowed;
+    document.getElementById('step6-denied').style.display = denied ? '' : 'none';
+    document.getElementById('step6-allowed').style.display = denied ? 'none' : '';
+    document.getElementById('step6-user').textContent = user.name;
+
+    const writeCard = document.getElementById('writeAttemptCard');
+    writeCard.style.display = (state.scope === 'readonly' && !denied) ? '' : 'none';
+  }
+
+  // Step 7: Audit
+  renderAuditLayers();
+
+  // Step 8: Sub-agent chains
+  {
+    const nestedAct = {
+      sub: user.email,
+      aud: 'database',
+      scope: 'readonly',
+      act: {
+        sub: 'spiffe://demo.local/subagent/sql-executor',
+        act: {
+          sub: getSpiffeId(state.agent),
+          act: {
+            sub: user.email,
+          },
+        },
+      },
+    };
+    document.getElementById('nestedActJson').innerHTML = syntaxHighlightJson(nestedAct, 2, ['act', 'sub']);
+  }
+}
+
+function renderScopeTree() {
+  const userGroups = USERS[state.user].groups;
+  let permitted = new Set();
+  for (const g of userGroups) {
+    for (const s of (GROUP_PERMS[g] || [])) {
+      permitted.add(s);
+    }
+  }
+
+  const tree = document.getElementById('scopeTree');
+  const allScopes = ['readwrite', 'readonly', 'db:read', 'db:write', 'db:query'];
+
+  let html = '';
+  const lines = [
+    { scope: 'readwrite', indent: 0 },
+    { scope: 'readonly', indent: 1, from: 'readwrite' },
+    { scope: 'db:read', indent: 2, from: 'readonly' },
+    { scope: 'db:query', indent: 2, from: 'readonly' },
+    { scope: 'db:write', indent: 1, from: 'readwrite' },
+  ];
+
+  for (const line of lines) {
+    const isActive = line.scope === state.scope;
+    const isPermitted = permitted.has(line.scope);
+    const cls = isActive ? (isPermitted ? 'active-scope' : 'denied-scope') : '';
+    const indent = '&nbsp;&nbsp;'.repeat(line.indent);
+    const arrow = line.indent > 0 ? '&#x2514;&#x2500; ' : '';
+    html += `<div>${indent}${arrow}<span class="scope-node ${cls}">${line.scope}</span>${isActive ? (isPermitted ? ' &#x2190; <span style="color:var(--green);font-size:11px">selected (permitted)</span>' : ' &#x2190; <span style="color:var(--red);font-size:11px">selected (DENIED)</span>') : ''}</div>`;
+  }
+  tree.innerHTML = html;
+}
+
+function renderAuditLayers() {
+  const user = USERS[state.user];
+  const decision = evaluatePolicy();
+  const spiffeId = getSpiffeId(state.agent);
+  const vaultUser = getVaultUsername();
+  const sessionId = `sess-${randomHex(12)}`;
+
+  const layers = [
+    {
+      icon: '&#128273;',
+      label: 'Keycloak',
+      color: 'var(--purple)',
+      content: `${user.email} authenticated via Device Flow
+<span class="highlight-val">groups</span>: [${user.groups.join(', ')}]
+Token issued, expires in 300s`,
+    },
+    {
+      icon: '&#128737;',
+      label: 'SPIRE',
+      color: 'var(--accent)',
+      content: `SVID issued to <span class="highlight-val">${spiffeId}</span>
+Workload attested via UID match
+Trust domain: demo.local`,
+    },
+    {
+      icon: '&#128260;',
+      label: 'Token Exchange',
+      color: 'var(--yellow)',
+      content: `Session: <span class="highlight-val">${sessionId}</span>
+Human: <span class="highlight-val">${user.email}</span>
+Agent: <span class="highlight-val">${spiffeId}</span>
+Scope: <span class="highlight-val">${state.scope}</span>
+Decision: ${decision.allowed ? '<span style="color:var(--green)">allowed</span>' : `<span style="color:var(--red)">${decision.reason}</span>`}`,
+    },
+    {
+      icon: '&#128220;',
+      label: 'OPA',
+      color: 'var(--green)',
+      content: `Policy: delegation.rego
+Input: human=${user.email}, agent=${state.agent}
+       scope=${state.scope}
+Result: <span class="highlight-val">${decision.allowed ? 'allow=true' : 'allow=false'}</span>, reason="${decision.reason}"`,
+    },
+    {
+      icon: '&#128274;',
+      label: 'Vault',
+      color: 'var(--orange)',
+      content: decision.allowed
+        ? `Lease: database/creds/ai-agent-${state.scope}/hvs...
+Entity metadata:
+  delegating_human = <span class="highlight-val">${user.email}</span>
+  session_id = <span class="highlight-val">${sessionId}</span>
+TTL: <span class="highlight-val">300s</span>`
+        : '<span style="color:var(--text-dim)">No credentials issued (delegation denied)</span>',
+    },
+    {
+      icon: '&#128196;',
+      label: 'Vault Lease',
+      color: 'var(--orange)',
+      content: decision.allowed
+        ? `Lease created: ${new Date().toTimeString().slice(0, 8)}
+Lease expires: ${new Date(Date.now() + 300000).toTimeString().slice(0, 8)}
+Role: <span class="highlight-val">${vaultUser}</span>
+Revoked: TTL expiry or manual`
+        : '<span style="color:var(--text-dim)">No lease created</span>',
+    },
+    {
+      icon: '&#128451;',
+      label: 'PostgreSQL',
+      color: 'var(--cyan)',
+      content: decision.allowed
+        ? `[pgaudit] user=<span class="highlight-val">${vaultUser}</span>
+SELECT customer_name, product FROM app.orders
+WHERE total_amount > 1000`
+        : '<span style="color:var(--text-dim)">No queries executed</span>',
+    },
+  ];
+
+  let html = '';
+  for (const layer of layers) {
+    html += `<div class="audit-layer">
+      <div class="audit-layer-label" style="color:${layer.color}">
+        <span class="audit-layer-icon">${layer.icon}</span>
+        ${layer.label}
+      </div>
+      <div class="audit-layer-content">${layer.content}</div>
+    </div>`;
+  }
+  document.getElementById('auditLayers').innerHTML = html;
+}
+
+// ═══ ANIMATIONS ═══
+
+function animateMessages(containerId) {
+  const container = document.getElementById(containerId);
+  const msgs = container.querySelectorAll('.seq-msg');
+  msgs.forEach(m => m.classList.remove('visible'));
+
+  msgs.forEach((msg, i) => {
+    const delay = parseInt(msg.dataset.delay) || i * 400;
+    setTimeout(() => msg.classList.add('visible'), delay);
+  });
+}
+
+function animateStep1() {
+  const btn = document.getElementById('playStep1');
+  btn.disabled = true;
+  animateMessages('step1-msgs');
+  setTimeout(() => btn.disabled = false, 2500);
+}
+
+function animateStep2() {
+  const btn = document.getElementById('playStep2');
+  btn.disabled = true;
+  animateMessages('step2-msgs');
+  setTimeout(() => btn.disabled = false, 2800);
+}
+
+function animateStep3() {
+  const btn = document.getElementById('playStep3');
+  btn.disabled = true;
+  animateMessages('step3-msgs');
+  setTimeout(() => btn.disabled = false, 3500);
+}
+
+function startTtlCountdown() {
+  if (state.ttlInterval) clearInterval(state.ttlInterval);
+  const bar = document.getElementById('ttlBar');
+  const label = document.getElementById('ttlCountdown');
+  const btn = document.getElementById('playTtl');
+  btn.disabled = true;
+  let remaining = 300;
+  const total = 300;
+
+  function update() {
+    const pct = (remaining / total) * 100;
+    bar.style.width = pct + '%';
+    const mins = Math.floor(remaining / 60);
+    const secs = remaining % 60;
+    label.textContent = `${mins}:${secs.toString().padStart(2, '0')} remaining`;
+
+    if (remaining <= 60) {
+      label.style.color = 'var(--red)';
+    } else if (remaining <= 120) {
+      label.style.color = 'var(--yellow)';
+    } else {
+      label.style.color = 'var(--text-bright)';
+    }
+
+    if (remaining <= 0) {
+      clearInterval(state.ttlInterval);
+      label.textContent = 'EXPIRED — role dropped';
+      label.style.color = 'var(--red)';
+      btn.disabled = false;
+    }
+    remaining -= 5; // Speed up: 5 seconds per tick
+  }
+
+  update();
+  state.ttlInterval = setInterval(update, 100); // Fast for demo
+}
+
+// ═══ INIT ═══
+renderCurrentStep();
+// Auto-show first step messages
+setTimeout(() => {
+  document.querySelectorAll('#step-0 .seq-msg, #step-1 .seq-msg').forEach(m => m.classList.add('visible'));
+}, 100);
+</script>
+
+</body>
+</html>
