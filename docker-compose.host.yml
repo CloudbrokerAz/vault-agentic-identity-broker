@@ -281,6 +281,30 @@ services:
       postgresql:
         condition: service_healthy
 
+  # ─── Interactive Demo UI ─────────────────────────────────────────────
+  demo-ui:
+    build:
+      context: ./demo-ui
+      dockerfile: Dockerfile
+    profiles: ["demo"]
+    environment:
+      KEYCLOAK_URL: "http://127.0.0.1:8080"
+      TOKEN_EXCHANGE_URL: "http://127.0.0.1:8090"
+      OPA_URL: "http://127.0.0.1:8181"
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      DB_HOST: "127.0.0.1"
+      DB_PORT: "5432"
+      DB_NAME: "appdb"
+      SPIRE_SOCKET: "/tmp/spire-agent/public/api.sock"
+    volumes:
+      - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
+    depends_on:
+      token-exchange:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+    network_mode: host
+
 volumes:
   spire-server-data:
   spire-agent-data:

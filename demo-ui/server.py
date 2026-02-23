@@ -1,0 +1,789 @@
+"""
+Live-Integrated Interactive Demo UI Server.
+
+Lightweight Python backend that serves the HTML UI and proxies
+real API calls to Keycloak, SPIRE, OPA, Token Exchange, Vault, and PostgreSQL.
+"""
+
+import html as html_mod
+import json
+import logging
+import os
+import re
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+import jwt
+import requests
+import psycopg2
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8500"))
+KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://127.0.0.1:8080")
+TOKEN_EXCHANGE_URL = os.environ.get("TOKEN_EXCHANGE_URL", "http://127.0.0.1:8090")
+OPA_URL = os.environ.get("OPA_URL", "http://127.0.0.1:8181")
+VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "appdb")
+SPIRE_SOCKET = os.environ.get("SPIRE_SOCKET", "/tmp/spire-agent/public/api.sock")
+
+KEYCLOAK_REALM = "demo"
+KEYCLOAK_CLIENT_ID = "demo-cli"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("demo-ui")
+
+# ---------------------------------------------------------------------------
+# Static file serving
+# ---------------------------------------------------------------------------
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+}
+
+
+def decode_token_safe(token):
+    """Decode a JWT without verification for display purposes."""
+    try:
+        return jwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Request Handler
+# ---------------------------------------------------------------------------
+
+class DemoHandler(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        logger.info("%s %s", self.address_string(), format % args)
+
+    # --- CORS ---
+
+    def _cors_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._cors_headers()
+        self.end_headers()
+
+    # --- Response helpers ---
+
+    def _send_json(self, status, obj):
+        body = json.dumps(obj, indent=2, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_error(self, status, service, message):
+        self._send_json(status, {"error": True, "service": service, "message": str(message)})
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
+        return json.loads(self.rfile.read(length))
+
+    # --- Keycloak Reverse Proxy ---
+
+    def _proxy_keycloak(self, method):
+        """Reverse-proxy a request to Keycloak, rewriting headers and content
+        so the browser can interact with Keycloak through the demo-ui server."""
+        parsed = urlparse(self.path)
+        target_url = f"{KEYCLOAK_URL}{parsed.path}"
+        if parsed.query:
+            target_url += f"?{parsed.query}"
+
+        # Read request body for POST
+        body = None
+        content_type = self.headers.get("Content-Type", "")
+        if method == "POST":
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 0:
+                body = self.rfile.read(length)
+
+        # Forward headers, rewriting Host/Referer/Origin to point at Keycloak
+        kc_parsed = urlparse(KEYCLOAK_URL)
+        forward_headers = {}
+        for hdr in ("Content-Type", "Accept", "Accept-Language", "Accept-Encoding",
+                     "Cookie", "Authorization"):
+            val = self.headers.get(hdr)
+            if val:
+                forward_headers[hdr] = val
+        forward_headers["Host"] = kc_parsed.netloc
+        if self.headers.get("Referer"):
+            forward_headers["Referer"] = self.headers["Referer"].replace(
+                f"http://{self.headers.get('Host', 'localhost')}", KEYCLOAK_URL
+            )
+        if self.headers.get("Origin"):
+            forward_headers["Origin"] = KEYCLOAK_URL
+
+        try:
+            if method == "GET":
+                r = requests.get(target_url, headers=forward_headers,
+                                 allow_redirects=False, timeout=15)
+            else:
+                r = requests.post(target_url, data=body, headers=forward_headers,
+                                  allow_redirects=False, timeout=15)
+        except Exception as e:
+            logger.exception("Keycloak proxy error")
+            self._send_error(502, "keycloak-proxy", str(e))
+            return
+
+        # Send response status
+        self.send_response(r.status_code)
+
+        # Rewrite Location header: strip Keycloak origin so redirects go through proxy
+        skip_headers = {"transfer-encoding", "content-encoding", "content-length"}
+        for hdr, val in r.headers.items():
+            lower = hdr.lower()
+            if lower in skip_headers:
+                continue
+            if lower == "location":
+                val = val.replace(KEYCLOAK_URL, "")
+                self.send_header(hdr, val)
+            elif lower == "set-cookie":
+                # Remove Secure and SameSite=None for HTTP-only dev mode
+                val = re.sub(r';\s*Secure', '', val, flags=re.IGNORECASE)
+                val = re.sub(r';\s*SameSite=None', '; SameSite=Lax', val, flags=re.IGNORECASE)
+                self.send_header(hdr, val)
+            else:
+                self.send_header(hdr, val)
+
+        # Rewrite HTML content: replace absolute Keycloak URLs with relative paths
+        resp_content_type = r.headers.get("Content-Type", "")
+        response_body = r.content
+        if "text/html" in resp_content_type:
+            text = response_body.decode("utf-8", errors="replace")
+            text = text.replace(KEYCLOAK_URL, "")
+            response_body = text.encode("utf-8")
+
+        self.send_header("Content-Length", str(len(response_body)))
+        self.end_headers()
+        self.wfile.write(response_body)
+
+    # --- Routing ---
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Keycloak reverse proxy
+        if path.startswith("/realms/") or path.startswith("/resources/"):
+            return self._proxy_keycloak("GET")
+
+        if path == "/api/health":
+            return self._handle_health()
+        if path == "/api/audit":
+            return self._handle_audit()
+
+        # Static files
+        if path == "/" or path == "":
+            path = "/index.html"
+        self._serve_static(path)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Keycloak reverse proxy
+        if path.startswith("/realms/") or path.startswith("/resources/"):
+            return self._proxy_keycloak("POST")
+
+        routes = {
+            "/api/auth/login": self._handle_login,
+            "/api/auth/device-start": self._handle_device_start,
+            "/api/auth/device-poll": self._handle_device_poll,
+            "/api/auth/device-approve": self._handle_device_approve,
+            "/api/spiffe/svid": self._handle_spiffe_svid,
+            "/api/opa/evaluate": self._handle_opa_evaluate,
+            "/api/token-exchange": self._handle_token_exchange,
+            "/api/db/query": self._handle_db_query,
+            "/api/revoke": self._handle_revoke,
+            "/api/db/verify-revoked": self._handle_verify_revoked,
+        }
+
+        handler = routes.get(path)
+        if handler:
+            try:
+                handler()
+            except Exception as e:
+                logger.exception("Error in %s", path)
+                self._send_error(500, "demo-ui", str(e))
+        else:
+            self._send_error(404, "demo-ui", f"Unknown endpoint: {path}")
+
+    # --- Static file serving ---
+
+    def _serve_static(self, path):
+        # Prevent directory traversal
+        safe_path = os.path.normpath(path.lstrip("/"))
+        file_path = os.path.join(STATIC_DIR, safe_path)
+        if not file_path.startswith(STATIC_DIR):
+            self._send_error(403, "demo-ui", "Forbidden")
+            return
+
+        if not os.path.isfile(file_path):
+            self._send_error(404, "demo-ui", f"Not found: {path}")
+            return
+
+        ext = os.path.splitext(file_path)[1].lower()
+        content_type = CONTENT_TYPES.get(ext, "application/octet-stream")
+
+        with open(file_path, "rb") as f:
+            content = f.read()
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(content)
+
+    # --- Health Check ---
+
+    def _handle_health(self):
+        services = {}
+
+        # Keycloak
+        try:
+            r = requests.get(f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}", timeout=3)
+            services["keycloak"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": KEYCLOAK_URL}
+        except Exception as e:
+            services["keycloak"] = {"status": "unhealthy", "error": str(e)}
+
+        # OPA
+        try:
+            r = requests.get(f"{OPA_URL}/health", timeout=3)
+            services["opa"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": OPA_URL}
+        except Exception as e:
+            services["opa"] = {"status": "unhealthy", "error": str(e)}
+
+        # Token Exchange
+        try:
+            r = requests.get(f"{TOKEN_EXCHANGE_URL}/health", timeout=3)
+            services["token_exchange"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": TOKEN_EXCHANGE_URL}
+        except Exception as e:
+            services["token_exchange"] = {"status": "unhealthy", "error": str(e)}
+
+        # Vault
+        try:
+            r = requests.get(f"{VAULT_ADDR}/v1/sys/health", timeout=3)
+            services["vault"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": VAULT_ADDR}
+        except Exception as e:
+            services["vault"] = {"status": "unhealthy", "error": str(e)}
+
+        # PostgreSQL
+        try:
+            conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user="postgres", password="postgres-root-password", connect_timeout=3)
+            conn.close()
+            services["postgresql"] = {"status": "healthy", "host": DB_HOST, "port": DB_PORT}
+        except Exception as e:
+            services["postgresql"] = {"status": "unhealthy", "error": str(e)}
+
+        # SPIRE (check socket existence)
+        spire_ok = os.path.exists(SPIRE_SOCKET)
+        services["spire"] = {"status": "healthy" if spire_ok else "unavailable", "socket": SPIRE_SOCKET, "note": "Socket present" if spire_ok else "Socket not found; will use synthetic SVIDs"}
+
+        all_healthy = all(s.get("status") == "healthy" for name, s in services.items() if name != "spire")
+        self._send_json(200, {"overall": "healthy" if all_healthy else "degraded", "services": services})
+
+    # --- Auth: Password Grant ---
+
+    def _handle_login(self):
+        body = self._read_body()
+        username = body.get("username", "alice")
+        password = body.get("password", "")
+
+        token_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+        start = time.time()
+        try:
+            r = requests.post(token_url, data={
+                "grant_type": "password",
+                "client_id": KEYCLOAK_CLIENT_ID,
+                "username": username,
+                "password": password,
+                "scope": "openid",
+            }, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+
+            if r.status_code != 200:
+                self._send_json(r.status_code, {"error": True, "service": "keycloak", "message": r.text, "elapsed_ms": elapsed})
+                return
+
+            data = r.json()
+            access_token = data.get("access_token", "")
+            decoded = decode_token_safe(access_token)
+
+            self._send_json(200, {
+                "access_token": access_token,
+                "token_type": data.get("token_type"),
+                "expires_in": data.get("expires_in"),
+                "decoded": decoded,
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            self._send_error(502, "keycloak", str(e))
+
+    # --- Auth: Device Flow Start ---
+
+    def _handle_device_start(self):
+        device_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/auth/device"
+        start = time.time()
+        try:
+            r = requests.post(device_url, data={
+                "client_id": KEYCLOAK_CLIENT_ID,
+                "scope": "openid",
+            }, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+
+            if r.status_code != 200:
+                self._send_json(r.status_code, {"error": True, "service": "keycloak", "message": r.text, "elapsed_ms": elapsed})
+                return
+
+            data = r.json()
+            self._send_json(200, {
+                "device_code": data.get("device_code"),
+                "user_code": data.get("user_code"),
+                "verification_uri": data.get("verification_uri"),
+                "verification_uri_complete": data.get("verification_uri_complete"),
+                "expires_in": data.get("expires_in"),
+                "interval": data.get("interval", 5),
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            self._send_error(502, "keycloak", str(e))
+
+    # --- Auth: Device Flow Poll ---
+
+    def _handle_device_poll(self):
+        body = self._read_body()
+        device_code = body.get("device_code", "")
+
+        token_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+        start = time.time()
+        try:
+            r = requests.post(token_url, data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "client_id": KEYCLOAK_CLIENT_ID,
+                "device_code": device_code,
+            }, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+
+            data = r.json()
+            if r.status_code == 200:
+                access_token = data.get("access_token", "")
+                decoded = decode_token_safe(access_token)
+                self._send_json(200, {
+                    "status": "complete",
+                    "access_token": access_token,
+                    "decoded": decoded,
+                    "elapsed_ms": elapsed,
+                })
+            else:
+                error = data.get("error", "unknown")
+                self._send_json(200, {
+                    "status": "pending" if error == "authorization_pending" else "slow_down" if error == "slow_down" else "error",
+                    "error": error,
+                    "error_description": data.get("error_description", ""),
+                    "elapsed_ms": elapsed,
+                })
+        except Exception as e:
+            self._send_error(502, "keycloak", str(e))
+
+    # --- Auth: Device Flow Server-Side Approval ---
+
+    @staticmethod
+    def _fix_session_cookies(session):
+        """Remove the Secure flag from session cookies.
+
+        Keycloak sets Secure on cookies even for HTTP connections in dev mode.
+        Python's requests library correctly refuses to send Secure cookies over
+        HTTP, which breaks the multi-step redirect chain in the device
+        verification flow. This is equivalent to how curl always stores and
+        sends cookies regardless of the Secure flag.
+        """
+        for cookie in session.cookies:
+            cookie.secure = False
+
+    def _follow_keycloak_redirects(self, session, response):
+        """Follow HTTP redirects, fixing Secure cookies at each hop.
+
+        Keycloak's device verification flow involves a multi-step redirect
+        chain (device → oidc/auth → login-actions/authenticate) where each
+        redirect may set new Secure cookies. We follow redirects manually
+        so we can fix cookie security flags between each hop.
+        """
+        for _ in range(10):
+            if response.status_code not in (301, 302, 303, 307, 308):
+                break
+            location = response.headers.get("Location", "")
+            if not location:
+                break
+            if location.startswith("/"):
+                p = urlparse(KEYCLOAK_URL)
+                location = f"{p.scheme}://{p.netloc}{location}"
+            response = session.get(location, allow_redirects=False, timeout=10)
+            self._fix_session_cookies(session)
+        return response
+
+    def _handle_device_approve(self):
+        """Approve a device flow server-side for environments where the browser
+        cannot directly access Keycloak (e.g., devcontainer, Docker-in-Docker).
+
+        Emulates the browser flow: visit device verification page → submit
+        login credentials → approve consent → device code becomes authorized.
+        The agent polling (/api/auth/device-poll) then picks up the token.
+        """
+        body = self._read_body()
+        user_code = body.get("user_code", "")
+        username = body.get("username", "alice")
+        password = body.get("password", "")
+
+        if not user_code:
+            self._send_error(400, "keycloak", "user_code is required")
+            return
+
+        start = time.time()
+        session = requests.Session()
+
+        try:
+            # Step 1: Visit device verification page.
+            # Keycloak issues a redirect chain: device → oidc/auth → login-actions/authenticate
+            # Each redirect sets cookies with `Secure` flag that we must fix for HTTP.
+            verify_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/device?user_code={user_code}"
+            logger.info("Device approve step 1: GET %s", verify_url)
+            r = session.get(verify_url, allow_redirects=False, timeout=10)
+            self._fix_session_cookies(session)
+            r = self._follow_keycloak_redirects(session, r)
+            logger.info("Device approve step 1 result: status=%d url=%s", r.status_code, r.url[:120])
+
+            # Step 2: Extract and submit the login form
+            action_match = re.search(r'action="([^"]*)"', r.text)
+            if not action_match:
+                elapsed = int((time.time() - start) * 1000)
+                logger.warning("Device approve: no login form found. status=%d content_length=%d", r.status_code, len(r.text))
+                self._send_json(400, {
+                    "error": True, "service": "keycloak",
+                    "message": "Login form not found on device verification page",
+                    "elapsed_ms": elapsed,
+                })
+                return
+
+            action_url = html_mod.unescape(action_match.group(1))
+            if action_url.startswith("/"):
+                p = urlparse(KEYCLOAK_URL)
+                action_url = f"{p.scheme}://{p.netloc}{action_url}"
+
+            logger.info("Device approve step 2: POST login to %s", action_url[:120])
+            r = session.post(
+                action_url,
+                data={"username": username, "password": password},
+                allow_redirects=False, timeout=10,
+            )
+            self._fix_session_cookies(session)
+            r = self._follow_keycloak_redirects(session, r)
+            logger.info("Device approve step 2 result: status=%d url=%s", r.status_code, r.url[:120])
+
+            # Step 3: Handle consent/grant page if Keycloak requires explicit approval
+            if "oauth_grant" in r.url.lower() or "grant" in r.text[:2000].lower():
+                consent_match = re.search(r'action="([^"]*)"', r.text)
+                if consent_match:
+                    consent_url = html_mod.unescape(consent_match.group(1))
+                    if consent_url.startswith("/"):
+                        p = urlparse(KEYCLOAK_URL)
+                        consent_url = f"{p.scheme}://{p.netloc}{consent_url}"
+                    logger.info("Device approve step 3: POST consent to %s", consent_url[:120])
+                    r = session.post(consent_url, data={"accept": "Yes"}, allow_redirects=False, timeout=10)
+                    self._fix_session_cookies(session)
+                    r = self._follow_keycloak_redirects(session, r)
+                    logger.info("Device approve step 3 result: status=%d url=%s", r.status_code, r.url[:120])
+
+            elapsed = int((time.time() - start) * 1000)
+
+            if "Device Login Successful" in r.text or "device/status" in r.url:
+                self._send_json(200, {"status": "approved", "message": "Device login approved", "elapsed_ms": elapsed})
+            else:
+                logger.warning("Device approve: unexpected result. url=%s status=%d", r.url[:120], r.status_code)
+                self._send_json(400, {
+                    "error": True, "service": "keycloak",
+                    "message": "Device approval did not complete — check credentials or user_code",
+                    "final_url": r.url,
+                    "elapsed_ms": elapsed,
+                })
+
+        except requests.Timeout:
+            elapsed = int((time.time() - start) * 1000)
+            self._send_error(504, "keycloak", f"Device approval timed out ({elapsed}ms)")
+        except Exception as e:
+            logger.exception("Device approve failed")
+            elapsed = int((time.time() - start) * 1000)
+            self._send_error(502, "keycloak", f"Device approval failed: {e}")
+
+    # --- SPIFFE SVID ---
+
+    def _handle_spiffe_svid(self):
+        body = self._read_body()
+        agent_id = body.get("agent_id", "query-agent")
+        agent_type = body.get("agent_type", "agent")  # "agent" or "subagent"
+        spiffe_id = f"spiffe://demo.local/{agent_type}/{agent_id}"
+
+        start = time.time()
+
+        # Try real SPIRE socket first
+        svid_token = None
+        source = "synthetic"
+
+        if os.path.exists(SPIRE_SOCKET):
+            try:
+                from pyspiffe.spiffe_id.spiffe_id import SpiffeId
+                from pyspiffe.workloadapi.default_workload_api_client import DefaultWorkloadApiClient
+
+                client = DefaultWorkloadApiClient(spiffe_socket_path=f"unix://{SPIRE_SOCKET}")
+                svid_set = client.fetch_jwt_svids(audiences=["token-exchange"], hint=spiffe_id)
+                if svid_set and len(svid_set) > 0:
+                    svid_token = svid_set[0].token
+                    source = "spire"
+            except Exception as e:
+                logger.info("SPIRE socket available but fetch failed: %s — using synthetic", e)
+
+        # Fallback: synthetic JWT (matches ai-agent/agent.py pattern)
+        if svid_token is None:
+            now = int(time.time())
+            claims = {
+                "sub": spiffe_id,
+                "aud": ["token-exchange"],
+                "exp": now + 3600,
+                "iat": now,
+                "client_type": "ai_agent",
+            }
+            svid_token = jwt.encode(claims, "demo-secret", algorithm="HS256")
+            source = "synthetic"
+
+        elapsed = int((time.time() - start) * 1000)
+        decoded = decode_token_safe(svid_token)
+
+        self._send_json(200, {
+            "svid_token": svid_token,
+            "spiffe_id": spiffe_id,
+            "source": source,
+            "decoded": decoded,
+            "elapsed_ms": elapsed,
+        })
+
+    # --- OPA Policy Evaluation ---
+
+    def _handle_opa_evaluate(self):
+        body = self._read_body()
+
+        opa_input = body.get("input", {})
+        start = time.time()
+        try:
+            # Query the full decision object for detailed results
+            r = requests.post(f"{OPA_URL}/v1/data/delegation", json={"input": opa_input}, timeout=5)
+            elapsed = int((time.time() - start) * 1000)
+
+            if r.status_code != 200:
+                self._send_json(r.status_code, {"error": True, "service": "opa", "message": r.text, "elapsed_ms": elapsed})
+                return
+
+            result = r.json().get("result", {})
+            self._send_json(200, {
+                "result": result,
+                "input": opa_input,
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            self._send_error(502, "opa", str(e))
+
+    # --- Token Exchange ---
+
+    def _handle_token_exchange(self):
+        body = self._read_body()
+
+        exchange_body = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": body.get("subject_token", ""),
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "actor_token": body.get("actor_token", ""),
+            "actor_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "scope": body.get("scope", "readonly"),
+            "audience": "database",
+        }
+
+        start = time.time()
+        try:
+            r = requests.post(f"{TOKEN_EXCHANGE_URL}/v1/token/exchange", json=exchange_body, timeout=15)
+            elapsed = int((time.time() - start) * 1000)
+
+            data = r.json()
+
+            # Decode the delegation token for display
+            delegation_token = data.get("access_token")
+            if delegation_token:
+                data["delegation_token_decoded"] = decode_token_safe(delegation_token)
+
+            # Override DB host for host-network mode
+            db_cred = data.get("db_credential")
+            if db_cred and db_cred.get("host") == "postgresql":
+                db_cred["host"] = DB_HOST
+
+            data["elapsed_ms"] = elapsed
+            self._send_json(r.status_code, data)
+        except Exception as e:
+            self._send_error(502, "token-exchange", str(e))
+
+    # --- Database Query ---
+
+    def _handle_db_query(self):
+        body = self._read_body()
+
+        host = body.get("host", DB_HOST)
+        port = body.get("port", DB_PORT)
+        database = body.get("database", DB_NAME)
+        username = body.get("username", "")
+        password = body.get("password", "")
+        sql = body.get("sql", "SELECT 1")
+
+        # Override host for host-network mode
+        if host == "postgresql":
+            host = DB_HOST
+
+        start = time.time()
+        try:
+            conn = psycopg2.connect(
+                host=host, port=port, dbname=database,
+                user=username, password=password,
+                connect_timeout=5,
+                options="-c search_path=app,public"
+            )
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(sql)
+
+            columns = [desc[0] for desc in cur.description] if cur.description else []
+            rows = cur.fetchall() if cur.description else []
+
+            cur.close()
+            conn.close()
+            elapsed = int((time.time() - start) * 1000)
+
+            self._send_json(200, {
+                "columns": columns,
+                "rows": [list(row) for row in rows],
+                "row_count": len(rows),
+                "elapsed_ms": elapsed,
+            })
+        except psycopg2.OperationalError as e:
+            elapsed = int((time.time() - start) * 1000)
+            self._send_json(200, {
+                "error": True,
+                "service": "postgresql",
+                "message": str(e).strip(),
+                "elapsed_ms": elapsed,
+                "connection_failed": True,
+            })
+        except psycopg2.Error as e:
+            elapsed = int((time.time() - start) * 1000)
+            self._send_error(400, "postgresql", str(e).strip())
+
+    # --- Revocation ---
+
+    def _handle_revoke(self):
+        body = self._read_body()
+        session_id = body.get("session_id", "")
+        delegation_token = body.get("delegation_token", "")
+
+        start = time.time()
+        try:
+            r = requests.post(f"{TOKEN_EXCHANGE_URL}/v1/token/revoke", json={
+                "session_id": session_id,
+                "token": delegation_token,
+            }, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+
+            data = r.json()
+            data["elapsed_ms"] = elapsed
+            self._send_json(r.status_code, data)
+        except Exception as e:
+            self._send_error(502, "token-exchange", str(e))
+
+    # --- Verify Revoked ---
+
+    def _handle_verify_revoked(self):
+        body = self._read_body()
+        username = body.get("username", "")
+        password = body.get("password", "")
+
+        start = time.time()
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+                user=username, password=password,
+                connect_timeout=5,
+            )
+            conn.close()
+            elapsed = int((time.time() - start) * 1000)
+            # If we get here, credentials still work (unexpected)
+            self._send_json(200, {
+                "revoked": False,
+                "message": "Credentials still valid (Vault lease may not have expired yet)",
+                "elapsed_ms": elapsed,
+            })
+        except psycopg2.OperationalError as e:
+            elapsed = int((time.time() - start) * 1000)
+            self._send_json(200, {
+                "revoked": True,
+                "message": "Connection denied — credentials successfully revoked",
+                "pg_error": str(e).strip(),
+                "elapsed_ms": elapsed,
+            })
+
+    # --- Audit Log ---
+
+    def _handle_audit(self):
+        start = time.time()
+        try:
+            r = requests.get(f"{TOKEN_EXCHANGE_URL}/v1/audit", timeout=5)
+            elapsed = int((time.time() - start) * 1000)
+
+            data = r.json()
+            self._send_json(200, {"entries": data, "elapsed_ms": elapsed})
+        except Exception as e:
+            self._send_error(502, "token-exchange", str(e))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    server = HTTPServer(("0.0.0.0", LISTEN_PORT), DemoHandler)
+    logger.info("Demo UI server listening on http://0.0.0.0:%d", LISTEN_PORT)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Shutting down")
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

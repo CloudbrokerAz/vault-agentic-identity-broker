@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vault Agentic Identity Broker — Live Demo</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-elevated: #1c2128;
+  --border: #30363d;
+  --border-bright: #484f58;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --text-bright: #f0f6fc;
+  --accent: #58a6ff;
+  --accent-dim: #1f6feb33;
+  --green: #3fb950;
+  --green-dim: #23863533;
+  --red: #f85149;
+  --red-dim: #da363333;
+  --yellow: #d29922;
+  --yellow-dim: #9e6a0333;
+  --purple: #bc8cff;
+  --purple-dim: #8957e533;
+  --orange: #f0883e;
+  --cyan: #39d2c0;
+  --pink: #f778ba;
+  --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Header --- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.header-title { display: flex; align-items: center; gap: 12px; }
+.header-title h1 { font-size: 16px; font-weight: 600; color: var(--text-bright); }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.badge-live { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+.badge-warn { background: var(--yellow-dim); color: var(--yellow); border: 1px solid var(--yellow); }
+
+/* --- Layout --- */
+.layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* --- Left Nav --- */
+.nav {
+  width: 240px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 0;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.step-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: all 0.15s ease;
+  font-family: var(--sans);
+}
+.step-btn:hover { background: var(--bg-elevated); color: var(--text); }
+.step-btn.active { background: var(--accent-dim); color: var(--accent); border-right: 2px solid var(--accent); }
+.step-btn.completed .step-num { background: var(--green); color: var(--bg); }
+.step-num {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600;
+  background: var(--border);
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.step-btn.active .step-num { background: var(--accent); color: var(--bg); }
+.step-label { flex: 1; min-width: 0; }
+.step-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-subtitle { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+/* --- Main Content --- */
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.step-panel { display: none; }
+.step-panel.visible { display: block; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.panel-header h2 { font-size: 20px; font-weight: 600; color: var(--text-bright); }
+.timing-badge {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.timing-badge.success { border-color: var(--green); color: var(--green); }
+.timing-badge.error { border-color: var(--red); color: var(--red); }
+
+.panel-desc {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+/* --- Cards --- */
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.card-header {
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-body { padding: 16px; }
+.card.success { border-color: var(--green); }
+.card.error { border-color: var(--red); }
+
+/* --- JSON Display --- */
+pre.json {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+  color: var(--text);
+}
+.json .key { color: var(--accent); }
+.json .string { color: var(--green); }
+.json .number { color: var(--orange); }
+.json .boolean { color: var(--purple); }
+.json .null { color: var(--text-dim); }
+
+/* --- Controls --- */
+.controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--sans);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  transition: all 0.15s ease;
+}
+.btn:hover:not(:disabled) { border-color: var(--border-bright); background: var(--border); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.btn-primary:hover:not(:disabled) { background: #79bbff; border-color: #79bbff; }
+.btn-danger { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+.btn-danger:hover:not(:disabled) { background: var(--red); color: white; }
+
+select, input[type="text"], input[type="password"], textarea {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+  width: 100%;
+  min-height: 60px;
+}
+
+label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+
+/* --- Status Indicators --- */
+.status-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.status-dot.healthy { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.unhealthy { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.status-dot.unavailable { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+.status-dot.pending { background: var(--border-bright); }
+
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.service-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  transition: border-color 0.3s ease;
+}
+.service-card.healthy { border-color: var(--green); }
+.service-card.unhealthy { border-color: var(--red); }
+.service-card.unavailable { border-color: var(--yellow); }
+.service-name { font-size: 14px; font-weight: 500; }
+.service-detail { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+
+/* --- Spinner --- */
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- Warning Box --- */
+.warning-box {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--yellow-dim);
+  border: 1px solid var(--yellow);
+  color: var(--yellow);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+/* --- Result Table --- */
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.result-table th {
+  background: var(--bg-elevated);
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.result-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.result-table tr:hover td { background: var(--bg-elevated); }
+
+/* --- Device Flow --- */
+.device-code-display {
+  font-size: 36px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--accent);
+  text-align: center;
+  padding: 20px;
+  background: var(--accent-dim);
+  border-radius: 8px;
+  letter-spacing: 4px;
+  margin: 12px 0;
+}
+.poll-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* --- Auth Mode Tabs --- */
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.auth-tab {
+  flex: 1;
+  padding: 8px 16px;
+  background: var(--bg);
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--sans);
+  transition: all 0.15s ease;
+}
+.auth-tab:not(:last-child) { border-right: 1px solid var(--border); }
+.auth-tab.active { background: var(--accent-dim); color: var(--accent); }
+.auth-tab:hover:not(.active) { background: var(--bg-elevated); color: var(--text); }
+
+.auth-panel { display: none; }
+.auth-panel.visible { display: block; }
+
+/* --- Two Column Layout --- */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 1000px) { .two-col { grid-template-columns: 1fr; } }
+
+/* --- Claim Annotations --- */
+.claim-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.claim-card {
+  display: grid; grid-template-columns: 100px 1fr;
+  gap: 4px 12px; padding: 8px 12px;
+  border-radius: 6px; background: var(--bg);
+  border-left: 3px solid var(--claim-color, var(--accent));
+}
+.claim-name { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--claim-color); }
+.claim-val { font-family: var(--mono); font-size: 12px; color: var(--text); word-break: break-all; }
+.claim-why { grid-column: 1/-1; font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+.claim-label {
+  display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  background: color-mix(in srgb, var(--claim-color) 15%, transparent);
+  color: var(--claim-color);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-title">
+    <h1>Vault Agentic Identity Broker</h1>
+    <span class="badge badge-live" id="liveBadge">LIVE</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;">
+    <span style="font-size:12px;color:var(--text-dim);font-family:var(--mono);" id="statusText">Checking services...</span>
+  </div>
+</div>
+
+<!-- Layout -->
+<div class="layout">
+
+  <!-- Left Nav -->
+  <nav class="nav" id="stepNav">
+    <button class="step-btn active" onclick="showStep(0)">
+      <span class="step-num" id="stepNum0">0</span>
+      <div class="step-label"><div class="step-title">Service Health</div><div class="step-subtitle">Check all services</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(1)">
+      <span class="step-num" id="stepNum1">1</span>
+      <div class="step-label"><div class="step-title">Human Auth</div><div class="step-subtitle">Keycloak login</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(2)">
+      <span class="step-num" id="stepNum2">2</span>
+      <div class="step-label"><div class="step-title">Agent Identity</div><div class="step-subtitle">SPIFFE SVID</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(3)">
+      <span class="step-num" id="stepNum3">3</span>
+      <div class="step-label"><div class="step-title">Policy Check</div><div class="step-subtitle">OPA evaluation</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(4)">
+      <span class="step-num" id="stepNum4">4</span>
+      <div class="step-label"><div class="step-title">Token Exchange</div><div class="step-subtitle">RFC 8693 delegation</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(5)">
+      <span class="step-num" id="stepNum5">5</span>
+      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(6)">
+      <span class="step-num" id="stepNum6">6</span>
+      <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(7)">
+      <span class="step-num" id="stepNum7">7</span>
+      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+    </button>
+  </nav>
+
+  <!-- Main Content -->
+  <div class="main">
+
+    <!-- Step 0: Health -->
+    <div class="step-panel visible" id="panel0">
+      <div class="panel-header">
+        <h2>Service Health Check</h2>
+        <span class="timing-badge" id="healthTiming"></span>
+      </div>
+      <p class="panel-desc">Verifying connectivity to all backend services. All services must be healthy before proceeding.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="checkHealth()" id="healthBtn">Check Health</button>
+      </div>
+      <div class="service-grid" id="healthGrid">
+        <div class="service-card" id="svc-keycloak"><span class="status-dot pending"></span><div><div class="service-name">Keycloak</div><div class="service-detail">:8080 OIDC IdP</div></div></div>
+        <div class="service-card" id="svc-spire"><span class="status-dot pending"></span><div><div class="service-name">SPIRE</div><div class="service-detail">Unix socket</div></div></div>
+        <div class="service-card" id="svc-opa"><span class="status-dot pending"></span><div><div class="service-name">OPA</div><div class="service-detail">:8181 Policy engine</div></div></div>
+        <div class="service-card" id="svc-token_exchange"><span class="status-dot pending"></span><div><div class="service-name">Token Exchange</div><div class="service-detail">:8090 RFC 8693</div></div></div>
+        <div class="service-card" id="svc-vault"><span class="status-dot pending"></span><div><div class="service-name">Vault</div><div class="service-detail">:8200 Dynamic secrets</div></div></div>
+        <div class="service-card" id="svc-postgresql"><span class="status-dot pending"></span><div><div class="service-name">PostgreSQL</div><div class="service-detail">:5432 Target DB</div></div></div>
+      </div>
+      <div class="card" id="healthResponseCard" style="display:none;margin-top:16px;">
+        <div class="card-header">Response</div>
+        <div class="card-body"><pre class="json" id="healthResponse"></pre></div>
+      </div>
+    </div>
+
+    <!-- Step 1: Auth -->
+    <div class="step-panel" id="panel1">
+      <div class="panel-header">
+        <h2>Human Authentication</h2>
+        <span class="timing-badge" id="authTiming"></span>
+      </div>
+      <p class="panel-desc">Authenticate as a human user via Keycloak. The resulting OIDC access token proves the human's identity and group memberships.</p>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchAuthMode('password')">Password Grant</button>
+        <button class="auth-tab" onclick="switchAuthMode('device')">Device Flow (RFC 8628)</button>
+      </div>
+
+      <!-- Password Mode -->
+      <div class="auth-panel visible" id="authPassword">
+        <div class="warning-box">Password grant is for demo purposes only. Production systems should use Device Authorization Flow or Authorization Code Flow.</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>User</label>
+            <select id="loginUser" onchange="updatePassword()">
+              <option value="alice" selected>alice (data-analysts, trading-team)</option>
+              <option value="bob">bob (engineering)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="loginPass" value="alice-demo-password" style="width:200px;" />
+          </div>
+          <button class="btn btn-primary" onclick="doLogin()" id="loginBtn">Login</button>
+        </div>
+      </div>
+
+      <!-- Device Mode -->
+      <div class="auth-panel" id="authDevice">
+        <p class="panel-desc" style="margin-bottom:12px;">RFC 8628 Device Authorization Flow: the agent requests a device code, the human approves it in their browser, and the agent polls for the token.</p>
+        <div class="controls">
+          <button class="btn btn-primary" onclick="startDeviceFlow()" id="deviceStartBtn">Start Device Flow</button>
+        </div>
+        <div id="deviceFlowUI" style="display:none;">
+          <div class="card">
+            <div class="card-header">Device Authorization</div>
+            <div class="card-body">
+              <div class="device-code-display" id="deviceUserCode"></div>
+              <div class="controls" id="deviceActions" style="justify-content:center;margin-top:12px;">
+                <button class="btn btn-primary" onclick="openKeycloakLogin()" id="deviceOpenKcBtn">Open Keycloak Login</button>
+                <button class="btn" onclick="showServerApprove()" id="deviceServerBtn">Approve Server-Side</button>
+              </div>
+              <div id="deviceServerApproveUI" style="display:none;margin-top:12px;">
+                <div class="form-row" style="justify-content:center;">
+                  <div class="form-group">
+                    <label>User</label>
+                    <select id="deviceUser" onchange="updateDevicePassword()">
+                      <option value="alice" selected>alice (data-analysts, trading-team)</option>
+                      <option value="bob">bob (engineering)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="devicePass" value="alice-demo-password" style="width:200px;" />
+                  </div>
+                  <button class="btn btn-primary" onclick="doServerApprove()" id="deviceApproveBtn">Approve</button>
+                </div>
+              </div>
+              <div class="poll-indicator" id="devicePollStatus" style="margin-top:12px;justify-content:center;">
+                <span class="spinner"></span> Waiting for authorization...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="two-col" id="authResults" style="display:none;">
+        <div class="card" id="authRequestCard">
+          <div class="card-header">Request</div>
+          <div class="card-body"><pre class="json" id="authRequest"></pre></div>
+        </div>
+        <div class="card" id="authResponseCard">
+          <div class="card-header">Decoded Access Token</div>
+          <div class="card-body">
+            <pre class="json" id="authResponse"></pre>
+            <div id="authAnnotations"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: SPIFFE -->
+    <div class="step-panel" id="panel2">
+      <div class="panel-header">
+        <h2>Agent Identity (SPIFFE)</h2>
+        <span class="timing-badge" id="spiffeTiming"></span>
+      </div>
+      <p class="panel-desc">Fetch a SPIFFE SVID for the AI agent. This cryptographic identity proves which agent is acting. If SPIRE is unavailable, a synthetic JWT-SVID is generated for demo purposes.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Agent</label>
+          <select id="agentSelect">
+            <option value="query-agent" selected>query-agent (registered)</option>
+            <option value="analysis-agent">analysis-agent (registered)</option>
+            <option value="write-agent">write-agent (registered)</option>
+            <option value="rogue-agent">rogue-agent (NOT registered)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Type</label>
+          <select id="agentTypeSelect">
+            <option value="agent" selected>agent</option>
+            <option value="subagent">subagent</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="fetchSVID()" id="svidBtn" disabled>Fetch SVID</button>
+      </div>
+      <div class="two-col" id="svidResults" style="display:none;">
+        <div class="card">
+          <div class="card-header">SPIFFE ID</div>
+          <div class="card-body"><pre class="json" id="svidInfo"></pre></div>
+        </div>
+        <div class="card">
+          <div class="card-header">Decoded JWT-SVID</div>
+          <div class="card-body">
+            <pre class="json" id="svidDecoded"></pre>
+            <div id="svidAnnotations"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: OPA -->
+    <div class="step-panel" id="panel3">
+      <div class="panel-header">
+        <h2>Policy Evaluation (OPA)</h2>
+        <span class="timing-badge" id="opaTiming"></span>
+      </div>
+      <p class="panel-desc">Evaluate the delegation policy in Open Policy Agent. The policy checks agent registration, user group permissions, scope authorization, and delegation depth.</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Scope</label>
+          <select id="scopeSelect">
+            <option value="readonly" selected>readonly</option>
+            <option value="readwrite">readwrite</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="evaluateOPA()" id="opaBtn" disabled>Evaluate Policy</button>
+      </div>
+      <div class="two-col" id="opaResults" style="display:none;">
+        <div class="card">
+          <div class="card-header">Policy Input</div>
+          <div class="card-body">
+            <pre class="json" id="opaRequest"></pre>
+            <div id="opaInputAnnotations"></div>
+          </div>
+        </div>
+        <div class="card" id="opaResponseCard">
+          <div class="card-header">Policy Decision</div>
+          <div class="card-body">
+            <pre class="json" id="opaResponse"></pre>
+            <div id="opaAnnotations"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Token Exchange -->
+    <div class="step-panel" id="panel4">
+      <div class="panel-header">
+        <h2>Token Exchange (RFC 8693)</h2>
+        <span class="timing-badge" id="exchangeTiming"></span>
+      </div>
+      <p class="panel-desc">Exchange the human's OIDC token + agent's SPIFFE SVID for a delegation token with time-limited database credentials from Vault.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="doTokenExchange()" id="exchangeBtn" disabled>Exchange Tokens</button>
+      </div>
+      <div class="two-col" id="exchangeResults" style="display:none;">
+        <div class="card">
+          <div class="card-header">RFC 8693 Request</div>
+          <div class="card-body"><pre class="json" id="exchangeRequest"></pre></div>
+        </div>
+        <div class="card" id="exchangeResponseCard">
+          <div class="card-header">Token Exchange Response</div>
+          <div class="card-body">
+            <pre class="json" id="exchangeResponse"></pre>
+            <div id="exchangeAnnotations"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card" id="delegationTokenCard" style="display:none;">
+        <div class="card-header">Decoded Delegation Token</div>
+        <div class="card-body">
+          <pre class="json" id="delegationDecoded"></pre>
+          <div id="delegationAnnotations"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: DB Query -->
+    <div class="step-panel" id="panel5">
+      <div class="panel-header">
+        <h2>Database Query</h2>
+        <span class="timing-badge" id="queryTiming"></span>
+      </div>
+      <p class="panel-desc">Execute SQL against PostgreSQL using the dynamic credentials issued by Vault. These credentials are scoped and time-limited (5-minute TTL).</p>
+      <div class="form-row">
+        <div class="form-group" style="flex:1;">
+          <label>Query</label>
+          <select id="queryPreset" onchange="updateQueryText()">
+            <option value="SELECT * FROM app.orders LIMIT 10;">Orders (first 10)</option>
+            <option value="SELECT * FROM app.customers LIMIT 10;">Customers</option>
+            <option value="SELECT * FROM app.products LIMIT 10;">Products</option>
+            <option value="SELECT * FROM app.order_summary LIMIT 10;">Order Summary (view)</option>
+            <option value="custom">Custom SQL...</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="executeQuery()" id="queryBtn" disabled>Execute</button>
+      </div>
+      <div id="customQueryGroup" style="display:none;margin-bottom:12px;">
+        <textarea id="customQuery" placeholder="SELECT ..."></textarea>
+      </div>
+      <div class="card" id="queryCredCard" style="display:none;">
+        <div class="card-header">Connection Credentials</div>
+        <div class="card-body">
+          <pre class="json" id="queryCredInfo"></pre>
+          <div id="queryCredAnnotations"></div>
+        </div>
+      </div>
+      <div class="card" id="queryResultCard" style="display:none;">
+        <div class="card-header">Query Results</div>
+        <div class="card-body" id="queryResultBody"></div>
+      </div>
+    </div>
+
+    <!-- Step 6: Audit -->
+    <div class="step-panel" id="panel6">
+      <div class="panel-header">
+        <h2>Audit Trail</h2>
+        <span class="timing-badge" id="auditTiming"></span>
+      </div>
+      <p class="panel-desc">Fetch the complete audit log from the Token Exchange Service. Every token exchange, delegation, and revocation is recorded.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="fetchAudit()" id="auditBtn" disabled>Fetch Audit Log</button>
+      </div>
+      <div class="card" id="auditCard" style="display:none;">
+        <div class="card-header">Audit Entries</div>
+        <div class="card-body">
+          <pre class="json" id="auditResponse"></pre>
+          <div id="auditAnnotations"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Revocation -->
+    <div class="step-panel" id="panel7">
+      <div class="panel-header">
+        <h2>Credential Revocation</h2>
+        <span class="timing-badge" id="revokeTiming"></span>
+      </div>
+      <p class="panel-desc">Revoke the delegation token and Vault-issued database credentials. After revocation, the dynamic PostgreSQL user is deleted and connections are terminated.</p>
+      <div class="controls">
+        <button class="btn btn-danger" onclick="doRevoke()" id="revokeBtn" disabled>Revoke Credentials</button>
+        <button class="btn" onclick="verifyRevoked()" id="verifyBtn" disabled>Verify Revocation</button>
+      </div>
+      <div class="two-col" id="revokeResults" style="display:none;">
+        <div class="card" id="revokeResponseCard">
+          <div class="card-header">Revocation Response</div>
+          <div class="card-body">
+            <pre class="json" id="revokeResponse"></pre>
+            <div id="revokeAnnotations"></div>
+          </div>
+        </div>
+        <div class="card" id="verifyResponseCard" style="display:none;">
+          <div class="card-header">Verification (Attempt Connection)</div>
+          <div class="card-body">
+            <pre class="json" id="verifyResponse"></pre>
+            <div id="verifyAnnotations"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /layout -->
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const state = {
+  step: 0,
+  user: null,
+  accessToken: null,
+  decodedToken: null,
+  agent: 'query-agent',
+  agentType: 'agent',
+  spiffeSvid: null,
+  svidDecoded: null,
+  scope: 'readonly',
+  opaResult: null,
+  delegationToken: null,
+  dbCredential: null,
+  sessionId: null,
+  queryResults: null,
+  auditEntries: null,
+  revoked: false,
+  deviceCode: null,
+  deviceUserCode: null,
+  devicePollTimer: null,
+  devicePolling: false,
+};
+
+// ---------------------------------------------------------------------------
+// CSS color name → CSS variable mapping
+// ---------------------------------------------------------------------------
+const COLOR_MAP = {
+  accent: 'var(--accent)',
+  green: 'var(--green)',
+  red: 'var(--red)',
+  yellow: 'var(--yellow)',
+  purple: 'var(--purple)',
+  orange: 'var(--orange)',
+  cyan: 'var(--cyan)',
+  pink: 'var(--pink)',
+};
+
+// ---------------------------------------------------------------------------
+// Annotation Configs Per Step
+// ---------------------------------------------------------------------------
+const ANNOTATIONS = {
+  auth: [
+    { key: 'preferred_username', color: 'accent', label: 'IDENTITY', desc: 'The human who authenticated' },
+    { key: 'groups', color: 'green', label: 'GROUPS', desc: 'Group memberships \u2014 determines what scopes are allowed' },
+    { key: 'may_act', color: 'cyan', label: 'DELEGATION', desc: 'Authorizes agents to act on this user\u2019s behalf' },
+    { key: 'iss', color: 'purple', label: 'ISSUER', desc: 'Keycloak issued this token' },
+    { key: 'exp', color: 'yellow', label: 'EXPIRY', desc: 'Token is valid until this time', format: 'time' },
+  ],
+  svid: [
+    { key: 'sub', color: 'accent', label: 'SPIFFE ID', desc: 'The agent\u2019s cryptographic identity URI' },
+    { key: 'aud', color: 'orange', label: 'AUDIENCE', desc: 'This token is intended for the token-exchange service' },
+    { key: 'client_type', color: 'pink', label: 'CLIENT TYPE', desc: 'Identifies this workload as an AI agent' },
+  ],
+  opaInput: [
+    { key: 'human_token.sub', color: 'accent', label: 'SUBJECT', desc: 'The human requesting delegation' },
+    { key: 'human_token.groups', color: 'green', label: 'GROUPS', desc: 'Checked against group_permissions in policy data' },
+    { key: 'agent_spiffe_id', color: 'cyan', label: 'AGENT', desc: 'Must be in registered_agents list' },
+    { key: 'requested_scope', color: 'orange', label: 'SCOPE', desc: 'The permission level being requested' },
+  ],
+  opaDecision: [
+    { key: 'allow', color: 'bool', label: 'DECISION', desc: 'Whether the policy permits this delegation' },
+    { key: 'valid_human_token', color: 'bool', label: 'RULE 1', desc: 'Token not expired, issuer trusted' },
+    { key: 'valid_agent_identity', color: 'bool', label: 'RULE 2', desc: 'Agent registered in policy data' },
+    { key: 'authorized_delegation', color: 'bool', label: 'RULE 3', desc: 'may_act claim authorizes this agent' },
+    { key: 'scope_permitted', color: 'bool', label: 'RULE 4', desc: 'User\u2019s groups allow this scope' },
+    { key: 'decision.reason', color: 'yellow', label: 'REASON', desc: 'Explanation of the decision' },
+  ],
+  delegationToken: [
+    { key: 'sub', color: 'accent', label: 'SUBJECT', desc: 'The human this delegation represents' },
+    { key: 'act', color: 'cyan', label: 'ACTOR CHAIN', desc: 'The agent(s) acting on behalf \u2014 RFC 8693 actor claim' },
+    { key: 'scope', color: 'green', label: 'SCOPE', desc: 'The granted permission level' },
+    { key: 'exp', color: 'yellow', label: 'EXPIRY', desc: 'Matches Vault credential TTL (~5 min)', format: 'time' },
+  ],
+  exchangeResponse: [
+    { key: 'access_token', color: 'accent', label: 'DELEGATION TOKEN', desc: 'Proves who authorized what' },
+    { key: 'db_credential', color: 'green', label: 'DB CREDENTIALS', desc: 'Dynamic username/password from Vault' },
+    { key: 'session_id', color: 'purple', label: 'SESSION ID', desc: 'Correlates audit entries and enables revocation' },
+  ],
+  dbCreds: [
+    { key: 'username', color: 'accent', label: 'DYNAMIC USER', desc: 'Vault-generated PostgreSQL role (auto-expires)' },
+    { key: 'ttl_seconds', color: 'yellow', label: 'TTL', desc: 'Credentials expire after this many seconds' },
+  ],
+  audit: [
+    { key: 'event_type', color: 'accent', label: 'EVENT', desc: 'What action was recorded' },
+    { key: 'human', color: 'green', label: 'HUMAN', desc: 'The delegating human' },
+    { key: 'agent', color: 'cyan', label: 'AGENT', desc: 'The acting agent identity' },
+    { key: 'scope', color: 'orange', label: 'SCOPE', desc: 'Granted permission scope' },
+  ],
+  revoke: [
+    { key: 'status', color: 'green', label: 'STATUS', desc: 'Whether the revocation succeeded' },
+    { key: 'session_id', color: 'purple', label: 'SESSION', desc: 'The revoked session identifier' },
+    { key: 'vault_lease_revoked', color: 'green', label: 'VAULT LEASE', desc: 'Dynamic credentials destroyed in Vault' },
+  ],
+  verify: [
+    { key: 'revoked', color: 'bool', label: 'REVOKED', desc: 'Whether credentials are no longer valid' },
+    { key: 'message', color: 'accent', label: 'RESULT', desc: 'Verification outcome' },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Annotation Renderer
+// ---------------------------------------------------------------------------
+function resolveNestedKey(obj, keyPath) {
+  const parts = keyPath.split('.');
+  let val = obj;
+  for (const p of parts) {
+    if (val == null) return undefined;
+    val = val[p];
+  }
+  return val;
+}
+
+function formatAnnotationValue(val, format) {
+  if (val === undefined || val === null) return 'N/A';
+  if (format === 'time' && typeof val === 'number') {
+    try {
+      return new Date(val * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+    } catch(e) { return String(val); }
+  }
+  if (typeof val === 'object') {
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
+function renderAnnotatedResponse(elementId, data, annotations) {
+  const el = document.getElementById(elementId);
+  if (!el || !data || !annotations) return;
+
+  let html = '<div class="claim-grid">';
+  for (const ann of annotations) {
+    const val = resolveNestedKey(data, ann.key);
+    if (val === undefined) continue;
+
+    let color;
+    if (ann.color === 'bool') {
+      color = val === true ? 'var(--green)' : 'var(--red)';
+    } else {
+      color = COLOR_MAP[ann.color] || 'var(--accent)';
+    }
+
+    const displayVal = formatAnnotationValue(val, ann.format);
+
+    html += '<div class="claim-card" style="--claim-color:' + color + ';">';
+    html += '<div class="claim-name"><span class="claim-label" style="--claim-color:' + color + ';">' + escapeHtml(ann.label) + '</span></div>';
+    html += '<div class="claim-val">' + escapeHtml(displayVal) + '</div>';
+    html += '<div class="claim-why">' + escapeHtml(ann.desc) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+function showStep(n) {
+  document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('visible'));
+  document.getElementById('panel' + n).classList.add('visible');
+  document.querySelectorAll('.step-btn').forEach((b, i) => {
+    b.classList.toggle('active', i === n);
+  });
+  state.step = n;
+}
+
+function completeStep(n) {
+  const btn = document.querySelectorAll('.step-btn')[n];
+  if (btn) btn.classList.add('completed');
+  const num = document.getElementById('stepNum' + n);
+  if (num) num.textContent = '\u2713';
+}
+
+function failStep(n) {
+  const btn = document.querySelectorAll('.step-btn')[n];
+  if (btn) btn.classList.remove('completed');
+  const num = document.getElementById('stepNum' + n);
+  if (num) { num.textContent = '\u2717'; num.style.background = 'var(--red)'; num.style.color = 'var(--bg)'; }
+}
+
+// ---------------------------------------------------------------------------
+// JSON Syntax Highlighting
+// ---------------------------------------------------------------------------
+function syntaxHighlight(obj) {
+  let json;
+  try { json = JSON.stringify(obj, null, 2); } catch(e) { json = String(obj); }
+  return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function(match) {
+    let cls = 'number';
+    if (/^"/.test(match)) {
+      cls = /:$/.test(match) ? 'key' : 'string';
+    } else if (/true|false/.test(match)) {
+      cls = 'boolean';
+    } else if (/null/.test(match)) {
+      cls = 'null';
+    }
+    return '<span class="' + cls + '">' + match + '</span>';
+  });
+}
+
+function showJson(elementId, obj) {
+  const el = document.getElementById(elementId);
+  if (el) el.innerHTML = syntaxHighlight(obj);
+}
+
+function setTiming(elementId, ms, success) {
+  const el = document.getElementById(elementId);
+  if (el) {
+    el.textContent = ms + 'ms';
+    el.className = 'timing-badge ' + (success ? 'success' : 'error');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Button helper — set spinner / restore text
+// ---------------------------------------------------------------------------
+function btnLoading(id, text) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> ' + text;
+}
+function btnRestore(id, text) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = text;
+}
+
+// ---------------------------------------------------------------------------
+// API Helper
+// ---------------------------------------------------------------------------
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(path, opts);
+  const data = await resp.json();
+  return { status: resp.status, data };
+}
+
+// ---------------------------------------------------------------------------
+// Step 0: Health
+// ---------------------------------------------------------------------------
+let healthRunning = false;
+async function checkHealth() {
+  if (healthRunning) return;
+  healthRunning = true;
+  btnLoading('healthBtn', 'Checking...');
+
+  const start = Date.now();
+  try {
+    const { data } = await api('GET', '/api/health');
+    const elapsed = Date.now() - start;
+    setTiming('healthTiming', elapsed, data.overall === 'healthy');
+
+    for (const [name, info] of Object.entries(data.services)) {
+      const card = document.getElementById('svc-' + name);
+      if (!card) continue;
+      const dot = card.querySelector('.status-dot');
+      dot.className = 'status-dot ' + info.status;
+      card.className = 'service-card ' + info.status;
+    }
+
+    document.getElementById('healthResponseCard').style.display = '';
+    showJson('healthResponse', data);
+    document.getElementById('statusText').textContent = data.overall === 'healthy' ? 'All services healthy' : 'Some services degraded';
+    document.getElementById('liveBadge').className = 'badge ' + (data.overall === 'healthy' ? 'badge-live' : 'badge-warn');
+    document.getElementById('liveBadge').textContent = data.overall === 'healthy' ? 'LIVE' : 'DEGRADED';
+
+    if (data.overall === 'healthy') {
+      completeStep(0);
+    }
+  } catch (e) {
+    document.getElementById('statusText').textContent = 'Connection error: ' + e.message;
+    document.getElementById('liveBadge').className = 'badge badge-warn';
+    document.getElementById('liveBadge').textContent = 'OFFLINE';
+  }
+  btnRestore('healthBtn', 'Check Health');
+  healthRunning = false;
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Auth — Password
+// ---------------------------------------------------------------------------
+function updatePassword() {
+  const user = document.getElementById('loginUser').value;
+  document.getElementById('loginPass').value = user === 'alice' ? 'alice-demo-password' : 'bob-demo-password';
+}
+
+async function doLogin() {
+  const user = document.getElementById('loginUser').value;
+  const pass = document.getElementById('loginPass').value;
+  btnLoading('loginBtn', 'Logging in...');
+
+  showJson('authRequest', { grant_type: 'password', client_id: 'demo-cli', username: user, password: '***', scope: 'openid' });
+  document.getElementById('authResults').style.display = '';
+
+  try {
+    const { status, data } = await api('POST', '/api/auth/login', { username: user, password: pass });
+    setTiming('authTiming', data.elapsed_ms || 0, status === 200);
+
+    if (status === 200 && data.access_token) {
+      state.user = user;
+      state.accessToken = data.access_token;
+      state.decodedToken = data.decoded;
+      showJson('authResponse', data.decoded);
+      renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
+      document.getElementById('authResponseCard').className = 'card success';
+      completeStep(1);
+      document.getElementById('svidBtn').disabled = false;
+    } else {
+      showJson('authResponse', data);
+      document.getElementById('authResponseCard').className = 'card error';
+      failStep(1);
+    }
+  } catch (e) {
+    showJson('authResponse', { error: e.message });
+    document.getElementById('authResponseCard').className = 'card error';
+    failStep(1);
+  }
+  btnRestore('loginBtn', 'Login');
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Auth — Device Flow
+// ---------------------------------------------------------------------------
+function switchAuthMode(mode) {
+  document.querySelectorAll('.auth-tab').forEach((t, i) => t.classList.toggle('active', (mode === 'password' ? i === 0 : i === 1)));
+  document.getElementById('authPassword').classList.toggle('visible', mode === 'password');
+  document.getElementById('authDevice').classList.toggle('visible', mode === 'device');
+}
+
+function updateDevicePassword() {
+  const user = document.getElementById('deviceUser').value;
+  document.getElementById('devicePass').value = user === 'alice' ? 'alice-demo-password' : 'bob-demo-password';
+}
+
+function openKeycloakLogin() {
+  if (!state.deviceUserCode) return;
+  window.open('/realms/' + encodeURIComponent('demo') + '/device?user_code=' + encodeURIComponent(state.deviceUserCode), '_blank');
+  // Only start polling AFTER the user opens Keycloak
+  if (!state.devicePolling) {
+    document.getElementById('devicePollStatus').style.display = '';
+    document.getElementById('devicePollStatus').innerHTML = '<span class="spinner"></span> Waiting for you to login in the Keycloak tab...';
+    pollDevice();
+  }
+}
+
+function showServerApprove() {
+  document.getElementById('deviceServerApproveUI').style.display = '';
+}
+
+async function doServerApprove() {
+  if (!state.deviceUserCode) return;
+  btnLoading('deviceApproveBtn', 'Approving...');
+
+  const username = document.getElementById('deviceUser').value;
+  const password = document.getElementById('devicePass').value;
+
+  try {
+    const result = await api('POST', '/api/auth/device-approve', {
+      user_code: state.deviceUserCode,
+      username: username,
+      password: password,
+    });
+
+    if (result.data.error) {
+      document.getElementById('devicePollStatus').style.display = '';
+      document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Approval failed: ' + (result.data.message || 'unknown error');
+    } else {
+      document.getElementById('devicePollStatus').style.display = '';
+      document.getElementById('devicePollStatus').innerHTML = '<span class="spinner"></span> Approved! Polling for token...';
+      // Only start polling AFTER server-side approval succeeds
+      if (!state.devicePolling) {
+        pollDevice();
+      }
+    }
+  } catch (e) {
+    document.getElementById('devicePollStatus').style.display = '';
+    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + e.message;
+  }
+  btnRestore('deviceApproveBtn', 'Approve');
+}
+
+async function startDeviceFlow() {
+  if (state.devicePollTimer) { clearTimeout(state.devicePollTimer); state.devicePollTimer = null; }
+  state.devicePolling = false;
+
+  btnLoading('deviceStartBtn', 'Starting...');
+
+  try {
+    const { data } = await api('POST', '/api/auth/device-start');
+    if (!data.device_code) {
+      showJson('authResponse', data);
+      btnRestore('deviceStartBtn', 'Start Device Flow');
+      return;
+    }
+
+    state.deviceCode = data.device_code;
+    state.deviceUserCode = data.user_code;
+    document.getElementById('deviceUserCode').textContent = data.user_code;
+    document.getElementById('deviceFlowUI').style.display = '';
+    document.getElementById('deviceActions').style.display = '';
+    document.getElementById('deviceServerApproveUI').style.display = 'none';
+    document.getElementById('authResults').style.display = '';
+    showJson('authRequest', { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', client_id: 'demo-cli', user_code: data.user_code });
+    showJson('authResponse', data);
+    // Hide poll status until user takes action
+    document.getElementById('devicePollStatus').style.display = 'none';
+
+    btnRestore('deviceStartBtn', 'Start Device Flow');
+
+    // Do NOT start polling here — wait for user to click
+    // "Open Keycloak Login" or "Approve Server-Side"
+
+  } catch (e) {
+    document.getElementById('devicePollStatus').style.display = '';
+    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + e.message;
+    showJson('authResponse', { error: e.message });
+    btnRestore('deviceStartBtn', 'Start Device Flow');
+  }
+}
+
+async function pollDevice() {
+  if (!state.deviceCode || state.devicePolling) return;
+  state.devicePolling = true;
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    if (!state.deviceCode) return; // cancelled
+    try {
+      const { data } = await api('POST', '/api/auth/device-poll', { device_code: state.deviceCode });
+      if (data.status === 'complete' && data.access_token) {
+        state.accessToken = data.access_token;
+        state.decodedToken = data.decoded;
+        state.user = data.decoded?.preferred_username || data.decoded?.sub || data.decoded?.email || 'user';
+        document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--green);">\u2713</span> Authorized as ' + escapeHtml(state.user) + '!';
+        document.getElementById('deviceActions').style.display = 'none';
+        document.getElementById('deviceServerApproveUI').style.display = 'none';
+        showJson('authResponse', data.decoded);
+        renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
+        document.getElementById('authResponseCard').className = 'card success';
+        setTiming('authTiming', data.elapsed_ms || 0, true);
+        completeStep(1);
+        document.getElementById('svidBtn').disabled = false;
+        state.deviceCode = null;
+        state.devicePolling = false;
+        return;
+      }
+      if (data.status === 'error') {
+        document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> ' + (data.error_description || data.error);
+        state.devicePolling = false;
+        return;
+      }
+    } catch (e) {
+      // continue polling
+    }
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--yellow);">!</span> Polling timed out \u2014 try again';
+  state.devicePolling = false;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: SPIFFE SVID
+// ---------------------------------------------------------------------------
+async function fetchSVID() {
+  const agent = document.getElementById('agentSelect').value;
+  const agentType = document.getElementById('agentTypeSelect').value;
+  btnLoading('svidBtn', 'Fetching...');
+
+  state.agent = agent;
+  state.agentType = agentType;
+
+  try {
+    const { data } = await api('POST', '/api/spiffe/svid', { agent_id: agent, agent_type: agentType });
+    setTiming('spiffeTiming', data.elapsed_ms || 0, true);
+
+    state.spiffeSvid = data.svid_token;
+    state.svidDecoded = data.decoded;
+
+    document.getElementById('svidResults').style.display = '';
+    showJson('svidInfo', { spiffe_id: data.spiffe_id, source: data.source, note: data.source === 'synthetic' ? 'SPIRE unavailable; using demo JWT signed with HS256' : 'Real SVID from SPIRE workload API' });
+    showJson('svidDecoded', data.decoded);
+    renderAnnotatedResponse('svidAnnotations', data.decoded, ANNOTATIONS.svid);
+    completeStep(2);
+    document.getElementById('opaBtn').disabled = false;
+  } catch (e) {
+    showJson('svidDecoded', { error: e.message });
+    failStep(2);
+  }
+  btnRestore('svidBtn', 'Fetch SVID');
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: OPA
+// ---------------------------------------------------------------------------
+async function evaluateOPA() {
+  const scope = document.getElementById('scopeSelect').value;
+  state.scope = scope;
+  btnLoading('opaBtn', 'Evaluating...');
+
+  const spiffeId = state.svidDecoded?.sub || 'spiffe://demo.local/' + state.agentType + '/' + state.agent;
+  const opaInput = {
+    human_token: {
+      sub: state.decodedToken?.email || state.decodedToken?.preferred_username || state.user || 'unknown',
+      groups: state.decodedToken?.groups || [],
+      may_act: state.decodedToken?.may_act || {},
+      exp: state.decodedToken?.exp || 0,
+      iss: state.decodedToken?.iss || '',
+    },
+    agent_spiffe_id: spiffeId,
+    requested_scope: scope,
+    current_time: Math.floor(Date.now() / 1000),
+    delegation_depth: 0,
+  };
+
+  document.getElementById('opaResults').style.display = '';
+  showJson('opaRequest', opaInput);
+  renderAnnotatedResponse('opaInputAnnotations', opaInput, ANNOTATIONS.opaInput);
+
+  try {
+    const { status, data } = await api('POST', '/api/opa/evaluate', { input: opaInput });
+    setTiming('opaTiming', data.elapsed_ms || 0, !!data.result?.allow);
+
+    const result = data.result || data;
+    showJson('opaResponse', result);
+    renderAnnotatedResponse('opaAnnotations', result, ANNOTATIONS.opaDecision);
+
+    const allowed = data.result?.allow === true;
+    document.getElementById('opaResponseCard').className = 'card ' + (allowed ? 'success' : 'error');
+
+    if (allowed) {
+      completeStep(3);
+    } else {
+      failStep(3);
+    }
+    state.opaResult = data.result;
+    document.getElementById('exchangeBtn').disabled = false;
+  } catch (e) {
+    showJson('opaResponse', { error: e.message });
+    document.getElementById('opaResponseCard').className = 'card error';
+    failStep(3);
+  }
+  btnRestore('opaBtn', 'Evaluate Policy');
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: Token Exchange
+// ---------------------------------------------------------------------------
+async function doTokenExchange() {
+  btnLoading('exchangeBtn', 'Exchanging...');
+
+  const reqBody = {
+    subject_token: state.accessToken,
+    actor_token: state.spiffeSvid,
+    scope: state.scope,
+  };
+
+  document.getElementById('exchangeResults').style.display = '';
+  showJson('exchangeRequest', {
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+    subject_token: state.accessToken ? (state.accessToken.substring(0, 20) + '...') : '',
+    subject_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+    actor_token: state.spiffeSvid ? (state.spiffeSvid.substring(0, 20) + '...') : '',
+    actor_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+    scope: state.scope,
+    audience: 'database',
+  });
+
+  try {
+    const { status, data } = await api('POST', '/api/token-exchange', reqBody);
+    setTiming('exchangeTiming', data.elapsed_ms || 0, status === 200 && !data.error);
+
+    const displayData = { ...data };
+    delete displayData.elapsed_ms;
+    delete displayData.delegation_token_decoded;
+    showJson('exchangeResponse', displayData);
+    renderAnnotatedResponse('exchangeAnnotations', displayData, ANNOTATIONS.exchangeResponse);
+
+    if (status === 200 && data.access_token) {
+      state.delegationToken = data.access_token;
+      state.dbCredential = data.db_credential;
+      state.sessionId = data.session_id;
+
+      document.getElementById('exchangeResponseCard').className = 'card success';
+      completeStep(4);
+
+      if (data.delegation_token_decoded) {
+        document.getElementById('delegationTokenCard').style.display = '';
+        showJson('delegationDecoded', data.delegation_token_decoded);
+        renderAnnotatedResponse('delegationAnnotations', data.delegation_token_decoded, ANNOTATIONS.delegationToken);
+      }
+
+      document.getElementById('auditBtn').disabled = false;
+      document.getElementById('revokeBtn').disabled = false;
+
+      if (state.dbCredential) {
+        document.getElementById('queryBtn').disabled = false;
+        document.getElementById('queryCredCard').style.display = '';
+        const credDisplay = {
+          username: state.dbCredential.username,
+          host: state.dbCredential.host,
+          port: state.dbCredential.port,
+          database: state.dbCredential.database,
+          ttl_seconds: state.dbCredential.ttl_seconds,
+          note: 'Password hidden \u2014 auto-used for queries',
+        };
+        showJson('queryCredInfo', credDisplay);
+        renderAnnotatedResponse('queryCredAnnotations', credDisplay, ANNOTATIONS.dbCreds);
+      }
+    } else {
+      document.getElementById('exchangeResponseCard').className = 'card error';
+      showJson('exchangeResponse', data);
+      failStep(4);
+      document.getElementById('auditBtn').disabled = false;
+    }
+  } catch (e) {
+    showJson('exchangeResponse', { error: e.message });
+    document.getElementById('exchangeResponseCard').className = 'card error';
+    failStep(4);
+  }
+  btnRestore('exchangeBtn', 'Exchange Tokens');
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: Database Query
+// ---------------------------------------------------------------------------
+function updateQueryText() {
+  const sel = document.getElementById('queryPreset');
+  document.getElementById('customQueryGroup').style.display = sel.value === 'custom' ? '' : 'none';
+}
+
+async function executeQuery() {
+  const sel = document.getElementById('queryPreset');
+  const sql = sel.value === 'custom' ? document.getElementById('customQuery').value : sel.value;
+  btnLoading('queryBtn', 'Executing...');
+
+  const cred = state.dbCredential;
+  if (!cred) { btnRestore('queryBtn', 'Execute'); return; }
+
+  try {
+    const { status, data } = await api('POST', '/api/db/query', {
+      host: cred.host,
+      port: cred.port,
+      database: cred.database,
+      username: cred.username,
+      password: cred.password,
+      sql: sql,
+    });
+    setTiming('queryTiming', data.elapsed_ms || 0, !data.error);
+
+    document.getElementById('queryResultCard').style.display = '';
+
+    if (data.error) {
+      document.getElementById('queryResultCard').className = 'card error';
+      document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight(data) + '</pre>';
+      failStep(5);
+    } else if (data.columns && data.rows) {
+      document.getElementById('queryResultCard').className = 'card success';
+      let html = '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">' + data.row_count + ' row(s) returned</div>';
+      html += '<div style="overflow-x:auto;"><table class="result-table"><thead><tr>';
+      for (const col of data.columns) html += '<th>' + escapeHtml(col) + '</th>';
+      html += '</tr></thead><tbody>';
+      for (const row of data.rows) {
+        html += '<tr>';
+        for (const val of row) html += '<td>' + escapeHtml(String(val == null ? 'NULL' : val)) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+      document.getElementById('queryResultBody').innerHTML = html;
+      state.queryResults = data;
+      completeStep(5);
+    }
+  } catch (e) {
+    document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight({ error: e.message }) + '</pre>';
+    failStep(5);
+  }
+  btnRestore('queryBtn', 'Execute');
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ---------------------------------------------------------------------------
+// Step 6: Audit
+// ---------------------------------------------------------------------------
+async function fetchAudit() {
+  btnLoading('auditBtn', 'Fetching...');
+
+  try {
+    const { data } = await api('GET', '/api/audit');
+    setTiming('auditTiming', data.elapsed_ms || 0, true);
+
+    const entries = data.entries || data;
+    document.getElementById('auditCard').style.display = '';
+    showJson('auditResponse', entries);
+    // Annotate the first entry if it exists
+    if (Array.isArray(entries) && entries.length > 0) {
+      renderAnnotatedResponse('auditAnnotations', entries[0], ANNOTATIONS.audit);
+    }
+    state.auditEntries = entries;
+    completeStep(6);
+  } catch (e) {
+    showJson('auditResponse', { error: e.message });
+    failStep(6);
+  }
+  btnRestore('auditBtn', 'Fetch Audit Log');
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: Revocation
+// ---------------------------------------------------------------------------
+async function doRevoke() {
+  btnLoading('revokeBtn', 'Revoking...');
+  document.getElementById('revokeResults').style.display = '';
+
+  try {
+    const { status, data } = await api('POST', '/api/revoke', {
+      session_id: state.sessionId,
+      delegation_token: state.delegationToken,
+    });
+    setTiming('revokeTiming', data.elapsed_ms || 0, true);
+
+    showJson('revokeResponse', data);
+    renderAnnotatedResponse('revokeAnnotations', data, ANNOTATIONS.revoke);
+    document.getElementById('revokeResponseCard').className = 'card success';
+    state.revoked = true;
+    document.getElementById('verifyBtn').disabled = false;
+
+    setTimeout(verifyRevoked, 1500);
+  } catch (e) {
+    showJson('revokeResponse', { error: e.message });
+    document.getElementById('revokeResponseCard').className = 'card error';
+  }
+  btnRestore('revokeBtn', 'Revoke Credentials');
+}
+
+async function verifyRevoked() {
+  btnLoading('verifyBtn', 'Verifying...');
+
+  const cred = state.dbCredential;
+  if (!cred) { btnRestore('verifyBtn', 'Verify Revocation'); return; }
+
+  try {
+    const { data } = await api('POST', '/api/db/verify-revoked', {
+      username: cred.username,
+      password: cred.password,
+    });
+
+    document.getElementById('verifyResponseCard').style.display = '';
+    showJson('verifyResponse', data);
+    renderAnnotatedResponse('verifyAnnotations', data, ANNOTATIONS.verify);
+
+    if (data.revoked) {
+      document.getElementById('verifyResponseCard').className = 'card success';
+      completeStep(7);
+    } else {
+      document.getElementById('verifyResponseCard').className = 'card error';
+    }
+  } catch (e) {
+    document.getElementById('verifyResponseCard').style.display = '';
+    showJson('verifyResponse', { error: e.message });
+  }
+  btnRestore('verifyBtn', 'Verify Revocation');
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+checkHealth();
+</script>
+
+</body>
+</html>
