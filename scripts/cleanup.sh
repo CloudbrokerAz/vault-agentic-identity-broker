@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
-COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml"
+COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml --profile spire"
 
 echo "Stopping and removing all containers..."
 ${COMPOSE} down -v --remove-orphans 2>/dev/null || true
