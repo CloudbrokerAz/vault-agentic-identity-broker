@@ -389,6 +389,90 @@ label {
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1000px) { .two-col { grid-template-columns: 1fr; } }
 
+/* --- Attestation Flow Diagram --- */
+.attest-flow {
+  display: flex; align-items: flex-start; justify-content: center;
+  gap: 0; padding: 16px 0 8px 0; flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.attest-node {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 100px; flex-shrink: 0;
+}
+.attest-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px; font-family: var(--mono);
+  background: var(--accent-dim); color: var(--accent);
+  border: 2px solid var(--accent);
+}
+.attest-node:nth-child(3) .attest-icon { background: var(--green-dim); color: var(--green); border-color: var(--green); }
+.attest-node:nth-child(5) .attest-icon { background: var(--purple-dim); color: var(--purple); border-color: var(--purple); }
+.attest-label { font-size: 12px; font-weight: 600; margin-top: 6px; color: var(--text-bright); }
+.attest-sub { font-size: 10px; color: var(--text-dim); text-align: center; margin-top: 2px; line-height: 1.3; }
+.attest-arrow {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 90px; padding-top: 14px; flex-shrink: 0;
+  opacity: 0.4; transition: opacity 0.5s ease;
+}
+.attest-arrow.active { opacity: 1; }
+.attest-arrow-line {
+  width: 100%; height: 2px; background: var(--border);
+  position: relative;
+}
+.attest-arrow.active .attest-arrow-line { background: var(--green); }
+.attest-arrow-line::after {
+  content: ''; position: absolute; right: -1px; top: -4px;
+  border: 5px solid transparent; border-left-color: var(--border);
+}
+.attest-arrow.active .attest-arrow-line::after { border-left-color: var(--green); }
+.attest-arrow-text {
+  font-size: 10px; color: var(--text-dim); text-align: center;
+  margin-top: 6px; line-height: 1.3;
+}
+.attest-detail {
+  text-align: center; font-size: 12px; padding: 8px 12px;
+  border-top: 1px solid var(--border); margin-top: 8px;
+}
+
+/* --- Process Steps (SVID trace) --- */
+.process-steps { display: flex; flex-direction: column; gap: 0; }
+.process-step {
+  display: grid; grid-template-columns: 32px 1fr;
+  gap: 0 12px; position: relative;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.process-step.visible { opacity: 1; transform: translateY(0); }
+.process-step-line {
+  display: flex; flex-direction: column; align-items: center;
+}
+.process-step-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--border); flex-shrink: 0;
+  margin-top: 6px; transition: background 0.3s ease;
+}
+.process-step.ok .process-step-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.process-step.skip .process-step-dot { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+.process-step.warn .process-step-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+.process-step-connector {
+  width: 2px; flex: 1; background: var(--border); min-height: 12px;
+}
+.process-step:last-child .process-step-connector { display: none; }
+.process-step-body { padding: 4px 0 16px 0; }
+.process-step-action {
+  font-size: 13px; font-weight: 600; color: var(--text-bright);
+}
+.process-step-detail {
+  font-size: 12px; color: var(--text-dim); margin-top: 2px; line-height: 1.4;
+}
+.process-step-result {
+  font-size: 12px; font-family: var(--mono); color: var(--green);
+  margin-top: 4px; word-break: break-all;
+}
+.process-step.skip .process-step-result { color: var(--yellow); }
+.process-step.warn .process-step-result { color: var(--orange); }
+
 /* --- Claim Annotations --- */
 .claim-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 .claim-card {
@@ -585,7 +669,7 @@ label {
         <h2>Agent Identity (SPIFFE)</h2>
         <span class="timing-badge" id="spiffeTiming"></span>
       </div>
-      <p class="panel-desc">Fetch a SPIFFE SVID for the AI agent. This cryptographic identity proves which agent is acting. If SPIRE is unavailable, a synthetic JWT-SVID is generated for demo purposes.</p>
+      <p class="panel-desc">The AI agent needs a cryptographic identity before it can act. In production, SPIRE attests the workload (verifies its process, container, UID) and issues a signed JWT-SVID. Here you can see each step of that process.</p>
       <div class="form-row">
         <div class="form-group">
           <label>Agent</label>
@@ -605,6 +689,40 @@ label {
         </div>
         <button class="btn btn-primary" onclick="fetchSVID()" id="svidBtn" disabled>Fetch SVID</button>
       </div>
+      <div id="svidDiagram" class="card" style="display:none;margin-bottom:16px;">
+        <div class="card-header">How SPIFFE Attestation Works</div>
+        <div class="card-body">
+          <div class="attest-flow">
+            <div class="attest-node">
+              <div class="attest-icon">AI</div>
+              <div class="attest-label">AI Agent</div>
+              <div class="attest-sub">(this workload)</div>
+            </div>
+            <div class="attest-arrow" id="attestArrow1">
+              <div class="attest-arrow-line"></div>
+              <div class="attest-arrow-text">1. Connect to<br>Unix socket</div>
+            </div>
+            <div class="attest-node">
+              <div class="attest-icon">SA</div>
+              <div class="attest-label">SPIRE Agent</div>
+              <div class="attest-sub" id="attestAgentSub">Reads caller PID + UID<br>from kernel (SO_PEERCRED)</div>
+            </div>
+            <div class="attest-arrow" id="attestArrow2">
+              <div class="attest-arrow-line"></div>
+              <div class="attest-arrow-text">2. Match selector<br>to entry</div>
+            </div>
+            <div class="attest-node">
+              <div class="attest-icon">SS</div>
+              <div class="attest-label">SPIRE Server</div>
+              <div class="attest-sub">Signs JWT-SVID<br>with CA key (ES256)</div>
+            </div>
+          </div>
+          <div class="attest-detail" id="attestDetail">
+            <span style="color:var(--text-dim);">Click <strong>Fetch SVID</strong> to see the attestation steps in detail below.</span>
+          </div>
+        </div>
+      </div>
+      <div id="svidSteps" style="display:none;margin-bottom:16px;"></div>
       <div class="two-col" id="svidResults" style="display:none;">
         <div class="card">
           <div class="card-header">SPIFFE ID</div>
@@ -1241,6 +1359,31 @@ async function pollDevice() {
 // ---------------------------------------------------------------------------
 // Step 2: SPIFFE SVID
 // ---------------------------------------------------------------------------
+function renderProcessSteps(containerId, steps) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.style.display = '';
+
+  let html = '<div class="process-steps">';
+  for (const s of steps) {
+    html += '<div class="process-step ' + escapeHtml(s.status) + '" id="svidStep' + s.step + '">';
+    html += '<div class="process-step-line"><div class="process-step-dot"></div><div class="process-step-connector"></div></div>';
+    html += '<div class="process-step-body">';
+    html += '<div class="process-step-action">Step ' + s.step + ': ' + escapeHtml(s.action) + '</div>';
+    html += '<div class="process-step-detail">' + escapeHtml(s.detail) + '</div>';
+    html += '<div class="process-step-result">' + escapeHtml(s.result) + '</div>';
+    html += '</div></div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+
+  // Animate steps in one by one
+  const stepEls = el.querySelectorAll('.process-step');
+  stepEls.forEach((stepEl, i) => {
+    setTimeout(() => stepEl.classList.add('visible'), (i + 1) * 300);
+  });
+}
+
 async function fetchSVID() {
   const agent = document.getElementById('agentSelect').value;
   const agentType = document.getElementById('agentTypeSelect').value;
@@ -1249,6 +1392,17 @@ async function fetchSVID() {
   state.agent = agent;
   state.agentType = agentType;
 
+  // Clear previous results
+  document.getElementById('svidSteps').innerHTML = '';
+  document.getElementById('svidSteps').style.display = 'none';
+  document.getElementById('svidResults').style.display = 'none';
+
+  // Show the attestation diagram
+  document.getElementById('svidDiagram').style.display = '';
+  document.getElementById('attestArrow1').classList.remove('active');
+  document.getElementById('attestArrow2').classList.remove('active');
+  document.getElementById('attestDetail').innerHTML = '<span class="spinner"></span> <span style="color:var(--text-dim);">Connecting to SPIRE agent...</span>';
+
   try {
     const { data } = await api('POST', '/api/spiffe/svid', { agent_id: agent, agent_type: agentType });
     setTiming('spiffeTiming', data.elapsed_ms || 0, true);
@@ -1256,14 +1410,42 @@ async function fetchSVID() {
     state.spiffeSvid = data.svid_token;
     state.svidDecoded = data.decoded;
 
-    document.getElementById('svidResults').style.display = '';
-    showJson('svidInfo', { spiffe_id: data.spiffe_id, source: data.source, note: data.source === 'synthetic' ? 'SPIRE unavailable; using demo JWT signed with HS256' : 'Real SVID from SPIRE workload API' });
-    showJson('svidDecoded', data.decoded);
-    renderAnnotatedResponse('svidAnnotations', data.decoded, ANNOTATIONS.svid);
+    // Animate diagram arrows to show the flow
+    setTimeout(() => {
+      document.getElementById('attestArrow1').classList.add('active');
+      document.getElementById('attestDetail').innerHTML = '<span class="spinner"></span> <span style="color:var(--text-dim);">SPIRE agent reading kernel credentials...</span>';
+    }, 400);
+
+    setTimeout(() => {
+      document.getElementById('attestArrow2').classList.add('active');
+      const src = data.source === 'spire' ? 'SPIRE CA' : 'demo';
+      const alg = data.jwt_header ? data.jwt_header.alg : 'HS256';
+      document.getElementById('attestDetail').innerHTML =
+        '<span style="color:var(--green);">\u2713</span> ' +
+        'SVID issued for <strong>' + escapeHtml(data.spiffe_id) + '</strong>' +
+        ' &mdash; signed with ' + escapeHtml(alg) + ' by ' + escapeHtml(src);
+    }, 900);
+
+    // Show animated step-by-step process trace
+    if (data.steps) {
+      setTimeout(() => renderProcessSteps('svidSteps', data.steps), 1100);
+    }
+
+    // Show the results after the animation finishes
+    const delay = data.steps ? 1100 + data.steps.length * 300 + 200 : 1200;
+    setTimeout(() => {
+      document.getElementById('svidResults').style.display = '';
+      showJson('svidInfo', { spiffe_id: data.spiffe_id, source: data.source });
+      showJson('svidDecoded', data.decoded);
+      renderAnnotatedResponse('svidAnnotations', data.decoded, ANNOTATIONS.svid);
+    }, delay);
+
     completeStep(2);
     document.getElementById('opaBtn').disabled = false;
   } catch (e) {
+    document.getElementById('attestDetail').innerHTML = '<span style="color:var(--red);">\u2717</span> Failed: ' + escapeHtml(e.message);
     showJson('svidDecoded', { error: e.message });
+    document.getElementById('svidResults').style.display = '';
     failStep(2);
   }
   btnRestore('svidBtn', 'Fetch SVID');

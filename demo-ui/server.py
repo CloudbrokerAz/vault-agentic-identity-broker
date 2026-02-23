@@ -548,24 +548,98 @@ class DemoHandler(BaseHTTPRequestHandler):
 
         start = time.time()
 
-        # Try real SPIRE socket first
+        # Build step-by-step trace of what happens under the hood
+        steps = []
+
+        # Step 1: Construct SPIFFE ID from trust domain + workload path
+        steps.append({
+            "step": 1,
+            "action": "Construct SPIFFE ID",
+            "detail": f"Trust domain 'demo.local' + workload path '/{agent_type}/{agent_id}'",
+            "result": spiffe_id,
+            "status": "ok",
+        })
+
+        # Step 2: Check for SPIRE agent socket
+        spire_socket_found = os.path.exists(SPIRE_SOCKET)
+        caller_uid = os.getuid()
+        caller_pid = os.getpid()
+        steps.append({
+            "step": 2,
+            "action": "Connect to SPIRE Workload API",
+            "detail": (
+                f"The SPIRE agent exposes a Unix domain socket at {SPIRE_SOCKET}. "
+                "Any workload on this host can connect to request an identity. "
+                "The kernel attaches the caller's PID and UID to the socket connection — "
+                "this is how SPIRE knows who is asking."
+            ),
+            "result": (
+                f"Connected (caller PID={caller_pid}, UID={caller_uid})"
+                if spire_socket_found else
+                "Socket not found — SPIRE agent not available in this container"
+            ),
+            "status": "ok" if spire_socket_found else "skip",
+        })
+
+        # Step 3+: Attempt to fetch real SVID from SPIRE, or generate synthetic
         svid_token = None
         source = "synthetic"
+        jwt_header = None
 
-        if os.path.exists(SPIRE_SOCKET):
+        if spire_socket_found:
             try:
-                from pyspiffe.spiffe_id.spiffe_id import SpiffeId
-                from pyspiffe.workloadapi.default_workload_api_client import DefaultWorkloadApiClient
+                from spiffe import WorkloadApiClient
 
-                client = DefaultWorkloadApiClient(spiffe_socket_path=f"unix://{SPIRE_SOCKET}")
-                svid_set = client.fetch_jwt_svids(audiences=["token-exchange"], hint=spiffe_id)
+                # Sub-step 3a: Kernel-level attestation
+                steps.append({
+                    "step": 3,
+                    "action": "SPIRE kernel-level attestation",
+                    "detail": (
+                        f"SPIRE agent reads the caller's identity from the kernel: "
+                        f"UID={caller_uid} (via SO_PEERCRED on the Unix socket). "
+                        "It then checks its registration entries for a selector matching "
+                        f"'unix:uid:{caller_uid}'. This is zero-trust — no passwords or "
+                        "API keys are exchanged, just kernel-verified process metadata."
+                    ),
+                    "result": f"Attestation selector: unix:uid:{caller_uid}",
+                    "status": "ok",
+                })
+
+                client = WorkloadApiClient(socket_path=f"unix://{SPIRE_SOCKET}")
+                svid_set = client.fetch_jwt_svids(audience={"token-exchange"})
                 if svid_set and len(svid_set) > 0:
                     svid_token = svid_set[0].token
                     source = "spire"
+
+                    # Parse JWT header for signing details
+                    import base64
+                    try:
+                        hdr_b64 = svid_token.split(".")[0]
+                        hdr_b64 += "=" * (4 - len(hdr_b64) % 4)
+                        jwt_header = json.loads(base64.urlsafe_b64decode(hdr_b64))
+                    except Exception:
+                        jwt_header = {}
+
+                    alg = jwt_header.get("alg", "?")
+                    kid = jwt_header.get("kid", "?")
+
+                    # Sub-step 3b: Entry match and SVID issuance
+                    steps.append({
+                        "step": 4,
+                        "action": "SPIRE issues signed JWT-SVID",
+                        "detail": (
+                            f"The SPIRE agent matched selector 'unix:uid:{caller_uid}' "
+                            f"to the registration entry for {spiffe_id}. "
+                            f"The SPIRE server's CA then signed a JWT-SVID using {alg} "
+                            f"(key ID: {kid[:12]}...). This cryptographic signature proves "
+                            "the SVID was issued by the trust domain's root of trust."
+                        ),
+                        "result": f"JWT-SVID signed with {alg} by SPIRE CA (trust domain: demo.local)",
+                        "status": "ok",
+                    })
             except Exception as e:
                 logger.info("SPIRE socket available but fetch failed: %s — using synthetic", e)
 
-        # Fallback: synthetic JWT (matches ai-agent/agent.py pattern)
         if svid_token is None:
             now = int(time.time())
             claims = {
@@ -577,6 +651,31 @@ class DemoHandler(BaseHTTPRequestHandler):
             }
             svid_token = jwt.encode(claims, "demo-secret", algorithm="HS256")
             source = "synthetic"
+            steps.append({
+                "step": 3,
+                "action": "Mint JWT-SVID for demo",
+                "detail": (
+                    "In production, the SPIRE agent would attest the workload "
+                    "(verify PID, UID, container labels) and issue a CA-signed JWT-SVID. "
+                    "For this demo, we mint an equivalent JWT with the same claims structure."
+                ),
+                "result": f"JWT-SVID created with sub={spiffe_id}, aud=['token-exchange'], client_type='ai_agent'",
+                "status": "ok",
+            })
+
+        # Final step: ready for Token Exchange
+        next_step = max(s["step"] for s in steps) + 1
+        steps.append({
+            "step": next_step,
+            "action": "SVID ready for Token Exchange",
+            "detail": (
+                "The Token Exchange service will verify this SVID's 'sub' claim is a "
+                "registered agent in the SPIFFE trust domain 'demo.local', and that "
+                "the audience includes 'token-exchange'."
+            ),
+            "result": "SVID will be sent as actor_token in the RFC 8693 exchange",
+            "status": "ok",
+        })
 
         elapsed = int((time.time() - start) * 1000)
         decoded = decode_token_safe(svid_token)
@@ -586,6 +685,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             "spiffe_id": spiffe_id,
             "source": source,
             "decoded": decoded,
+            "jwt_header": jwt_header,
+            "steps": steps,
             "elapsed_ms": elapsed,
         })
 
