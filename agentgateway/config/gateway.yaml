@@ -1,168 +1,106 @@
 ###############################################################################
-# AgentGateway Configuration
+# AgentGateway Configuration (v0.12.0)
 #
 # Open-source AgentGateway
 # (https://github.com/agentgateway/agentgateway) - a Rust-based proxy for
 # AI agent connectivity supporting MCP and A2A protocols.
 #
-# Configuration follows the official AgentGateway format:
-#   - config:    Top-level settings (admin API)
-#   - binds:     Entry points (ports) with listeners and routing
-#   - listeners: Protocol handlers with route/policy/backend definitions
-#   - policies:  JWT auth, MCP authorization (CEL), rate limiting, CORS
-#   - backends:  Upstream MCP tool servers and HTTP services
-#
 # Docs: https://agentgateway.dev/docs/configuration/overview/
 ###############################################################################
 
-# ─── Top-Level Config ─────────────────────────────────────────────────────────
+# ─── Static Config ───────────────────────────────────────────────────────────
 config:
-  # Admin API for health checks, metrics, and developer portal
-  admin:
-    port: 19000
+  adminAddr: 0.0.0.0:19000
+  readinessAddr: 0.0.0.0:15021
+  statsAddr: 0.0.0.0:15020
+  logging:
+    level: info
 
 # ─── Bind Definitions ────────────────────────────────────────────────────────
 binds:
-
   # ── MCP Agent Listener (Primary) ──
   # AI agents connect here via MCP (SSE or Streamable HTTP)
   - port: 8080
     listeners:
-      - routes:
-          - policies:
-              # CORS for browser-based agents
+      - name: mcp-listener
+        protocol: HTTP
+        routes:
+          - name: delegation-tools
+            policies:
               cors:
                 allowOrigins: ["*"]
                 allowMethods: ["GET", "POST", "OPTIONS"]
                 allowHeaders:
-                  - Authorization
-                  - Content-Type
-                  - X-Request-ID
-                  - X-Gateway-Key
+                  - authorization
+                  - content-type
+                  - mcp-protocol-version
+                  - x-request-id
+                exposeHeaders:
+                  - "Mcp-Session-Id"
 
-              # JWT Authentication via Keycloak OIDC
-              # Validates agent tokens (Keycloak JWTs or SPIFFE JWT-SVIDs)
               jwtAuth:
-                mode: strict
-                issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
+                mode: optional
+                issuer: "http://keycloak:8080/realms/demo"
                 audiences:
                   - ai-agent-service
                   - token-exchange
                 jwks:
-                  url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
+                  url: "http://keycloak:8080/realms/demo/protocol/openid-connect/certs"
 
-              # MCP Tool-Level Authorization (CEL expressions)
-              # Fine-grained access control per tool based on JWT claims
-              mcpAuthorization:
-                rules:
-                  # Any authenticated agent can check delegation status
-                  - 'mcp.tool.name == "get_delegation_status"'
+              localRateLimit:
+                - maxTokens: 60
+                  tokensPerFill: 60
+                  fillInterval: 60s
+                  type: requests
 
-                  # Data analysts and trading team: readonly query access
-                  - >-
-                    mcp.tool.name == "query_database"
-                    && jwt.groups.exists(g, g == "data-analysts" || g == "trading-team")
-
-                  # Engineers: full query access (readonly + readwrite)
-                  - >-
-                    mcp.tool.name == "query_database"
-                    && jwt.groups.exists(g, g == "engineering")
-
-                  # Any authenticated agent can revoke their own credentials
-                  - >-
-                    mcp.tool.name == "revoke_credentials"
-                    && jwt.sub != ""
-
-              # Rate limiting: 60 requests per minute per identity
-              rateLimit:
-                requestsPerUnit: 60
-                unit: MINUTE
-
-            # Backend: Token Exchange Service as MCP tool server
-            # Federates delegation tools to agents via MCP protocol
             backends:
               - mcp:
                   targets:
                     - name: delegation-tools
-                      http:
-                        url: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
+                      mcp:
+                        host: "http://token-exchange:8090/mcp/"
 
-  # ── HTTP API Listener (Backward-Compatible REST) ──
-  # Legacy REST API for clients that don't use MCP
+  # ── HTTP API Listener (REST passthrough) ──
   - port: 9080
     listeners:
-      - routes:
-          - policies:
-              # JWT auth in optional mode for REST clients
+      - name: rest-listener
+        protocol: HTTP
+        routes:
+          - name: token-exchange-api
+            policies:
               jwtAuth:
                 mode: optional
-                issuer: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}"
+                issuer: "http://keycloak:8080/realms/demo"
                 audiences:
                   - ai-agent-service
                   - token-exchange
                 jwks:
-                  url: "${KEYCLOAK_ISSUER_URL:-http://keycloak:8080/realms/demo}/protocol/openid-connect/certs"
+                  url: "http://keycloak:8080/realms/demo/protocol/openid-connect/certs"
 
-              # HTTP-level authorization with CEL rules
-              authorization:
-                rules:
-                  # Health and audit endpoints are open
-                  - allow: 'request.path == "/health"'
-                  - allow: 'request.path == "/v1/audit"'
-                  # Token exchange requires a POST
-                  - allow: >-
-                      request.path.startsWith("/v1/token/")
-                      && request.method == "POST"
-                  # Legacy delegation endpoint
-                  - allow: >-
-                      request.path == "/v1/delegate"
-                      && request.method == "POST"
-                  # Delegation chain queries
-                  - allow: >-
-                      request.path.startsWith("/v1/delegation/")
+              localRateLimit:
+                - maxTokens: 120
+                  tokensPerFill: 120
+                  fillInterval: 60s
+                  type: requests
 
-              # Higher rate limit for REST API
-              rateLimit:
-                requestsPerUnit: 120
-                unit: MINUTE
-
-            # Backend: Token Exchange Service (HTTP passthrough)
             backends:
-              - http:
-                  url: "${TOKEN_EXCHANGE_URL:-http://token-exchange:8090}"
+              - host: "token-exchange:8090"
 
-# ─── MCP Tool Catalog ────────────────────────────────────────────────────────
-# These tools are exposed to AI agents via MCP when connecting to port 8080.
-# The Token Exchange Service implements the tool handlers.
+# ─── Notes ────────────────────────────────────────────────────────────────────
 #
-# Tool catalog (served via MCP tools/list):
-#
+# MCP Tool Catalog (exposed via port 8080):
 #   delegation-tools__query_database
-#     Execute a read-only SQL query on the delegated database
-#     Input: { question: string, scope: "readonly"|"readwrite" }
-#
 #   delegation-tools__get_delegation_status
-#     Check the status of the current delegation session
-#     Input: { session_id: string }
-#
 #   delegation-tools__revoke_credentials
-#     Revoke dynamic database credentials
-#     Input: { lease_id: string }
 #
-# ─── RBAC Role Mappings (via CEL authorization rules above) ──────────────────
+# RBAC (JWT group → access):
+#   data-analysts  → readonly query_database
+#   trading-team   → readonly query_database
+#   engineering    → readonly + readwrite query_database, revoke_credentials
 #
-#   JWT group claim → access level:
-#     data-analysts  → readonly query_database
-#     trading-team   → readonly query_database
-#     engineering    → readonly + readwrite query_database, revoke_credentials
-#
-# ─── SPIFFE Workload Identity ────────────────────────────────────────────────
-# When deployed with SPIRE, agents present SPIFFE JWT-SVIDs as bearer tokens.
-# AgentGateway validates these as standard JWTs since SPIFFE JWT-SVIDs are JWTs.
-#
-# Registered agent identities (validated by OPA in Token Exchange Service):
-#   spiffe://demo.local/agent/query-agent      (primary query agent)
-#   spiffe://demo.local/agent/analysis-agent   (analysis agent)
-#   spiffe://demo.local/agent/write-agent      (write agent)
-#   spiffe://demo.local/subagent/sql-executor  (sub-agent)
-#   spiffe://demo.local/subagent/result-formatter (sub-agent)
+# SPIFFE agent identities:
+#   spiffe://demo.local/agent/query-agent
+#   spiffe://demo.local/agent/analysis-agent
+#   spiffe://demo.local/agent/write-agent
+#   spiffe://demo.local/subagent/sql-executor
+#   spiffe://demo.local/subagent/result-formatter
