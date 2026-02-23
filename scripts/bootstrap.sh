@@ -77,7 +77,8 @@ log_step 1 "Waiting for infrastructure services"
 wait_for_service "Vault"      "http://localhost:8200/v1/sys/health?standbyok=true&uninitcode=200&sealedcode=200" 30
 wait_for_service "OPA"        "http://localhost:8181/health" 20
 wait_for_service "PostgreSQL" "http://localhost:5432" 20 || true  # pg_isready doesn't respond to HTTP
-wait_for_service "Keycloak"   "http://localhost:8080/health/ready" 60
+# Keycloak 26+ serves health on management port 9000
+wait_for_service "Keycloak"   "http://localhost:8080/realms/demo" 60
 
 # Verify PostgreSQL via docker
 log_info "Checking PostgreSQL..."
@@ -194,27 +195,35 @@ log_ok "Database secrets engine enabled"
 
 sleep 2
 
-# Configure PostgreSQL connection
-log_info "Configuring PostgreSQL connection..."
-curl -sf "${VAULT_ADDR}/v1/database/config/postgresql" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "plugin_name": "postgresql-database-plugin",
-        "allowed_roles": "ai-agent-readonly,ai-agent-readwrite",
-        "connection_url": "postgresql://{{username}}:{{password}}@'"${DB_HOST}"':5432/appdb?sslmode=disable",
-        "username": "vault_admin",
-        "password": "vault-admin-initial-password"
-    }' > /dev/null
-log_ok "PostgreSQL connection configured"
+# Check if database connection already configured (idempotent)
+DB_CONFIG_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "${VAULT_ADDR}/v1/database/config/postgresql" \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "000")
 
-# Rotate root credentials
-log_info "Rotating Vault root database credentials..."
-curl -sf "${VAULT_ADDR}/v1/database/rotate-root/postgresql" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" > /dev/null
-log_ok "Root credentials rotated (original password no longer valid)"
+if [ "${DB_CONFIG_CHECK}" = "404" ] || [ "${DB_CONFIG_CHECK}" = "000" ]; then
+    # Configure PostgreSQL connection (first run only)
+    log_info "Configuring PostgreSQL connection..."
+    curl -sf "${VAULT_ADDR}/v1/database/config/postgresql" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "plugin_name": "postgresql-database-plugin",
+            "allowed_roles": "ai-agent-readonly,ai-agent-readwrite",
+            "connection_url": "postgresql://{{username}}:{{password}}@'"${DB_HOST}"':5432/appdb?sslmode=disable",
+            "username": "vault_admin",
+            "password": "vault-admin-initial-password"
+        }' > /dev/null
+    log_ok "PostgreSQL connection configured"
+
+    # Rotate root credentials
+    log_info "Rotating Vault root database credentials..."
+    curl -sf "${VAULT_ADDR}/v1/database/rotate-root/postgresql" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" > /dev/null
+    log_ok "Root credentials rotated (original password no longer valid)"
+else
+    log_ok "PostgreSQL connection already configured (skipping)"
+fi
 
 # Create readonly role
 log_info "Creating ai-agent-readonly role..."
@@ -231,6 +240,8 @@ curl -sf "${VAULT_ADDR}/v1/database/roles/ai-agent-readonly" \
             "GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";"
         ],
         "revocation_statements": [
+            "REASSIGN OWNED BY \"{{name}}\" TO postgres;",
+            "DROP OWNED BY \"{{name}}\";",
             "DROP ROLE IF EXISTS \"{{name}}\";"
         ],
         "default_ttl": "5m",
@@ -253,6 +264,8 @@ curl -sf "${VAULT_ADDR}/v1/database/roles/ai-agent-readwrite" \
             "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO \"{{name}}\";"
         ],
         "revocation_statements": [
+            "REASSIGN OWNED BY \"{{name}}\" TO postgres;",
+            "DROP OWNED BY \"{{name}}\";",
             "DROP ROLE IF EXISTS \"{{name}}\";"
         ],
         "default_ttl": "5m",
@@ -414,16 +427,36 @@ log_ok "JWT auth role 'spire-agent-readwrite' created"
 
 # ─── Step 8: Register SPIRE Entries ─────────────────────────────────────
 
-log_step 8 "Registering SPIRE workload entries"
+log_step 8 "Registering SPIRE workload entries and starting SPIRE agent"
 
 # Generate join token and register entries
 log_info "Generating SPIRE join token..."
-JOIN_TOKEN=$(${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server token generate \
+JOIN_TOKEN_OUTPUT=$(${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server token generate \
     -spiffeID "spiffe://demo.local/spire-agent" \
-    -ttl 3600 2>/dev/null | grep -oP 'Token: \K.*' || echo "")
+    -ttl 3600 2>/dev/null || echo "")
+
+# Extract token (format: "Token: <value>" — handle both grep -oP and portable grep)
+JOIN_TOKEN=$(echo "${JOIN_TOKEN_OUTPUT}" | sed -n 's/.*Token: *//p' | tr -d '[:space:]')
 
 if [ -n "${JOIN_TOKEN}" ]; then
     log_ok "Join token generated"
+
+    # Start SPIRE agent with the join token
+    log_info "Starting SPIRE agent with join token..."
+    SPIRE_JOIN_TOKEN="${JOIN_TOKEN}" ${COMPOSE} --profile spire up -d spire-agent 2>/dev/null
+    log_ok "SPIRE agent started"
+
+    # Wait for agent to become healthy
+    log_info "Waiting for SPIRE agent to attest..."
+    for i in $(seq 1 30); do
+        if ${COMPOSE} exec -T spire-agent /opt/spire/bin/spire-agent healthcheck 2>/dev/null; then
+            log_ok "SPIRE agent is healthy"
+            break
+        fi
+        echo -n "."
+        sleep 2
+    done
+    echo
 
     # Register AI Agents
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
@@ -466,8 +499,13 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -dns "ai-agent" \
         -ttl 3600 2>/dev/null || log_warn "Result Formatter entry may already exist"
     log_ok "Result Formatter Sub-Agent registered with SPIRE"
+
+    # Start SPIRE OIDC Discovery Provider
+    log_info "Starting SPIRE OIDC Discovery Provider..."
+    SPIRE_JOIN_TOKEN="${JOIN_TOKEN}" ${COMPOSE} --profile spire up -d spire-oidc 2>/dev/null
+    log_ok "SPIRE OIDC Discovery Provider started"
 else
-    log_warn "Could not generate SPIRE join token (agent may use existing token)"
+    log_warn "Could not generate SPIRE join token (SPIRE may not be available)"
 fi
 
 # ─── Step 9: Restart Token Exchange Service with Token ─────────────────────

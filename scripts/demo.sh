@@ -34,7 +34,7 @@ VAULT_ADDR="http://localhost:8200"
 
 if [ -f "${PROJECT_DIR}/.gateway.env" ]; then
     source "${PROJECT_DIR}/.gateway.env"
-    GATEWAY_VAULT_TOKEN="${VAULT_TOKEN}"
+    # GATEWAY_VAULT_TOKEN is set by the sourced file
 else
     GATEWAY_VAULT_TOKEN="${VAULT_ROOT_TOKEN}"
 fi
