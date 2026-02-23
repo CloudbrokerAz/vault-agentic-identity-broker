@@ -157,10 +157,8 @@ else
     fail "Token Exchange health check" "not responding"
 fi
 
-# PostgreSQL health (try pg_isready, fall back to docker compose exec)
+# PostgreSQL health
 if pg_isready -h 127.0.0.1 -p 5432 -U postgres > /dev/null 2>&1; then
-    pass "PostgreSQL is healthy"
-elif docker compose -f "${PROJECT_DIR}/docker-compose.host.yml" exec -T postgresql pg_isready -U postgres > /dev/null 2>&1; then
     pass "PostgreSQL is healthy"
 else
     fail "PostgreSQL health check" "not responding"
@@ -464,10 +462,8 @@ if [ -n "${CRED_RESULT}" ]; then
         fail "Vault TTL" "expected 300, got ${LEASE_TTL}"
     fi
 
-    # Test credentials against PostgreSQL (via docker compose exec)
-    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.host.yml"
-    PG_TEST=$(docker compose -f "${COMPOSE_FILE}" exec -T -e PGPASSWORD="${DB_PASS}" postgresql \
-        psql -U "${DB_USER}" -d appdb -t -c "SELECT COUNT(*) FROM app.orders" 2>/dev/null | tr -d ' \n\r' || echo "error")
+    # Test credentials against PostgreSQL
+    PG_TEST=$(PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${DB_USER}" -d appdb -t -c "SELECT COUNT(*) FROM app.orders" 2>/dev/null | tr -d ' \n\r' || echo "error")
 
     if [ "${PG_TEST}" != "error" ] && [ -n "${PG_TEST}" ] && [ "${PG_TEST}" -gt 0 ] 2>/dev/null; then
         pass "Dynamic credentials can query database (${PG_TEST} orders)"
@@ -476,8 +472,7 @@ if [ -n "${CRED_RESULT}" ]; then
     fi
 
     # Test that readonly can't write
-    PG_WRITE_TEST=$(docker compose -f "${COMPOSE_FILE}" exec -T -e PGPASSWORD="${DB_PASS}" postgresql \
-        psql -U "${DB_USER}" -d appdb -c "INSERT INTO app.products (name, category, price) VALUES ('test', 'test', 0)" 2>&1 || echo "denied")
+    PG_WRITE_TEST=$(PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${DB_USER}" -d appdb -c "INSERT INTO app.products (name, category, price) VALUES ('test', 'test', 0)" 2>&1 || echo "denied")
 
     if echo "${PG_WRITE_TEST}" | grep -qi "denied\|permission\|error"; then
         pass "Readonly credentials cannot write to database"
@@ -494,8 +489,7 @@ if [ -n "${CRED_RESULT}" ]; then
 
     sleep 1
 
-    PG_REVOKED=$(docker compose -f "${COMPOSE_FILE}" exec -T -e PGPASSWORD="${DB_PASS}" postgresql \
-        psql -U "${DB_USER}" -d appdb -c "SELECT 1" 2>&1 || echo "denied")
+    PG_REVOKED=$(PGPASSWORD="${DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${DB_USER}" -d appdb -c "SELECT 1" 2>&1 || echo "denied")
 
     if echo "${PG_REVOKED}" | grep -qi "denied\|FATAL\|password\|does not exist"; then
         pass "Revoked credentials are rejected by database"
@@ -555,10 +549,8 @@ if [ -n "${ALICE_TOKEN}" ]; then
         fi
 
         # Verify delegated credentials work against PostgreSQL
-        COMPOSE_FILE="${PROJECT_DIR}/docker-compose.host.yml"
         if [ -n "${DB_USERNAME}" ] && [ -n "${DB_PASSWORD}" ]; then
-            DELEG_QUERY=$(docker compose -f "${COMPOSE_FILE}" exec -T -e PGPASSWORD="${DB_PASSWORD}" postgresql \
-                psql -U "${DB_USERNAME}" -d appdb -t -c "SELECT COUNT(*) FROM app.order_summary" 2>/dev/null | tr -d ' \n\r' || echo "error")
+            DELEG_QUERY=$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p 5432 -U "${DB_USERNAME}" -d appdb -t -c "SELECT COUNT(*) FROM app.order_summary" 2>/dev/null | tr -d ' \n\r' || echo "error")
 
             if [ "${DELEG_QUERY}" != "error" ] && [ -n "${DELEG_QUERY}" ] && [ "${DELEG_QUERY}" -gt 0 ] 2>/dev/null; then
                 pass "Delegated credentials can query database (${DELEG_QUERY} rows via order_summary view)"
@@ -577,8 +569,7 @@ if [ -n "${ALICE_TOKEN}" ]; then
 
             sleep 1
 
-            REVOKED_QUERY=$(docker compose -f "${COMPOSE_FILE}" exec -T -e PGPASSWORD="${DB_PASSWORD}" postgresql \
-                psql -U "${DB_USERNAME}" -d appdb -c "SELECT 1" 2>&1 || echo "denied")
+            REVOKED_QUERY=$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p 5432 -U "${DB_USERNAME}" -d appdb -c "SELECT 1" 2>&1 || echo "denied")
             if echo "${REVOKED_QUERY}" | grep -qi "denied\|FATAL\|password\|does not exist"; then
                 pass "Delegated credentials revoked successfully"
             else
@@ -652,13 +643,11 @@ if [ -n "${BOB_TOKEN}" ]; then
 
         if [ -n "${BOB_DB_USER}" ] && [ "${BOB_DB_USER}" != "None" ]; then
             # Test INSERT works for readwrite
-            WRITE_TEST=$(docker compose -f "${PROJECT_DIR}/docker-compose.host.yml" exec -T -e PGPASSWORD="${BOB_DB_PASS}" postgresql \
-                psql -U "${BOB_DB_USER}" -d appdb -c "INSERT INTO app.products (name, category, price) VALUES ('E2E Test Product', 'test', 1.00)" 2>&1)
+            WRITE_TEST=$(PGPASSWORD="${BOB_DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${BOB_DB_USER}" -d appdb -c "INSERT INTO app.products (name, category, price) VALUES ('E2E Test Product', 'test', 1.00)" 2>&1)
             if echo "${WRITE_TEST}" | grep -qi "INSERT"; then
                 pass "Readwrite credentials can INSERT into database"
                 # Clean up test data
-                docker compose -f "${PROJECT_DIR}/docker-compose.host.yml" exec -T -e PGPASSWORD="${BOB_DB_PASS}" postgresql \
-                    psql -U "${BOB_DB_USER}" -d appdb -c "DELETE FROM app.products WHERE name='E2E Test Product'" 2>/dev/null
+                PGPASSWORD="${BOB_DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${BOB_DB_USER}" -d appdb -c "DELETE FROM app.products WHERE name='E2E Test Product'" 2>/dev/null
             else
                 fail "Readwrite INSERT" "INSERT failed: ${WRITE_TEST}"
             fi
@@ -771,18 +760,11 @@ fi
 echo ""
 echo "── PostgreSQL Schema ──"
 
-# Helper: run psql query against PostgreSQL (try native first, then docker compose exec)
+# Helper: run psql query against PostgreSQL via native psql
 run_pg_query() {
     local sql="$1"
     local result=""
-    # Try native psql via TCP
     result=$(PGPASSWORD="postgres-root-password" psql -h 127.0.0.1 -p 5432 -U postgres -d appdb -t -c "${sql}" 2>/dev/null | tr -d ' \n')
-    if [ -n "${result}" ]; then
-        echo "${result}"
-        return
-    fi
-    # Fallback to docker compose exec
-    result=$(docker compose -f "${PROJECT_DIR}/docker-compose.host.yml" exec -T postgresql psql -U postgres -d appdb -t -c "${sql}" 2>/dev/null | tr -d ' \n\r')
     echo "${result}"
 }
 
