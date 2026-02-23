@@ -27,15 +27,15 @@ class TestDockerCompose(unittest.TestCase):
 
     def test_all_services_defined(self):
         expected = {
-            "spire-server", "spire-agent", "spire-oidc", "keycloak", "vault",
-            "opa", "postgresql", "ai-agent",
+            "spire-server", "spire-init", "spire-agent", "spire-oidc",
+            "keycloak", "vault", "opa", "postgresql", "ai-agent",
             "agentgateway", "token-exchange",
         }
         actual = set(self.config["services"].keys())
         self.assertEqual(expected, actual)
 
     def test_service_count(self):
-        self.assertEqual(len(self.config["services"]), 10)
+        self.assertEqual(len(self.config["services"]), 11)
 
     # ─── Network Configuration ───────────────────────────────────────
 
