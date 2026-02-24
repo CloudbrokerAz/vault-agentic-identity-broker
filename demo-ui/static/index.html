@@ -506,8 +506,9 @@ label {
     <h1>Vault Agentic Identity Broker</h1>
     <span class="badge badge-live" id="liveBadge">LIVE</span>
   </div>
-  <div style="display:flex;align-items:center;gap:16px;">
+  <div style="display:flex;align-items:center;gap:12px;">
     <span style="font-size:12px;color:var(--text-dim);font-family:var(--mono);" id="statusText">Checking services...</span>
+    <button class="btn btn-danger" id="logoutBtn" onclick="doLogout()" style="display:none;font-size:12px;padding:4px 12px;">Logout</button>
   </div>
 </div>
 
@@ -640,6 +641,12 @@ label {
         </div>
       </div>
 
+      <div class="card" id="authRawTokenCard" style="display:none;">
+        <div class="card-header">Raw Access Token (JWT)</div>
+        <div class="card-body">
+          <pre class="json" id="authRawToken" style="word-break:break-all;white-space:pre-wrap;font-size:11px;color:var(--text-dim);"></pre>
+        </div>
+      </div>
       <div class="two-col" id="authResults" style="display:none;">
         <div class="card" id="authRequestCard">
           <div class="card-header">Request</div>
@@ -1168,6 +1175,30 @@ async function checkHealth() {
 }
 
 // ---------------------------------------------------------------------------
+// Raw JWT display
+// ---------------------------------------------------------------------------
+function showRawToken(token) {
+  if (!token) return;
+  const card = document.getElementById('authRawTokenCard');
+  const el = document.getElementById('authRawToken');
+  if (!card || !el) return;
+  card.style.display = '';
+
+  // Color-code the three JWT parts: header.payload.signature
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    el.innerHTML =
+      '<span style="color:var(--accent);">' + escapeHtml(parts[0]) + '</span>' +
+      '<span style="color:var(--text-dim);">.</span>' +
+      '<span style="color:var(--green);">' + escapeHtml(parts[1]) + '</span>' +
+      '<span style="color:var(--text-dim);">.</span>' +
+      '<span style="color:var(--purple);">' + escapeHtml(parts[2]) + '</span>';
+  } else {
+    el.textContent = token;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Step 1: Auth — Device Flow
 // ---------------------------------------------------------------------------
 function switchAuthMode(mode) {
@@ -1183,7 +1214,7 @@ function updateDevicePassword() {
 
 function openKeycloakLogin() {
   if (!state.deviceUserCode) return;
-  window.open('/realms/' + encodeURIComponent('demo') + '/device?user_code=' + encodeURIComponent(state.deviceUserCode), '_blank');
+  window.open('/realms/demo/device', '_blank');
   // Only start polling AFTER the user opens Keycloak
   if (!state.devicePolling) {
     document.getElementById('devicePollStatus').style.display = '';
@@ -1284,10 +1315,12 @@ async function pollDevice() {
         document.getElementById('deviceServerApproveUI').style.display = 'none';
         showJson('authResponse', data.decoded);
         renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
+        showRawToken(data.access_token);
         document.getElementById('authResponseCard').className = 'card success';
         setTiming('authTiming', data.elapsed_ms || 0, true);
         completeStep(1);
         document.getElementById('svidBtn').disabled = false;
+        showLogoutButton();
         state.deviceCode = null;
         state.devicePolling = false;
         return;
@@ -1382,10 +1415,12 @@ async function handleAuthCodeCallback() {
       state.decodedToken = data.decoded;
       showJson('authResponse', data.decoded);
       renderAnnotatedResponse('authAnnotations', data.decoded, ANNOTATIONS.auth);
+      showRawToken(data.access_token);
       document.getElementById('authResponseCard').className = 'card success';
       statusText.innerHTML = '<span style="color:var(--green);">&#10003;</span> Authenticated as ' + escapeHtml(state.user) + '!';
       completeStep(1);
       document.getElementById('svidBtn').disabled = false;
+      showLogoutButton();
     } else {
       showJson('authResponse', data);
       document.getElementById('authResponseCard').className = 'card error';
@@ -1769,6 +1804,30 @@ async function verifyRevoked() {
     showJson('verifyResponse', { error: e.message });
   }
   btnRestore('verifyBtn', 'Verify Revocation');
+}
+
+// ---------------------------------------------------------------------------
+// Logout
+// ---------------------------------------------------------------------------
+async function doLogout() {
+  if (!state.user) return;
+  const btn = document.getElementById('logoutBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Logging out...'; }
+
+  try {
+    await api('POST', '/api/auth/logout', { username: state.user });
+  } catch (e) {
+    // Continue with client-side cleanup even if the server call fails
+  }
+
+  // Reset all client state and reload to get a fresh page
+  sessionStorage.removeItem('oauth_state');
+  window.location.reload();
+}
+
+function showLogoutButton() {
+  const btn = document.getElementById('logoutBtn');
+  if (btn) btn.style.display = '';
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import os
 import re
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 import jwt
@@ -215,6 +216,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/api/auth/device-start": self._handle_device_start,
             "/api/auth/device-poll": self._handle_device_poll,
             "/api/auth/device-approve": self._handle_device_approve,
+            "/api/auth/logout": self._handle_logout,
             "/api/spiffe/svid": self._handle_spiffe_svid,
             "/api/opa/evaluate": self._handle_opa_evaluate,
             "/api/token-exchange": self._handle_token_exchange,
@@ -575,6 +577,90 @@ class DemoHandler(BaseHTTPRequestHandler):
             elapsed = int((time.time() - start) * 1000)
             self._send_error(502, "keycloak", f"Device approval failed: {e}")
 
+    # --- Auth: Logout (kill Keycloak sessions + clear proxy cookies) ---
+
+    def _handle_logout(self):
+        body = self._read_body()
+        username = body.get("username", "")
+
+        if not username:
+            self._send_error(400, "keycloak", "username is required")
+            return
+
+        start = time.time()
+        try:
+            # Get Keycloak admin token
+            r = requests.post(
+                f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token",
+                data={
+                    "client_id": "admin-cli",
+                    "username": "admin",
+                    "password": "admin",
+                    "grant_type": "password",
+                },
+                timeout=10,
+            )
+            if r.status_code != 200:
+                self._send_error(502, "keycloak", "Failed to get admin token")
+                return
+
+            admin_token = r.json().get("access_token")
+
+            # Find user by username
+            r = requests.get(
+                f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users",
+                params={"username": username},
+                headers={"Authorization": f"Bearer {admin_token}"},
+                timeout=10,
+            )
+            if r.status_code != 200 or not r.json():
+                self._send_error(404, "keycloak", f"User '{username}' not found")
+                return
+
+            user_id = r.json()[0]["id"]
+
+            # Terminate all sessions for this user
+            requests.post(
+                f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users/{user_id}/logout",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                timeout=10,
+            )
+
+            elapsed = int((time.time() - start) * 1000)
+
+            # Build response
+            resp_body = json.dumps({
+                "status": "logged_out",
+                "username": username,
+                "message": "All Keycloak sessions terminated",
+                "elapsed_ms": elapsed,
+            }, indent=2).encode()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._cors_headers()
+
+            # Expire Keycloak SSO cookies set via the reverse proxy
+            for cookie_name in (
+                "KEYCLOAK_IDENTITY", "KEYCLOAK_SESSION",
+                "KEYCLOAK_IDENTITY_LEGACY", "KEYCLOAK_SESSION_LEGACY",
+                "AUTH_SESSION_ID", "AUTH_SESSION_ID_LEGACY", "KC_RESTART",
+            ):
+                for path in ("/", f"/realms/{KEYCLOAK_REALM}/"):
+                    self.send_header(
+                        "Set-Cookie",
+                        f"{cookie_name}=; Path={path}; Max-Age=0; "
+                        "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                    )
+
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.end_headers()
+            self.wfile.write(resp_body)
+
+        except Exception as e:
+            logger.exception("Logout failed")
+            self._send_error(502, "keycloak", str(e))
+
     # --- SPIFFE SVID ---
 
     def _handle_spiffe_svid(self):
@@ -913,8 +999,12 @@ class DemoHandler(BaseHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 def main():
-    server = HTTPServer(("0.0.0.0", LISTEN_PORT), DemoHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), DemoHandler)
     logger.info("Demo UI server listening on http://0.0.0.0:%d", LISTEN_PORT)
     try:
         server.serve_forever()
