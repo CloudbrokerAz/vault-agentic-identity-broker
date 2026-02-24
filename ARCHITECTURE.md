@@ -1,20 +1,23 @@
-# Architecture: Secure Agentic AI Identity & Database Access (v2)
+# Architecture: Secure Agentic AI Identity & Database Access (v3)
 
-## System Overview (v2 with AgentGateway + Token Exchange)
+## System Overview (v3 — Production-Hardened)
 
 ```
 +=========================================================================+
-|               IDENTITY DELEGATION CHAIN (v2)                            |
+|               IDENTITY DELEGATION CHAIN (v3)                            |
 |   Human (Alice) --> Agent --> [Sub-Agent] --> PostgreSQL Database        |
 |                                                                         |
 |  "Every query traces back to a human, through a chain of delegated      |
 |   identities, each validated by policy with cryptographic proof."       |
 |                                                                         |
-|  New in v2:                                                             |
-|   - AgentGateway (Rust) as MCP/A2A proxy                              |
-|   - RFC 8693 Token Exchange for delegation                             |
-|   - Sub-agent delegation chains (configurable depth)                   |
-|   - MCP/A2A protocol support                                           |
+|  v3 security hardening:                                                 |
+|   - Dynamic per-user agent consent (may_act via Keycloak attributes)   |
+|   - Vault periodic token with auto-renewal and policy restrictions     |
+|   - Optional mTLS via SPIFFE X.509-SVIDs on critical path             |
+|   - Cryptographic SPIFFE SVID verification (SPIRE OIDC JWKS)          |
+|   - RS256 delegation token signing with JWKS endpoint                  |
+|   - Fail-closed defaults (OPA, Keycloak, SPIRE unavailable → deny)    |
+|   - No synthetic/demo identities — real SPIRE SVIDs required           |
 +=========================================================================+
 
                     +-------------------+
@@ -41,8 +44,9 @@
                    (2) JWT Access Token
                    Claims: sub, email,
                    groups[], may_act{}
-                   (agent receives token
-                    only after human consents)
+                   may_act sourced from user's
+                   agent_consent attribute
+                   (dynamic, per-user consent)
                              |
                              v
               +--------------+--------------+
@@ -93,6 +97,9 @@
                               | - act{} claim       |
                               | - scope narrowing   |
                               | - fail-closed       |
+                              | - mTLS (optional)   |
+                              | - Vault token       |
+                              |   auto-renewal      |
                               +==========+==========+
                                          |
                               +----------+----------+
@@ -269,7 +276,68 @@
   +----------------------------+-------+
 ```
 
-## Component Architecture (v2)
+## Dynamic Agent Consent (may_act)
+
+```
+  +-------------------------------------------------------------------+
+  |  User-Controlled Agent Authorization                              |
+  |                                                                    |
+  |  Each Keycloak user has an "agent_consent" attribute that          |
+  |  controls which AI agents may act on their behalf. The OIDC       |
+  |  mapper reads this attribute at token issuance and emits it as    |
+  |  the may_act claim in the JWT. No hardcoded consent values.       |
+  +-------------------------------------------------------------------+
+
+  +-----------------+              +-------------------+
+  |  Demo UI (:8500)|              |  Keycloak (:8080) |
+  |                 |              |                   |
+  | Consent Step    |  Admin API   | User Attributes:  |
+  | [x] query-agent |----(PUT)--->| alice:            |
+  | [x] analysis-*  |             |   agent_consent:  |
+  | [ ] write-agent |             |   {"sub":"spiffe: |
+  |                 |             |    .../query-agent|
+  | [Update] [Revoke]             |    ","aud":[...]} |
+  +-----------------+              +--------+----------+
+                                            |
+                                   Token issuance
+                                   (oidc-usermodel-
+                                    attribute-mapper)
+                                            |
+                                            v
+                                   +-------------------+
+                                   | JWT Access Token  |
+                                   | {                 |
+                                   |   "sub": "alice", |
+                                   |   "may_act": {    |
+                                   |     "sub": "spiffe|
+                                   |       ://demo.    |
+                                   |       local/agent/|
+                                   |       query-agent"|
+                                   |     ,"aud": [...] |
+                                   |   }               |
+                                   | }                 |
+                                   +-------------------+
+
+  Consent Flow:
+  1. Human logs in via Device Auth or Auth Code flow
+  2. Demo UI loads current consent via Keycloak Admin API
+     GET /admin/realms/demo/users/{id} → attributes.agent_consent
+  3. Human selects which agents to authorize (checkboxes)
+  4. Demo UI updates consent via Keycloak Admin API
+     PUT /admin/realms/demo/users/{id} {attributes: {agent_consent: ...}}
+  5. Next token issuance includes updated may_act claim
+  6. OPA validates may_act.sub is a SPIFFE ID and agent is in aud[]
+
+  Pre-seeded Defaults:
+  +--------+-----------------------------------------------------------+
+  | User   | Consented Agents                                          |
+  +--------+-----------------------------------------------------------+
+  | alice  | query-agent, analysis-agent, write-agent (all 3)          |
+  | bob    | query-agent only                                          |
+  +--------+-----------------------------------------------------------+
+```
+
+## Component Architecture (v3)
 
 ```
 +-------------------------------------------------------------------------+
@@ -300,8 +368,14 @@
 |  | | Users:             | |    | | - max_delegation_   | |  <-- NEW    |
 |  | |  alice (analyst)   | |    | |   depth              | |              |
 |  | |  bob   (engineer)  | |    | | - scope_hierarchy   | |  <-- NEW    |
-|  | +--------------------+ |    | +---------------------+ |              |
-|  +========================+    +=========================+              |
+|  | |                    | |    | +---------------------+ |              |
+|  | | may_act mapper:    | |    |                         |              |
+|  | |  usermodel-attrib  | |    | +---------------------+ |              |
+|  | |  reads per-user    | |    | | SPIRE OIDC :8082    | |              |
+|  | |  agent_consent     | |    | | JWKS for JWT-SVID   | |              |
+|  | +--------------------+ |    | | verification        | |              |
+|  +========================+    | +---------------------+ |              |
+|                                +=========================+              |
 |                                                                         |
 |  +===================================================================+ |
 |  | PROXY LAYER                                                       | |
@@ -352,6 +426,17 @@
 |  | |    Keycloak unavailable ---> reject token (not accept)          || |
 |  | |    SPIRE OIDC unavailable -> reject actor (not accept)          || |
 |  | |                                                                  || |
+|  | |  mTLS (optional, via SPIFFE X.509-SVIDs):                       || |
+|  | |    Enabled with MTLS_ENABLED=true                               || |
+|  | |    Fetches X.509-SVID from SPIRE Workload API                   || |
+|  | |    TLSv1.2+ with mutual certificate verification                || |
+|  | |    Graceful fallback to HTTP if SPIRE unavailable               || |
+|  | |                                                                  || |
+|  | |  Vault Token Management:                                         || |
+|  | |    Periodic token (1h period, 24h max TTL)                      || |
+|  | |    Background daemon auto-renews every 45 minutes               || |
+|  | |    Child tokens restricted to DB credential policies            || |
+|  | |                                                                  || |
 |  | |  Connects to:                                                    || |
 |  | |   Keycloak ----> validate subject_token (human OIDC)            || |
 |  | |   SPIRE OIDC --> fetch JWKS for JWT-SVID verification           || |
@@ -392,7 +477,7 @@
 +-------------------------------------------------------------------------+
 ```
 
-## OPA Policy Decision Tree (v2 with Delegation Chains)
+## OPA Policy Decision Tree (v3)
 
 ```
                      Delegation Request
@@ -460,15 +545,16 @@ ALLOW   DENY
 "ok"    "scope_not_permitted"
 
   Registered Identities:
-  +----------------------------------------+-----------+
-  | SPIFFE ID                              | Type      |
-  +----------------------------------------+-----------+
-  | spiffe://demo.local/agent/query-agent  | Agent     |
-  | spiffe://demo.local/agent/analysis-*   | Agent     |
-  | spiffe://demo.local/agent/write-agent  | Agent     |
-  | spiffe://demo.local/subagent/sql-exec  | Sub-Agent |
-  | spiffe://demo.local/subagent/result-*  | Sub-Agent |
-  +----------------------------------------+-----------+
+  +---------------------------------------------+-----------+
+  | SPIFFE ID                                   | Type      |
+  +---------------------------------------------+-----------+
+  | spiffe://demo.local/agent/query-agent       | Agent     |
+  | spiffe://demo.local/agent/analysis-agent    | Agent     |
+  | spiffe://demo.local/agent/write-agent       | Agent     |
+  | spiffe://demo.local/service/token-exchange  | Service   |
+  | spiffe://demo.local/subagent/sql-executor   | Sub-Agent |
+  | spiffe://demo.local/subagent/result-format* | Sub-Agent |
+  +---------------------------------------------+-----------+
 ```
 
 ## Vault Credential Lifecycle
@@ -522,7 +608,122 @@ ALLOW   DENY
     --> Marks session as revoked
 ```
 
-## 7-Layer Audit Correlation Chain (v2)
+## Vault Token Lifecycle (Token Exchange Service)
+
+```
+  Token Exchange Service's own Vault token is a periodic token with
+  restricted child token policies. This prevents privilege escalation
+  and ensures the service token stays alive through automatic renewal.
+
+  Bootstrap creates the token:
+  +-------------------------------------------------------------------+
+  | vault token create                                                |
+  |   -policy=gateway-policy                                          |
+  |   -period=1h            <-- renewable every hour                  |
+  |   -explicit-max-ttl=24h <-- hard ceiling, must re-bootstrap after |
+  |   -allowed-policies=ai-agent-db-read,ai-agent-db-readwrite       |
+  +-------------------------------------------------------------------+
+
+  Token Renewal (background daemon thread):
+  +-------------------------------------------------------------------+
+  |                                                                   |
+  |  T=0       Service starts, token is valid (period=1h)             |
+  |  T=45m     Renewal thread: POST /v1/auth/token/renew-self         |
+  |            {increment: "2700s"} --> new TTL = 1h                  |
+  |  T=90m     Renewal thread fires again --> new TTL = 1h            |
+  |  ...       Repeats every 45 minutes                               |
+  |  T=24h     explicit_max_ttl reached: renewal fails                |
+  |            Service must be re-bootstrapped                        |
+  |                                                                   |
+  +-------------------------------------------------------------------+
+
+  Child Token Restrictions (allowed_policies):
+  +-------------------------------------------------------------------+
+  |  The gateway token can ONLY create child tokens with these         |
+  |  policies (prevents privilege escalation):                         |
+  |                                                                   |
+  |  - ai-agent-db-read      (SELECT on schema app)                   |
+  |  - ai-agent-db-readwrite (CRUD on schema app)                     |
+  |                                                                   |
+  |  Cannot create tokens with gateway-policy or any other policy.    |
+  |  Cannot create orphan tokens (path removed from policy).          |
+  +-------------------------------------------------------------------+
+
+  Vault Policy (gateway-policy.hcl):
+  +-------------------------------+------------------------------------+
+  | Path                          | Capability                         |
+  +-------------------------------+------------------------------------+
+  | auth/token/create             | create, update (child tokens)      |
+  | auth/token/lookup             | update                             |
+  | auth/token/lookup-self        | read                               |
+  | auth/token/renew-self         | update (periodic renewal)          |
+  | identity/entity/id/*          | read, update                       |
+  | identity/entity/name/*        | read, update, create               |
+  | identity/lookup/entity        | update                             |
+  | identity/entity-alias/id/*    | read, update                       |
+  | database/creds/ai-agent-*     | read (broker DB creds)             |
+  | sys/leases/renew              | update                             |
+  | sys/leases/revoke             | update                             |
+  | sys/seal                      | DENY                               |
+  | sys/step-down                 | DENY                               |
+  +-------------------------------+------------------------------------+
+```
+
+## mTLS Transport Security
+
+```
+  The Token Exchange Service optionally supports mutual TLS using
+  SPIFFE X.509-SVIDs from the SPIRE Workload API. This provides
+  transport-layer identity verification on the critical path where
+  identity tokens are exchanged and credentials are brokered.
+
+  +-------------------------------------------------------------------+
+  |  AI Agent                         Token Exchange Service          |
+  |                                                                   |
+  |  Connects via HTTPS              MTLS_ENABLED=true                |
+  |  with client X.509-SVID          Server X.509-SVID:              |
+  |                                   spiffe://demo.local/            |
+  |   +------------------+            service/token-exchange          |
+  |   | SPIRE Agent      |                                           |
+  |   | Workload API     |   +----------------------------------+    |
+  |   |                  |   | _setup_mtls_context():            |    |
+  |   | fetch_x509_      |   |   1. Fetch X.509-SVID from SPIRE |    |
+  |   | context()        |   |   2. Create ssl.SSLContext         |    |
+  |   +------------------+   |   3. Load cert chain + private key |    |
+  |                          |   4. Load trust bundle as CA       |    |
+  |                          |   5. verify_mode = CERT_REQUIRED   |    |
+  |                          |   6. min version = TLSv1.2         |    |
+  |                          |   7. Wrap server socket            |    |
+  |                          +----------------------------------+    |
+  +-------------------------------------------------------------------+
+
+  SPIRE Registration Entries:
+  +-----------------------------------------------+--------------------+
+  | SPIFFE ID                                     | DNS / Selector     |
+  +-----------------------------------------------+--------------------+
+  | spiffe://demo.local/agent/query-agent         | ai-agent, uid:0    |
+  | spiffe://demo.local/agent/analysis-agent      | ai-agent, uid:0    |
+  | spiffe://demo.local/agent/write-agent         | ai-agent, uid:0    |
+  | spiffe://demo.local/service/token-exchange     | token-exchange,    |
+  |                                               | uid:0              |
+  | spiffe://demo.local/subagent/sql-executor     | ai-agent, uid:0    |
+  | spiffe://demo.local/subagent/result-formatter | ai-agent, uid:0    |
+  +-----------------------------------------------+--------------------+
+
+  Fallback behavior:
+  - SPIRE agent socket not found    --> HTTP (warning logged)
+  - spiffe library not installed    --> HTTP (warning logged)
+  - No X.509-SVIDs received        --> HTTP (warning logged)
+  - MTLS_ENABLED not set to "true" --> HTTP (default)
+
+  Note: Third-party services (Keycloak, Vault, OPA, PostgreSQL) don't
+  natively consume SPIRE Workload API SVIDs. Full mTLS coverage would
+  require sidecar cert injection (spiffe-helper) or an Envoy service
+  mesh. The current implementation covers the critical path where
+  identity tokens are exchanged and credentials are brokered.
+```
+
+## 7-Layer Audit Correlation Chain (v3)
 
 ```
   +--------+   +----------+   +----------+   +-------+   +---------+   +---------+   +----------+
@@ -548,7 +749,7 @@ ALLOW   DENY
   NEW: delegation chain fully traceable through `act` claim nesting
 ```
 
-## Port Map & Network Topology (v2)
+## Port Map & Network Topology (v3)
 
 ```
   Host Machine
@@ -595,6 +796,7 @@ ALLOW   DENY
   +-------v-------------+                          |
   | Token Exchange Svc  |   <-- NEW (RFC 8693)     |
   |  :8090              |                          |
+  |  (optional mTLS)    |                          |
   +---------+-----------+                          |
             |                                      |
             +----(Vault creds: CREATE ROLE)--------+
@@ -623,7 +825,7 @@ ALLOW   DENY
   9. ai-agent        (depends: token-exchange healthy, postgresql)  <-- CHANGED
 ```
 
-## Key Security Properties (v2)
+## Key Security Properties (v3)
 
 ```
   +-----------------------------+------------------------------------------+
@@ -690,5 +892,24 @@ ALLOW   DENY
   |                             | (spiffe://demo.local/agent/...) not      |
   |                             | descriptive names; aud[] list supported  |
   |                             | No legacy bypass for non-SPIFFE values   |
+  +-----------------------------+------------------------------------------+
+  | Dynamic agent consent       | Per-user agent_consent attribute in      |
+  |                             | Keycloak controls which agents may act   |
+  |                             | on behalf of the user. Updated via Admin |
+  |                             | API. Emitted as may_act via usermodel-   |
+  |                             | attribute-mapper (not hardcoded)         |
+  +-----------------------------+------------------------------------------+
+  | Vault token least privilege | Token Exchange Service uses periodic     |
+  |                             | Vault token (1h period, 24h max TTL)     |
+  |                             | with allowed_policies restricting child  |
+  |                             | tokens to DB credential policies only.   |
+  |                             | Background thread auto-renews every 45m. |
+  |                             | No orphan token creation capability.     |
+  +-----------------------------+------------------------------------------+
+  | Transport security (mTLS)   | Token Exchange optionally serves over    |
+  |                             | mTLS using SPIFFE X.509-SVIDs from      |
+  |                             | SPIRE Workload API. TLSv1.2+ with       |
+  |                             | mutual cert verification. Graceful       |
+  |                             | fallback to HTTP if SPIRE unavailable.   |
   +-----------------------------+------------------------------------------+
 ```
