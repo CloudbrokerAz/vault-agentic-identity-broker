@@ -217,6 +217,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/api/auth/device-poll": self._handle_device_poll,
             "/api/auth/device-approve": self._handle_device_approve,
             "/api/auth/logout": self._handle_logout,
+            "/api/consent/get": self._handle_consent_get,
+            "/api/consent/update": self._handle_consent_update,
             "/api/spiffe/svid": self._handle_spiffe_svid,
             "/api/opa/evaluate": self._handle_opa_evaluate,
             "/api/token-exchange": self._handle_token_exchange,
@@ -589,35 +591,15 @@ class DemoHandler(BaseHTTPRequestHandler):
 
         start = time.time()
         try:
-            # Get Keycloak admin token
-            r = requests.post(
-                f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token",
-                data={
-                    "client_id": "admin-cli",
-                    "username": "admin",
-                    "password": "admin",
-                    "grant_type": "password",
-                },
-                timeout=10,
-            )
-            if r.status_code != 200:
+            admin_token = self._get_admin_token()
+            if not admin_token:
                 self._send_error(502, "keycloak", "Failed to get admin token")
                 return
 
-            admin_token = r.json().get("access_token")
-
-            # Find user by username
-            r = requests.get(
-                f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users",
-                params={"username": username},
-                headers={"Authorization": f"Bearer {admin_token}"},
-                timeout=10,
-            )
-            if r.status_code != 200 or not r.json():
+            user_id, user = self._get_user_by_name(admin_token, username)
+            if not user_id:
                 self._send_error(404, "keycloak", f"User '{username}' not found")
                 return
-
-            user_id = r.json()[0]["id"]
 
             # Terminate all sessions for this user
             requests.post(
@@ -659,6 +641,149 @@ class DemoHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             logger.exception("Logout failed")
+            self._send_error(502, "keycloak", str(e))
+
+    # --- Consent: Get/Update agent delegation consent via Keycloak user attributes ---
+
+    def _get_admin_token(self):
+        """Obtain a Keycloak admin access token."""
+        r = requests.post(
+            f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token",
+            data={
+                "client_id": "admin-cli",
+                "username": "admin",
+                "password": "admin",
+                "grant_type": "password",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        return r.json().get("access_token")
+
+    def _get_user_by_name(self, admin_token, username):
+        """Look up a Keycloak user by username, return (user_id, user_obj) or (None, None)."""
+        r = requests.get(
+            f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users",
+            params={"username": username, "exact": "true"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+        if r.status_code != 200 or not r.json():
+            return None, None
+        user = r.json()[0]
+        return user["id"], user
+
+    def _handle_consent_get(self):
+        """Get the current agent_consent attribute for a user."""
+        body = self._read_body()
+        username = body.get("username", "")
+
+        if not username:
+            self._send_error(400, "consent", "username is required")
+            return
+
+        start = time.time()
+        try:
+            admin_token = self._get_admin_token()
+            if not admin_token:
+                self._send_error(502, "keycloak", "Failed to get admin token")
+                return
+
+            user_id, user = self._get_user_by_name(admin_token, username)
+            if not user_id:
+                self._send_error(404, "keycloak", f"User '{username}' not found")
+                return
+
+            attrs = user.get("attributes", {})
+            consent_raw = attrs.get("agent_consent", [""])[0] if attrs.get("agent_consent") else ""
+
+            consent = None
+            if consent_raw:
+                try:
+                    consent = json.loads(consent_raw)
+                except (json.JSONDecodeError, TypeError):
+                    consent = None
+
+            elapsed = int((time.time() - start) * 1000)
+            self._send_json(200, {
+                "username": username,
+                "consent": consent,
+                "consent_raw": consent_raw,
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            logger.exception("Consent get failed")
+            self._send_error(502, "keycloak", str(e))
+
+    def _handle_consent_update(self):
+        """Update the agent_consent attribute for a user, then refresh their access token."""
+        body = self._read_body()
+        username = body.get("username", "")
+        agents = body.get("agents", [])  # list of SPIFFE IDs the user consents to
+
+        if not username:
+            self._send_error(400, "consent", "username is required")
+            return
+
+        start = time.time()
+        try:
+            admin_token = self._get_admin_token()
+            if not admin_token:
+                self._send_error(502, "keycloak", "Failed to get admin token")
+                return
+
+            user_id, user = self._get_user_by_name(admin_token, username)
+            if not user_id:
+                self._send_error(404, "keycloak", f"User '{username}' not found")
+                return
+
+            # Build the may_act consent value
+            if agents:
+                consent_value = {
+                    "sub": agents[0],  # Primary agent
+                    "aud": agents,
+                    "client_id": "ai-agent-service",
+                }
+                consent_json = json.dumps(consent_value, separators=(",", ":"))
+            else:
+                consent_json = ""
+
+            # Update user attributes via Keycloak Admin API
+            existing_attrs = user.get("attributes", {})
+            existing_attrs["agent_consent"] = [consent_json] if consent_json else []
+
+            r = requests.put(
+                f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users/{user_id}",
+                json={"attributes": existing_attrs},
+                headers={
+                    "Authorization": f"Bearer {admin_token}",
+                    "Content-Type": "application/json",
+                },
+                timeout=10,
+            )
+
+            if r.status_code not in (200, 204):
+                self._send_error(r.status_code, "keycloak",
+                                 f"Failed to update user attributes: {r.text}")
+                return
+
+            elapsed = int((time.time() - start) * 1000)
+
+            consent_obj = json.loads(consent_json) if consent_json else None
+            self._send_json(200, {
+                "status": "updated",
+                "username": username,
+                "consent": consent_obj,
+                "agents": agents,
+                "message": (
+                    f"Agent consent updated for {username}. "
+                    "Re-authenticate to get a token with the new may_act claim."
+                ),
+                "elapsed_ms": elapsed,
+            })
+        except Exception as e:
+            logger.exception("Consent update failed")
             self._send_error(502, "keycloak", str(e))
 
     # --- SPIFFE SVID ---

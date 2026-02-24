@@ -47,17 +47,22 @@ Issues #3 (mTLS) and #5 (Vault token) are deferred to last per user request.
 - [x] Added `/.well-known/jwks.json` endpoint serving the delegation token public key
 - [x] Service version bumped to 3.0.0
 
-## 4. Dynamic `may_act` Consent (Partial)
-**Status:** [~] Partially complete
-**Files:** `keycloak/realm/demo-realm.json`, `opa/policies/delegation.rego`
+## 4. Dynamic `may_act` Consent
+**Status:** [x] Completed
+**Files:** `keycloak/realm/demo-realm.json`, `opa/policies/delegation.rego`, `demo-ui/server.py`, `demo-ui/static/index.html`, `tests/config-validation/test_keycloak_realm.py`
 **Changes made:**
 - [x] Updated `may_act.sub` to use SPIFFE ID: `spiffe://demo.local/agent/query-agent`
 - [x] Added `aud` list to `may_act` claim with all registered agent SPIFFE IDs
 - [x] Removed OPA legacy bypass rule (the one that accepted any non-SPIFFE may_act.sub)
-- [ ] Replace hardcoded mapper with dynamic consent mechanism (requires Keycloak SPI or external consent service)
-- [ ] Update demo UI to show consent step
+- [x] Replaced `oidc-hardcoded-claim-mapper` with `oidc-usermodel-attribute-mapper` on both clients
+- [x] Added `agent_consent` user attribute to alice and bob in realm JSON (pre-seeded defaults)
+- [x] Added `/api/consent/get` and `/api/consent/update` endpoints to demo-ui server (Keycloak Admin API)
+- [x] Added consent step (Step 2) to demo UI with agent selection checkboxes, update/revoke buttons
+- [x] Refactored logout handler to use shared admin token/user lookup helpers
+- [x] Renumbered all subsequent steps (old 2→3, 3→4, etc.) in HTML panels and JavaScript
+- [x] Updated test_keycloak_realm.py: checks for `oidc-usermodel-attribute-mapper` + user attribute validation
 
-**Note:** Full dynamic consent requires either a Keycloak custom SPI (Script Mapper or custom protocol mapper) that reads user attributes at token time, or an external consent service. The hardcoded mapper is still used but now with correct SPIFFE IDs and aud constraints. This is a more significant architectural change for a future iteration.
+**How it works:** Each user's `agent_consent` attribute in Keycloak stores which agents they authorize (as a JSON string). The `oidc-usermodel-attribute-mapper` reads this attribute at token issuance and emits it as the `may_act` claim. The demo UI can update the attribute via the Keycloak Admin API. OPA and Token Exchange require no changes — they already validate `may_act` generically.
 
 ## 5. OPA Policy: Fix Scope Narrowing Enforcement
 **Status:** [x] Completed
@@ -77,24 +82,44 @@ Issues #3 (mTLS) and #5 (Vault token) are deferred to last per user request.
 
 ## Tests Updated
 - [x] `tests/test_token_exchange.py` — 80 tests pass (updated for RS256, JWKS mocks, fail-closed, no default readonly)
-- [x] `tests/config-validation/test_keycloak_realm.py` — 26 tests pass (updated may_act assertion)
+- [x] `tests/config-validation/test_keycloak_realm.py` — 27 tests pass (updated mapper type, added agent_consent attribute test)
 - [x] `tests/config-validation/test_opa_*.py` — 49 tests pass (no changes needed)
 - [x] `ai-agent/tests/test_agent.py` — 63 tests pass (removed demo SVID tests, added RuntimeError test)
-- **Total: 312 tests passing**
+- [x] `tests/config-validation/test_vault_policies.py` — 25 tests pass (added self-renewal, no orphan tests)
+- **Total: 382 tests passing**
 
 ---
 
 ## DEFERRED (Last Priority)
 
-## 7. No Mutual TLS (Zero-Trust Network)
-**Status:** [ ] Not started — DEFERRED
-**Problem:** Plain HTTP everywhere within Docker network. SPIFFE X.509-SVIDs unused.
-**Fix:** Enable mTLS between all services using SPIFFE X.509-SVIDs.
+## 7. Mutual TLS (Zero-Trust Network)
+**Status:** [x] Completed (Token Exchange + AI Agent path; third-party services documented)
+**Files:** `token-exchange/token_exchange.py`, `token-exchange/requirements.txt`, `docker-compose.yml`, `docker-compose.host.yml`, `scripts/bootstrap.sh`, `spire/entries/registration-entries.sh`
+**Changes made:**
+- [x] Added `spiffe>=0.2.3` to token-exchange requirements.txt
+- [x] Added `mtls_enabled` and `spire_agent_socket` config options (env: `MTLS_ENABLED`, `SPIRE_AGENT_SOCKET`)
+- [x] Added `_setup_mtls_context()` function: fetches X.509-SVIDs from SPIRE Workload API, creates ssl.SSLContext with client cert verification
+- [x] Server wraps socket with TLS when `MTLS_ENABLED=true` and SPIRE is available
+- [x] Graceful fallback: if SPIRE unavailable or spiffe lib missing, falls back to HTTP with warning
+- [x] Mounted SPIRE agent socket into token-exchange container (both docker-compose files)
+- [x] Added `MTLS_ENABLED` and `SPIRE_AGENT_SOCKET` env vars to token-exchange service
+- [x] Registered `spiffe://demo.local/service/token-exchange` SPIRE entry in bootstrap.sh and registration-entries.sh
+- [x] Added `ssl` import for TLS support
+
+**Note:** Full mTLS for third-party services (Keycloak, Vault, OPA, PostgreSQL) would require either sidecar cert injection via `spiffe-helper` or an Envoy service mesh. These services don't natively consume SPIRE Workload API SVIDs. The current implementation covers the critical path (AI Agent → Token Exchange) which is where identity tokens are exchanged and credentials are brokered. Production deployment should use a service mesh for full coverage.
 
 ## 8. Vault Token Over-Privileged and Long-Lived
-**Status:** [ ] Not started — DEFERRED
-**Problem:** Token Exchange holds a long-lived Vault token with broad database credential minting capability.
-**Fix:** Scope the Vault token, add TTL/rotation, per-session scoping.
+**Status:** [x] Completed
+**Files:** `vault/policies/gateway-policy.hcl`, `scripts/bootstrap.sh`, `token-exchange/token_exchange.py`, `tests/config-validation/test_vault_policies.py`
+**Changes made:**
+- [x] Changed token from 24h TTL to periodic 1h token with 24h explicit max TTL
+- [x] Added `allowed_policies` to restrict child token creation to `ai-agent-db-read` and `ai-agent-db-readwrite`
+- [x] Added `auth/token/renew-self` to gateway-policy.hcl for token self-renewal
+- [x] Removed `auth/token/create-orphan` from gateway-policy.hcl (unused, unnecessary attack surface)
+- [x] Added background daemon thread in token_exchange.py that renews Vault token every 45 minutes
+- [x] Added `vault_token_renewal_interval` config (env: `VAULT_TOKEN_RENEWAL_INTERVAL`, default 2700s)
+- [x] Added `import threading` for renewal thread
+- [x] Added vault policy tests: self-renewal capability, no orphan token creation
 
 ---
 
@@ -124,3 +149,6 @@ Issues #3 (mTLS) and #5 (Vault token) are deferred to last per user request.
 ## Session Log
 - **2026-02-24:** Created task tracker. Completed codebase exploration and IBM Verify research.
 - **2026-02-24:** Completed tasks 1-6. All 312 tests passing. Deferred tasks 7-8 per user request.
+- **2026-02-24:** Completed task 4 (dynamic may_act consent). Replaced hardcoded mapper with user-attribute mapper, added consent UI step, added Keycloak Admin API endpoints. 380 tests passing.
+- **2026-02-24:** Completed task 8 (Vault token scoping). Periodic 1h token, self-renewal thread, restricted child policies, removed create-orphan. 382 tests passing.
+- **2026-02-24:** Completed task 7 (mTLS). Token Exchange mTLS server support via SPIFFE X.509-SVIDs, SPIRE entry registration, graceful fallback. 382 tests passing.

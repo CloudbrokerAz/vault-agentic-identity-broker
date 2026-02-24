@@ -267,6 +267,10 @@ services:
       MAX_DELEGATION_DEPTH: "3"
       DEFAULT_TTL: "300"
       MAX_TTL: "1800"
+      MTLS_ENABLED: "${MTLS_ENABLED:-false}"
+      SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
+    volumes:
+      - spire-agent-socket:/tmp/spire-agent/public:ro
     ports:
       - "8090:8090"
     depends_on:

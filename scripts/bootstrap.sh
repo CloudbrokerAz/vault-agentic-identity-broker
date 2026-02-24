@@ -300,8 +300,10 @@ GATEWAY_TOKEN_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/auth/token/create" \
     -d '{
         "policies": ["gateway-policy"],
         "display_name": "token-exchange",
-        "ttl": "24h",
+        "period": "1h",
+        "explicit_max_ttl": "24h",
         "renewable": true,
+        "allowed_policies": ["ai-agent-db-read", "ai-agent-db-readwrite"],
         "metadata": {
             "service": "token-exchange",
             "purpose": "delegation-broker"
@@ -462,6 +464,16 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -x509SVIDTTL 3600 \
         -jwtSVIDTTL 3600 2>/dev/null || log_warn "Write Agent entry may already exist"
     log_ok "Write Agent registered with SPIRE"
+
+    # Register Token Exchange Service (for mTLS server identity)
+    ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \
+        -parentID "spiffe://demo.local/spire-agent" \
+        -spiffeID "spiffe://demo.local/service/token-exchange" \
+        -selector "unix:uid:0" \
+        -dns "token-exchange" \
+        -x509SVIDTTL 3600 \
+        -jwtSVIDTTL 3600 2>/dev/null || log_warn "Token Exchange entry may already exist"
+    log_ok "Token Exchange Service registered with SPIRE"
 
     # Register Sub-Agents
     ${COMPOSE} exec -T spire-server /opt/spire/bin/spire-server entry create \

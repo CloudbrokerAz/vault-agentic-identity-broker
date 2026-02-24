@@ -27,6 +27,8 @@ import hmac
 import json
 import logging
 import os
+import ssl
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -70,6 +72,9 @@ class ServiceConfig:
     default_ttl: int = 300  # 5 minutes
     max_ttl: int = 1800     # 30 minutes
     jwks_cache_ttl: int = 300  # JWKS cache TTL in seconds
+    vault_token_renewal_interval: int = 2700  # Renew Vault token every 45 minutes (before 1h period)
+    mtls_enabled: bool = False  # Enable mTLS using SPIFFE X.509-SVIDs
+    spire_agent_socket: str = "/tmp/spire-agent/public/api.sock"  # SPIRE Workload API socket
 
     @classmethod
     def from_env(cls) -> "ServiceConfig":
@@ -88,6 +93,9 @@ class ServiceConfig:
             default_ttl=int(os.getenv("DEFAULT_TTL", "300")),
             max_ttl=int(os.getenv("MAX_TTL", "1800")),
             jwks_cache_ttl=int(os.getenv("JWKS_CACHE_TTL", "300")),
+            vault_token_renewal_interval=int(os.getenv("VAULT_TOKEN_RENEWAL_INTERVAL", "2700")),
+            mtls_enabled=os.getenv("MTLS_ENABLED", "").lower() in ("true", "1", "yes"),
+            spire_agent_socket=os.getenv("SPIRE_AGENT_SOCKET", "/tmp/spire-agent/public/api.sock"),
         )
 
 
@@ -179,6 +187,44 @@ class TokenExchangeService:
                 serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         ).hexdigest()[:16]
+
+        # Start background Vault token renewal thread
+        if config.vault_token:
+            self._start_vault_renewal()
+
+    # ── Vault Token Renewal ──────────────────────────────────────────────
+
+    def _start_vault_renewal(self):
+        """Start a daemon thread that periodically renews the Vault token."""
+        def _renewal_loop():
+            interval = self.config.vault_token_renewal_interval
+            logger.info(
+                "Vault token renewal thread started (interval: %ds)", interval
+            )
+            while True:
+                time.sleep(interval)
+                try:
+                    resp = requests.post(
+                        f"{self.config.vault_addr}/v1/auth/token/renew-self",
+                        headers={"X-Vault-Token": self.config.vault_token},
+                        json={"increment": f"{interval}s"},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        auth = resp.json().get("auth", {})
+                        ttl = auth.get("lease_duration", 0)
+                        logger.info("Vault token renewed successfully (new TTL: %ds)", ttl)
+                    else:
+                        logger.warning(
+                            "Vault token renewal failed: HTTP %d: %s",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                except requests.RequestException as e:
+                    logger.warning("Vault token renewal failed: %s", e)
+
+        thread = threading.Thread(target=_renewal_loop, daemon=True, name="vault-renewal")
+        thread.start()
 
     # ── SPIRE JWKS Fetching ──────────────────────────────────────────────
 
@@ -1116,6 +1162,82 @@ class TokenExchangeHandler(BaseHTTPRequestHandler):
 
 # ─── Server Entry Point ──────────────────────────────────────────────────────
 
+def _setup_mtls_context(config):
+    """
+    Set up an SSL context using SPIFFE X.509-SVIDs from the SPIRE Workload API.
+
+    Returns an ssl.SSLContext configured for mTLS, or None if SPIRE is unavailable.
+    The context uses the X.509-SVID as the server certificate and requires
+    client certificates verified against the SPIFFE trust bundle.
+    """
+    import tempfile
+    try:
+        from spiffe import WorkloadApiClient
+    except ImportError:
+        logger.warning("spiffe library not installed — mTLS disabled")
+        return None
+
+    socket_path = config.spire_agent_socket
+    if not os.path.exists(socket_path):
+        logger.warning("SPIRE agent socket not found at %s — mTLS disabled", socket_path)
+        return None
+
+    try:
+        client = WorkloadApiClient(socket_path=f"unix://{socket_path}")
+        x509_context = client.fetch_x509_context()
+
+        if not x509_context.svids:
+            logger.warning("No X.509-SVIDs received from SPIRE — mTLS disabled")
+            return None
+
+        svid = x509_context.default_svid
+        trust_bundle = x509_context.x509_bundle_set
+
+        # Write cert, key, and CA bundle to temp files for ssl.SSLContext
+        # (ssl module requires file paths, not in-memory objects)
+        cert_pem = svid.cert_chain_bytes
+        key_pem = svid.private_key_bytes
+
+        cert_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
+        cert_file.write(cert_pem)
+        cert_file.close()
+
+        key_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
+        key_file.write(key_pem)
+        key_file.close()
+
+        # Write trust bundle (CA certs for verifying client certificates)
+        ca_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
+        for bundle in trust_bundle.bundles.values():
+            for cert in bundle.x509_authorities:
+                ca_file.write(cert.public_bytes(serialization.Encoding.PEM))
+        ca_file.close()
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert_file.name, key_file.name)
+        ctx.load_verify_locations(ca_file.name)
+        ctx.verify_mode = ssl.CERT_REQUIRED  # Require client certificates (mTLS)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+
+        logger.info(
+            "mTLS enabled: SPIFFE ID=%s, trust domain=%s",
+            svid.spiffe_id, config.trust_domain,
+        )
+
+        # Clean up temp files (already loaded into SSLContext)
+        for f in (cert_file.name, key_file.name, ca_file.name):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+        return ctx
+
+    except Exception as e:
+        logger.warning("Failed to set up mTLS from SPIRE: %s — falling back to HTTP", e)
+        return None
+
+
 def main():
     config = ServiceConfig.from_env()
 
@@ -1126,12 +1248,24 @@ def main():
     logger.info("  Trust domain: %s", config.trust_domain)
     logger.info("  SPIRE OIDC: %s", config.spire_oidc_url)
     logger.info("  Max delegation depth: %d", config.max_delegation_depth)
+    logger.info("  mTLS: %s", "enabled" if config.mtls_enabled else "disabled")
 
     service = TokenExchangeService(config)
     TokenExchangeHandler.service = service
 
     server = HTTPServer(("0.0.0.0", config.listen_port), TokenExchangeHandler)
-    logger.info("Token Exchange Service ready")
+
+    # Wrap the server socket with TLS if mTLS is enabled and SPIRE is available
+    if config.mtls_enabled:
+        ssl_ctx = _setup_mtls_context(config)
+        if ssl_ctx:
+            server.socket = ssl_ctx.wrap_socket(server.socket, server_side=True)
+            logger.info("Token Exchange Service ready (mTLS)")
+        else:
+            logger.warning("mTLS requested but unavailable — serving plain HTTP")
+            logger.info("Token Exchange Service ready (HTTP)")
+    else:
+        logger.info("Token Exchange Service ready (HTTP)")
 
     try:
         server.serve_forever()

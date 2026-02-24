@@ -53,6 +53,15 @@ ${SPIRE_SERVER} entry create \
     -dns "ai-agent" \
     -x509SVIDTTL 3600 -jwtSVIDTTL 3600 || true
 
+# Register Token Exchange Service (for mTLS server identity)
+echo "Registering Token Exchange Service..."
+${SPIRE_SERVER} entry create \
+    -parentID "${AGENT_SPIFFE_ID}" \
+    -spiffeID "spiffe://demo.local/service/token-exchange" \
+    -selector "unix:uid:0" \
+    -dns "token-exchange" \
+    -x509SVIDTTL 3600 -jwtSVIDTTL 3600 || true
+
 # Register Sub-Agent workloads
 echo "Registering SQL Executor Sub-Agent..."
 ${SPIRE_SERVER} entry create \

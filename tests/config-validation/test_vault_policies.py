@@ -94,6 +94,16 @@ class TestVaultPolicies(unittest.TestCase):
         self.assertIn("sys/leases/renew", policy)
         self.assertIn("sys/leases/revoke", policy)
 
+    def test_gateway_policy_allows_self_renewal(self):
+        """Gateway policy must allow token self-renewal for periodic rotation."""
+        policy = self.policies["gateway-policy.hcl"]
+        self.assertIn("auth/token/renew-self", policy)
+
+    def test_gateway_policy_no_orphan_tokens(self):
+        """Gateway policy should not allow creating orphan tokens."""
+        policy = self.policies["gateway-policy.hcl"]
+        self.assertNotIn("create-orphan", policy)
+
     def test_gateway_policy_denies_seal(self):
         policy = self.policies["gateway-policy.hcl"]
         self.assertIn('path "sys/seal"', policy)

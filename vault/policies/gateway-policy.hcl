@@ -1,14 +1,15 @@
 # Policy: gateway-policy
-# Grants the Token Exchange Service the ability to create tokens for agents
-# and manage entity metadata for delegation tracking
+# Grants the Token Exchange Service the ability to create scoped tokens for
+# agents and manage entity metadata for delegation tracking.
+#
+# Principle of least privilege:
+# - Only DB credential roles the service actually brokers
+# - Token creation restricted to agent DB policies (via allowed_policies on token)
+# - Self-renewal for periodic token rotation
+# - Lease revocation scoped to database leases
 
-# Allow creating child tokens with specific policies
+# Allow creating child tokens (restricted to allowed_policies set on the token)
 path "auth/token/create" {
-  capabilities = ["create", "update"]
-}
-
-# Allow creating orphan tokens (for delegation)
-path "auth/token/create-orphan" {
   capabilities = ["create", "update"]
 }
 
@@ -19,6 +20,11 @@ path "auth/token/lookup" {
 
 path "auth/token/lookup-self" {
   capabilities = ["read"]
+}
+
+# Allow self-renewal for periodic token rotation
+path "auth/token/renew-self" {
+  capabilities = ["update"]
 }
 
 # Allow managing entity metadata (for delegation context)
@@ -49,12 +55,12 @@ path "database/creds/ai-agent-readwrite" {
   capabilities = ["read"]
 }
 
-# Allow renewing leases (for credential management)
+# Allow renewing database leases
 path "sys/leases/renew" {
   capabilities = ["update"]
 }
 
-# Allow revoking leases (for credential cleanup)
+# Allow revoking database leases
 path "sys/leases/revoke" {
   capabilities = ["update"]
 }

@@ -172,16 +172,29 @@ class TestKeycloakRealmConfig(unittest.TestCase):
         mappers = {m["name"]: m for m in client.get("protocolMappers", [])}
         self.assertIn("may_act", mappers)
         may_act_mapper = mappers["may_act"]
-        self.assertEqual(may_act_mapper["protocolMapper"], "oidc-hardcoded-claim-mapper")
+        self.assertEqual(
+            may_act_mapper["protocolMapper"], "oidc-usermodel-attribute-mapper"
+        )
         self.assertEqual(may_act_mapper["config"]["claim.name"], "may_act")
+        self.assertEqual(may_act_mapper["config"]["user.attribute"], "agent_consent")
 
-        # Validate the may_act claim value is valid JSON
-        claim_value = json.loads(may_act_mapper["config"]["claim.value"])
-        self.assertIn("sub", claim_value)
-        self.assertEqual(claim_value["sub"], "spiffe://demo.local/agent/query-agent")
-        # Verify aud list includes registered agents
-        self.assertIn("aud", claim_value)
-        self.assertIn("spiffe://demo.local/agent/query-agent", claim_value["aud"])
+    def test_users_have_agent_consent_attribute(self):
+        """Users should have agent_consent attributes for dynamic may_act."""
+        for user in self.realm["users"]:
+            attrs = user.get("attributes", {})
+            consent_raw = attrs.get("agent_consent", [])
+            self.assertTrue(
+                consent_raw,
+                f"User '{user['username']}' missing agent_consent attribute",
+            )
+            consent = json.loads(consent_raw[0])
+            self.assertIn("sub", consent)
+            self.assertTrue(
+                consent["sub"].startswith("spiffe://"),
+                f"User '{user['username']}' agent_consent.sub should be a SPIFFE ID",
+            )
+            self.assertIn("aud", consent)
+            self.assertIn(consent["sub"], consent["aud"])
 
     def test_groups_mapper_on_demo_cli(self):
         client = next(

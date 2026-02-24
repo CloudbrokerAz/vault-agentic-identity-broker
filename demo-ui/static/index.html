@@ -527,26 +527,30 @@ label {
     </button>
     <button class="step-btn" onclick="showStep(2)">
       <span class="step-num" id="stepNum2">2</span>
-      <div class="step-label"><div class="step-title">Agent Identity</div><div class="step-subtitle">SPIFFE SVID</div></div>
+      <div class="step-label"><div class="step-title">Agent Consent</div><div class="step-subtitle">Delegation authorization</div></div>
     </button>
     <button class="step-btn" onclick="showStep(3)">
       <span class="step-num" id="stepNum3">3</span>
-      <div class="step-label"><div class="step-title">Policy Check</div><div class="step-subtitle">OPA evaluation</div></div>
+      <div class="step-label"><div class="step-title">Agent Identity</div><div class="step-subtitle">SPIFFE SVID</div></div>
     </button>
     <button class="step-btn" onclick="showStep(4)">
       <span class="step-num" id="stepNum4">4</span>
-      <div class="step-label"><div class="step-title">Token Exchange</div><div class="step-subtitle">RFC 8693 delegation</div></div>
+      <div class="step-label"><div class="step-title">Policy Check</div><div class="step-subtitle">OPA evaluation</div></div>
     </button>
     <button class="step-btn" onclick="showStep(5)">
       <span class="step-num" id="stepNum5">5</span>
-      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
+      <div class="step-label"><div class="step-title">Token Exchange</div><div class="step-subtitle">RFC 8693 delegation</div></div>
     </button>
     <button class="step-btn" onclick="showStep(6)">
       <span class="step-num" id="stepNum6">6</span>
-      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
     </button>
     <button class="step-btn" onclick="showStep(7)">
       <span class="step-num" id="stepNum7">7</span>
+      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(8)">
+      <span class="step-num" id="stepNum8">8</span>
       <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
     </button>
   </nav>
@@ -662,8 +666,67 @@ label {
       </div>
     </div>
 
-    <!-- Step 2: SPIFFE -->
+    <!-- Step 2: Agent Consent -->
     <div class="step-panel" id="panel2">
+      <div class="panel-header">
+        <h2>Agent Delegation Consent</h2>
+        <span class="timing-badge" id="consentTiming"></span>
+      </div>
+      <p class="panel-desc">Before an AI agent can act on your behalf, you must explicitly authorize which agents may do so. This consent is stored as a Keycloak user attribute and included in your OIDC token as the <code>may_act</code> claim (RFC 8693 §4.4). Without consent, the delegation will be denied by OPA policy.</p>
+
+      <div class="card" id="consentCurrentCard">
+        <div class="card-header">Current Consent</div>
+        <div class="card-body">
+          <div id="consentCurrentStatus" style="color:var(--text-dim);font-size:13px;">Log in first to view your agent consent settings.</div>
+          <pre class="json" id="consentCurrentJson" style="display:none;margin-top:8px;"></pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">Update Agent Consent</div>
+        <div class="card-body">
+          <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Select which agents you authorize to act on your behalf. The first selected agent becomes the primary (<code>may_act.sub</code>), and all selected agents are included in the audience (<code>may_act.aud</code>).</p>
+          <div id="consentAgentList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:13px;">
+              <input type="checkbox" id="consent-query-agent" value="spiffe://demo.local/agent/query-agent" checked>
+              <span style="color:var(--green);font-family:var(--mono);font-size:12px;">spiffe://demo.local/agent/query-agent</span>
+              <span style="color:var(--text-dim);font-size:12px;">(read-only database queries)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:13px;">
+              <input type="checkbox" id="consent-analysis-agent" value="spiffe://demo.local/agent/analysis-agent">
+              <span style="color:var(--green);font-family:var(--mono);font-size:12px;">spiffe://demo.local/agent/analysis-agent</span>
+              <span style="color:var(--text-dim);font-size:12px;">(data analysis sub-agent)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;text-transform:none;letter-spacing:normal;font-size:13px;">
+              <input type="checkbox" id="consent-write-agent" value="spiffe://demo.local/agent/write-agent">
+              <span style="color:var(--green);font-family:var(--mono);font-size:12px;">spiffe://demo.local/agent/write-agent</span>
+              <span style="color:var(--text-dim);font-size:12px;">(read-write database operations)</span>
+            </label>
+          </div>
+          <div class="controls">
+            <button class="btn btn-primary" onclick="updateConsent()" id="consentUpdateBtn" disabled>Update Consent</button>
+            <button class="btn btn-danger" onclick="revokeAllConsent()" id="consentRevokeBtn" disabled>Revoke All</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="consentResponseCard" style="display:none;">
+        <div class="card-header">Keycloak Admin API Response</div>
+        <div class="card-body"><pre class="json" id="consentResponse"></pre></div>
+      </div>
+
+      <div class="card" id="consentNoteCard" style="margin-top:8px;">
+        <div class="card-header">How It Works</div>
+        <div class="card-body" style="font-size:13px;color:var(--text-dim);line-height:1.6;">
+          <strong style="color:var(--text);">Before (hardcoded):</strong> Every user's token contained the same <code>may_act</code> claim, authorizing all agents for all users.<br>
+          <strong style="color:var(--text);">Now (dynamic):</strong> Each user's <code>agent_consent</code> attribute in Keycloak controls which agents they authorize. The <code>oidc-usermodel-attribute-mapper</code> reads this attribute at token issuance time and emits it as the <code>may_act</code> claim. Changing consent requires re-authentication to get a fresh token.<br><br>
+          <strong style="color:var(--text);">Token flow:</strong> User attribute &rarr; Keycloak mapper &rarr; <code>may_act</code> claim in OIDC token &rarr; OPA checks <code>may_act.aud</code> contains the requesting agent's SPIFFE ID &rarr; Token Exchange proceeds or denies.
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: SPIFFE -->
+    <div class="step-panel" id="panel3">
       <div class="panel-header">
         <h2>Agent Identity (SPIFFE)</h2>
         <span class="timing-badge" id="spiffeTiming"></span>
@@ -737,8 +800,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 3: OPA -->
-    <div class="step-panel" id="panel3">
+    <!-- Step 4: OPA -->
+    <div class="step-panel" id="panel4">
       <div class="panel-header">
         <h2>Policy Evaluation (OPA)</h2>
         <span class="timing-badge" id="opaTiming"></span>
@@ -772,8 +835,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 4: Token Exchange -->
-    <div class="step-panel" id="panel4">
+    <!-- Step 5: Token Exchange -->
+    <div class="step-panel" id="panel5">
       <div class="panel-header">
         <h2>Token Exchange (RFC 8693)</h2>
         <span class="timing-badge" id="exchangeTiming"></span>
@@ -804,8 +867,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 5: DB Query -->
-    <div class="step-panel" id="panel5">
+    <!-- Step 6: DB Query -->
+    <div class="step-panel" id="panel6">
       <div class="panel-header">
         <h2>Database Query</h2>
         <span class="timing-badge" id="queryTiming"></span>
@@ -840,8 +903,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 6: Revocation -->
-    <div class="step-panel" id="panel6">
+    <!-- Step 7: Revocation -->
+    <div class="step-panel" id="panel7">
       <div class="panel-header">
         <h2>Credential Revocation</h2>
         <span class="timing-badge" id="revokeTiming"></span>
@@ -869,8 +932,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 7: Audit -->
-    <div class="step-panel" id="panel7">
+    <!-- Step 8: Audit -->
+    <div class="step-panel" id="panel8">
       <div class="panel-header">
         <h2>Audit Trail</h2>
         <span class="timing-badge" id="auditTiming"></span>
@@ -1320,7 +1383,10 @@ async function pollDevice() {
         setTiming('authTiming', data.elapsed_ms || 0, true);
         completeStep(1);
         document.getElementById('svidBtn').disabled = false;
+        document.getElementById('consentUpdateBtn').disabled = false;
+        document.getElementById('consentRevokeBtn').disabled = false;
         showLogoutButton();
+        loadConsent();
         state.deviceCode = null;
         state.devicePolling = false;
         return;
@@ -1438,7 +1504,115 @@ async function handleAuthCodeCallback() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: SPIFFE SVID
+// Step 2: Agent Consent
+// ---------------------------------------------------------------------------
+async function loadConsent() {
+  if (!state.user) return;
+
+  const statusEl = document.getElementById('consentCurrentStatus');
+  const jsonEl = document.getElementById('consentCurrentJson');
+  statusEl.innerHTML = '<span class="spinner"></span> Loading consent for ' + escapeHtml(state.user) + '...';
+
+  try {
+    const { data } = await api('POST', '/api/consent/get', { username: state.user });
+    setTiming('consentTiming', data.elapsed_ms || 0, true);
+
+    if (data.consent) {
+      statusEl.innerHTML = '<span style="color:var(--green);">&#10003;</span> Active consent found for <strong>' + escapeHtml(state.user) + '</strong>';
+      jsonEl.style.display = '';
+      showJson('consentCurrentJson', data.consent);
+
+      // Sync checkboxes with current consent
+      const consentedAgents = data.consent.aud || [];
+      document.getElementById('consent-query-agent').checked = consentedAgents.includes('spiffe://demo.local/agent/query-agent');
+      document.getElementById('consent-analysis-agent').checked = consentedAgents.includes('spiffe://demo.local/agent/analysis-agent');
+      document.getElementById('consent-write-agent').checked = consentedAgents.includes('spiffe://demo.local/agent/write-agent');
+
+      completeStep(2);
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--yellow);">!</span> No agent consent configured for <strong>' + escapeHtml(state.user) + '</strong>. Grant consent below to enable delegation.';
+      jsonEl.style.display = 'none';
+    }
+  } catch (e) {
+    statusEl.innerHTML = '<span style="color:var(--red);">&#10007;</span> Failed to load consent: ' + escapeHtml(e.message);
+  }
+}
+
+async function updateConsent() {
+  if (!state.user) return;
+  btnLoading('consentUpdateBtn', 'Updating...');
+
+  const agents = [];
+  if (document.getElementById('consent-query-agent').checked)
+    agents.push('spiffe://demo.local/agent/query-agent');
+  if (document.getElementById('consent-analysis-agent').checked)
+    agents.push('spiffe://demo.local/agent/analysis-agent');
+  if (document.getElementById('consent-write-agent').checked)
+    agents.push('spiffe://demo.local/agent/write-agent');
+
+  try {
+    const { data } = await api('POST', '/api/consent/update', {
+      username: state.user,
+      agents: agents,
+    });
+    setTiming('consentTiming', data.elapsed_ms || 0, true);
+
+    document.getElementById('consentResponseCard').style.display = '';
+    showJson('consentResponse', data);
+
+    if (agents.length > 0) {
+      document.getElementById('consentCurrentStatus').innerHTML =
+        '<span style="color:var(--green);">&#10003;</span> Consent updated for <strong>' + escapeHtml(state.user) + '</strong> — ' + agents.length + ' agent(s) authorized';
+      document.getElementById('consentCurrentJson').style.display = '';
+      showJson('consentCurrentJson', data.consent);
+      completeStep(2);
+    } else {
+      document.getElementById('consentCurrentStatus').innerHTML =
+        '<span style="color:var(--yellow);">!</span> All agent consent revoked for <strong>' + escapeHtml(state.user) + '</strong>';
+      document.getElementById('consentCurrentJson').style.display = 'none';
+      failStep(2);
+    }
+  } catch (e) {
+    document.getElementById('consentResponseCard').style.display = '';
+    showJson('consentResponse', { error: e.message });
+  }
+  btnRestore('consentUpdateBtn', 'Update Consent');
+}
+
+async function revokeAllConsent() {
+  if (!state.user) return;
+
+  // Uncheck all boxes
+  document.getElementById('consent-query-agent').checked = false;
+  document.getElementById('consent-analysis-agent').checked = false;
+  document.getElementById('consent-write-agent').checked = false;
+
+  // Update with empty agent list
+  btnLoading('consentRevokeBtn', 'Revoking...');
+
+  try {
+    const { data } = await api('POST', '/api/consent/update', {
+      username: state.user,
+      agents: [],
+    });
+    setTiming('consentTiming', data.elapsed_ms || 0, true);
+
+    document.getElementById('consentResponseCard').style.display = '';
+    showJson('consentResponse', data);
+
+    document.getElementById('consentCurrentStatus').innerHTML =
+      '<span style="color:var(--yellow);">!</span> All agent consent revoked for <strong>' + escapeHtml(state.user) + '</strong>. Re-authenticate to see the effect in the token.';
+    document.getElementById('consentCurrentJson').style.display = 'none';
+    failStep(2);
+  } catch (e) {
+    document.getElementById('consentResponseCard').style.display = '';
+    showJson('consentResponse', { error: e.message });
+  }
+  btnRestore('consentRevokeBtn', 'Revoke All');
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: SPIFFE SVID
 // ---------------------------------------------------------------------------
 function renderProcessSteps(containerId, steps) {
   const el = document.getElementById(containerId);
@@ -1521,19 +1695,19 @@ async function fetchSVID() {
       renderAnnotatedResponse('svidAnnotations', data.decoded, ANNOTATIONS.svid);
     }, delay);
 
-    completeStep(2);
+    completeStep(3);
     document.getElementById('opaBtn').disabled = false;
   } catch (e) {
     document.getElementById('attestDetail').innerHTML = '<span style="color:var(--red);">\u2717</span> Failed: ' + escapeHtml(e.message);
     showJson('svidDecoded', { error: e.message });
     document.getElementById('svidResults').style.display = '';
-    failStep(2);
+    failStep(3);
   }
   btnRestore('svidBtn', 'Fetch SVID');
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: OPA
+// Step 4: OPA
 // ---------------------------------------------------------------------------
 async function evaluateOPA() {
   const scope = document.getElementById('scopeSelect').value;
@@ -1571,22 +1745,22 @@ async function evaluateOPA() {
     document.getElementById('opaResponseCard').className = 'card ' + (allowed ? 'success' : 'error');
 
     if (allowed) {
-      completeStep(3);
+      completeStep(4);
     } else {
-      failStep(3);
+      failStep(4);
     }
     state.opaResult = data.result;
     document.getElementById('exchangeBtn').disabled = false;
   } catch (e) {
     showJson('opaResponse', { error: e.message });
     document.getElementById('opaResponseCard').className = 'card error';
-    failStep(3);
+    failStep(4);
   }
   btnRestore('opaBtn', 'Evaluate Policy');
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: Token Exchange
+// Step 5: Token Exchange
 // ---------------------------------------------------------------------------
 async function doTokenExchange() {
   btnLoading('exchangeBtn', 'Exchanging...');
@@ -1624,7 +1798,7 @@ async function doTokenExchange() {
       state.sessionId = data.session_id;
 
       document.getElementById('exchangeResponseCard').className = 'card success';
-      completeStep(4);
+      completeStep(5);
 
       if (data.delegation_token_decoded) {
         document.getElementById('delegationTokenCard').style.display = '';
@@ -1652,19 +1826,19 @@ async function doTokenExchange() {
     } else {
       document.getElementById('exchangeResponseCard').className = 'card error';
       showJson('exchangeResponse', data);
-      failStep(4);
+      failStep(5);
       document.getElementById('auditBtn').disabled = false;
     }
   } catch (e) {
     showJson('exchangeResponse', { error: e.message });
     document.getElementById('exchangeResponseCard').className = 'card error';
-    failStep(4);
+    failStep(5);
   }
   btnRestore('exchangeBtn', 'Exchange Tokens');
 }
 
 // ---------------------------------------------------------------------------
-// Step 5: Database Query
+// Step 6: Database Query
 // ---------------------------------------------------------------------------
 function updateQueryText() {
   const sel = document.getElementById('queryPreset');
@@ -1695,7 +1869,7 @@ async function executeQuery() {
     if (data.error) {
       document.getElementById('queryResultCard').className = 'card error';
       document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight(data) + '</pre>';
-      failStep(5);
+      failStep(6);
     } else if (data.columns && data.rows) {
       document.getElementById('queryResultCard').className = 'card success';
       let html = '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">' + data.row_count + ' row(s) returned</div>';
@@ -1710,11 +1884,11 @@ async function executeQuery() {
       html += '</tbody></table></div>';
       document.getElementById('queryResultBody').innerHTML = html;
       state.queryResults = data;
-      completeStep(5);
+      completeStep(6);
     }
   } catch (e) {
     document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight({ error: e.message }) + '</pre>';
-    failStep(5);
+    failStep(6);
   }
   btnRestore('queryBtn', 'Execute');
 }
@@ -1724,7 +1898,7 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: Revocation
+// Step 7: Revocation
 // ---------------------------------------------------------------------------
 async function doRevoke() {
   btnLoading('revokeBtn', 'Revoking...');
@@ -1769,7 +1943,7 @@ async function verifyRevoked() {
 
     if (data.revoked) {
       document.getElementById('verifyResponseCard').className = 'card success';
-      completeStep(6);
+      completeStep(7);
     } else {
       document.getElementById('verifyResponseCard').className = 'card error';
     }
@@ -1781,7 +1955,7 @@ async function verifyRevoked() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: Audit
+// Step 8: Audit
 // ---------------------------------------------------------------------------
 async function fetchAudit() {
   btnLoading('auditBtn', 'Fetching...');
@@ -1798,10 +1972,10 @@ async function fetchAudit() {
       renderAnnotatedResponse('auditAnnotations', entries[0], ANNOTATIONS.audit);
     }
     state.auditEntries = entries;
-    completeStep(7);
+    completeStep(8);
   } catch (e) {
     showJson('auditResponse', { error: e.message });
-    failStep(7);
+    failStep(8);
   }
   btnRestore('auditBtn', 'Fetch Audit Log');
 }
