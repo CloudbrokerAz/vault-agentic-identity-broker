@@ -123,23 +123,12 @@ class SPIFFEIdentity:
             logger.info("JWT-SVID obtained: spiffe_id=%s", jwt_svid.spiffe_id)
             return self._jwt_svid
         except Exception as e:
-            logger.warning("SPIRE Workload API unavailable (%s), using demo SVID", e)
-            return self._generate_demo_svid(audience)
-
-    def _generate_demo_svid(self, audience: str) -> str:
-        """Generate a demo JWT-SVID for testing without SPIRE."""
-        now = int(time.time())
-        claims = {
-            "sub": self.config.agent_spiffe_id,
-            "aud": [audience],
-            "exp": now + 3600,
-            "iat": now,
-            "client_type": "ai_agent",
-        }
-        token = pyjwt.encode(claims, "demo-secret", algorithm="HS256")
-        self._jwt_svid = token
-        logger.info("Demo JWT-SVID generated for %s", self.config.agent_spiffe_id)
-        return token
+            raise RuntimeError(
+                f"SPIRE Workload API unavailable: {e}. "
+                "Cannot obtain a cryptographically verifiable SPIFFE identity. "
+                "Ensure the SPIRE agent is running and the socket is accessible at "
+                f"{self.config.spire_socket_path}"
+            ) from e
 
     @property
     def spiffe_id(self) -> str:

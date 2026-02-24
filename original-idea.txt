@@ -1,0 +1,455 @@
+Start building based on this
+
+# Secure agentic AI identity and database access architecture
+
+**AI agents acting on behalf of humans need a cryptographically verifiable identity chain from user through agent to database—and the infrastructure to build this exists today.** This architecture combines SPIFFE/SPIRE for workload identity, OAuth 2.0 token exchange (RFC 8693) for human-to-agent delegation, HashiCorp Vault for dynamic secrets management, and an identity gateway pattern for policy enforcement. The approach follows zero-trust principles:  every request is verified, credentials are short-lived, and the full delegation chain is preserved in audit logs. As of early 2026, HashiCorp has published a validated pattern for this exact use case,   NIST has launched an AI Agent Standards Initiative,  and multiple IETF drafts are converging on agent identity standards—making this the right moment to build a reference implementation.
+
+-----
+
+## The identity delegation problem and why it matters now
+
+Non-human identities outnumber human identities **50:1** in average enterprise environments,  with Gartner projecting **25% of enterprise breaches by 2028** will trace back to AI agent abuse.  The core challenge: when an AI agent queries a database “on behalf of” a human analyst, the database must know *which human authorized the action*, *which agent performed it*, and *what permissions were granted*—with cryptographic proof at every step.
+
+Traditional approaches fail here. Passing the human’s credentials directly to the agent violates zero-trust principles. Using static service accounts eliminates human attribution. OAuth alone doesn’t provide workload-level attestation proving the agent code hasn’t been tampered with. The solution requires **composing multiple identity layers**: human identity (OIDC), workload identity (SPIFFE), delegation proof (RFC 8693 token exchange), and secrets management (Vault).
+
+The standards landscape is rapidly crystallizing. The OpenID Foundation  established an AI Identity Management Community Group  in 2025. NIST’s National Cybersecurity Center of Excellence published a concept paper in February 2026 specifically describing a demonstration project  using OAuth 2.0/2.1, OpenID Connect, SPIFFE/SPIRE, and SCIM for AI agent identity.  HashiCorp shipped native SPIFFE authentication in Vault Enterprise 1.21.  Multiple open-source projects now demonstrate working SPIFFE+Vault integration. 
+
+-----
+
+## Reference architecture: components, flows, and trust boundaries
+
+### Architecture overview
+
+The architecture consists of six components organized across four trust boundaries:
+
+```
+TRUST BOUNDARY 1: Identity Infrastructure
+┌─────────────────────────────────────────────────────────────────┐
+│  Human IdP              SPIRE Server          OPA Policy Store  │
+│  (Okta/Entra/Keycloak)  (Trust Domain Root)   (Rego Policies)   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+TRUST BOUNDARY 2: Credential Broker
+┌─────────────────────────────────────────────────────────────────┐
+│  Identity Gateway / Token Broker        HashiCorp Vault Server  │
+│  (Validates human token + agent SVID,   (Auth, Secrets Engine,  │
+│   evaluates OPA policy, brokers Vault)   Identity, Audit)       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+TRUST BOUNDARY 3: Agent Workloads
+┌─────────────────────────────────────────────────────────────────┐
+│  ┌─────────────────────┐    ┌─────────────────────┐            │
+│  │ AI Agent Pod/Process│    │ AI Agent Pod/Process│            │
+│  │ ├─ Agent App        │    │ ├─ Agent App        │            │
+│  │ ├─ SPIRE Agent      │    │ ├─ SPIRE Agent      │            │
+│  │ ├─ Vault Agent      │    │ ├─ Vault Agent      │            │
+│  │ └─ Envoy + OPA      │    │ └─ Envoy + OPA      │            │
+│  └─────────────────────┘    └─────────────────────┘            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+TRUST BOUNDARY 4: Protected Resources
+┌─────────────────────────────────────────────────────────────────┐
+│  PostgreSQL Database        Other APIs / Cloud Resources        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### End-to-end identity flow
+
+The complete flow from human authentication through database access proceeds in seven steps:
+
+**Step 1 — Human authenticates.** The human user (e.g., `alice@acme.com`) authenticates via OIDC to the organization’s IdP (Okta, Entra ID, or Keycloak). The IdP issues a JWT containing the user’s identity, group memberships, and a `may_act` claim pre-authorizing specific AI agents:
+
+```json
+{
+  "sub": "alice@acme.com",
+  "groups": ["data-analysts", "trading-team"],
+  "may_act": {
+    "sub": "agent:query-agent-v2",
+    "client_id": "ai-agent-service"
+  }
+}
+```
+
+**Step 2 — Agent obtains SPIFFE identity.** The AI agent workload is attested by SPIRE and receives an SVID.   In Kubernetes, SPIRE’s DaemonSet agent uses kernel introspection and K8s API validation to verify the pod’s identity.   The agent receives a SPIFFE ID like `spiffe://acme.com/ns/ai-agents/sa/query-agent/instance/pod-abc123`. For non-K8s environments, SPIRE uses AWS IID attestation, Unix process attestation, or join tokens. 
+
+**Step 3 — Token exchange at the identity gateway.** The agent presents both the human’s OIDC token (`subject_token`) and its own JWT-SVID (`actor_token`) to the identity gateway, requesting a delegated token via RFC 8693 token exchange. The gateway validates the human token against the IdP’s JWKS, validates the agent’s SVID against SPIRE’s trust bundle,  then consults OPA to evaluate whether this human can delegate this scope to this agent.
+
+**Step 4 — Gateway brokers Vault access.** Upon OPA approval, the gateway authenticates to Vault using the agent’s SPIFFE identity (via Vault’s native SPIFFE auth or JWT auth) and attaches the human’s delegation context as entity metadata:
+
+```json
+{
+  "delegating_human": "alice@acme.com",
+  "delegation_scope": "readonly",
+  "delegation_time": "2026-02-20T10:30:00Z",
+  "session_id": "sess-abc123"
+}
+```
+
+**Step 5 — Vault issues dynamic database credentials.** Vault evaluates its ACL policies (and Sentinel policies in Enterprise) against both the agent’s identity and the human’s delegation context. It then generates short-lived PostgreSQL credentials with a **5-minute TTL**, creating a unique database role like `v-spiffe-ai-agent-readonly-xYZ` with `SELECT`-only permissions. 
+
+**Step 6 — Agent queries database.** The agent connects to PostgreSQL using the dynamic credentials. The database sees a unique username attributable to this specific delegation session.
+
+**Step 7 — Credentials expire.** After the TTL, Vault automatically revokes the database role. If the agent needs continued access, it must re-authenticate through the full chain, allowing policy re-evaluation at every renewal.
+
+### SPIFFE identity design for AI agents
+
+The SPIFFE ID path structure encodes organizational hierarchy and agent classification: 
+
+```
+# Production K8s agent
+spiffe://acme.com/ns/ai-agents/sa/query-agent/instance/pod-abc123
+
+# Development local agent (Claude Code on dev machine)
+spiffe://dev.acme.com/agent/claude-code/user/alice/machine/alice-laptop
+
+# Multi-environment pattern
+spiffe://{environment}.acme.com/agent/{agent-type}/{instance-id}
+```
+
+For delegation context, **JWT-SVIDs carry custom claims** beyond the mandatory `sub`, `aud`, and `exp`. The SPIFFE spec explicitly allows arbitrary additional claims, and SPIRE’s CredentialComposer plugin SDK enables customization at issuance:
+
+```json
+{
+  "sub": "spiffe://acme.com/ns/ai-agents/sa/query-agent/instance/pod-abc123",
+  "aud": ["vault.acme.com"],
+  "exp": 1740054600,
+  "delegated_identity": "alice@acme.com",
+  "delegation_scope": ["db:read", "db:query"],
+  "agent_model": "claude-3.5",
+  "client_type": "ai_agent"
+}
+```
+
+**Each agent instance gets a unique SPIFFE ID.** This is critical for AI agents—default Kubernetes deployments give all replicas the same identity based on service account.  SPIRE’s per-pod registration entries with granular selectors (pod UID, container name) achieve per-instance uniqueness essential for auditing and attribution.
+
+-----
+
+## Vault configuration for dual-identity enforcement
+
+### Authentication setup
+
+For Vault Enterprise 1.21+, enable native SPIFFE auth with automatic trust bundle refresh from SPIRE: 
+
+```bash
+vault auth enable -passthrough-request-headers="Authorization" spiffe
+
+vault write auth/spiffe/config \
+  trust_domain="acme.com" \
+  profile="https_spiffe_bundle" \
+  endpoint_spiffe_id="spiffe://acme.com/spire/server" \
+  endpoint_url="https://spire-server:8443" \
+  bundle=@initial-bundle.jwks \
+  audience='["vault.acme.com"]'
+
+vault write auth/spiffe/role/ai-query-agent \
+  spiffe_id="spiffe://acme.com/ns/ai-agents/sa/query-agent" \
+  token_policies="ai-agent-db-read" \
+  token_ttl="15m" \
+  token_max_ttl="1h"
+```
+
+For open-source Vault, use JWT auth with SPIRE’s OIDC Discovery Provider: 
+
+```bash
+vault auth enable jwt
+vault write auth/jwt/config \
+  oidc_discovery_url="https://spire-oidc.acme.com" \
+  default_role="spire-role"
+
+vault write auth/jwt/role/ai-agent \
+  role_type="jwt" \
+  bound_audiences="vault.acme.com" \
+  bound_subject="spiffe://acme.com/ns/ai-agents/sa/query-agent" \
+  user_claim="sub" \
+  policies="ai-agent-db-read" \
+  ttl="15m"
+```
+
+### Dynamic database credentials
+
+```bash
+vault secrets enable database
+
+vault write database/config/postgresql \
+  plugin_name="postgresql-database-plugin" \
+  allowed_roles="ai-agent-readonly,ai-agent-readwrite" \
+  connection_url="postgresql://{{username}}:{{password}}@postgres.acme.com:5432/appdb?sslmode=verify-full" \
+  username="vault_admin" \
+  password="initial-password"
+
+vault write -force database/rotate-root/postgresql
+
+vault write database/roles/ai-agent-readonly \
+  db_name=postgresql \
+  creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' \
+    VALID UNTIL '{{expiration}}' INHERIT; \
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\"; \
+    COMMENT ON ROLE \"{{name}}\" IS 'Vault-managed: {{display_name}}';" \
+  revocation_statements='DROP ROLE IF EXISTS "{{name}}";' \
+  default_ttl="5m" \
+  max_ttl="30m"
+```
+
+### Policy enforcement with delegation metadata
+
+Vault’s **templated ACL policies** use identity metadata to scope access dynamically:
+
+```hcl
+# ai-agent-db-policy.hcl
+path "database/creds/{{identity.entity.metadata.delegation_scope}}" {
+  capabilities = ["read"]
+}
+
+path "secret/data/teams/{{identity.entity.metadata.team}}/*" {
+  capabilities = ["read", "list"]
+}
+
+path "sys/*" {
+  capabilities = ["deny"]
+}
+```
+
+For enterprise deployments, **Sentinel policies** enforce hard requirements like mandatory delegation metadata and recency checks:
+
+```python
+# require-delegation.sentinel
+import "strings"
+import "time"
+
+precond = rule { strings.has_prefix(request.path, "database/creds/") }
+
+main = rule when precond {
+  identity.entity.metadata["delegating_human"] is not "" and
+  time.now.unix - time.load(identity.entity.metadata["delegation_time"]).unix < 28800
+}
+```
+
+-----
+
+## Runtime environments: Kubernetes and beyond
+
+### Kubernetes deployment
+
+SPIRE deploys as a **StatefulSet** (server) and **DaemonSet** (agent)  in a dedicated `spire` namespace. The SPIFFE CSI Driver injects the Workload API socket into agent pods as ephemeral volumes, avoiding `hostPath` security risks.  The SPIRE Controller Manager auto-registers workloads using a ClusterSPIFFEID CRD:
+
+```yaml
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: ai-agents
+spec:
+  spiffeIDTemplate: >-
+    spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}
+  namespaceSelector:
+    matchLabels:
+      workload-type: ai-agent
+```
+
+Agent pods mount both the SPIRE socket (for SVID) and use Vault Agent Injector annotations for automatic credential templating:
+
+```yaml
+metadata:
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "ai-agent-role"
+    vault.hashicorp.com/agent-inject-secret-db-creds: "database/creds/ai-agent-readonly"
+spec:
+  containers:
+  - name: ai-agent
+    volumeMounts:
+    - name: spire-agent-socket
+      mountPath: /run/spire/sockets
+      readOnly: true
+  volumes:
+  - name: spire-agent-socket
+    csi:
+      driver: "csi.spiffe.io"
+      readOnly: true
+```
+
+### Non-Kubernetes environments
+
+For AI agents running on EC2 instances, developer laptops (Claude Code), or standalone containers, SPIRE provides **platform-specific attestation**:
+
+- **EC2 instances** use AWS Instance Identity Document (IID) attestation. SPIRE Agent reads the metadata service, and SPIRE Server validates via AWS APIs.  Selectors include `aws_iid:account_id`, `aws_iid:iam_role`, and `aws_iid:security_group_id`.
+- **Developer machines** use join token attestation (single-use tokens, ideal for scripted provisioning)  combined with Unix workload attestation. A local Claude Code process gets attested by `unix:user:alice` and `unix:path:/usr/local/bin/claude-code`:
+
+```bash
+# On SPIRE Server: generate join token
+spire-server token generate \
+  -spiffeID spiffe://dev.acme.com/devmachine/alice-laptop -ttl 600
+
+# On dev machine: start agent with token
+spire-agent run -joinToken <token> -config /etc/spire/agent.conf
+
+# Register the AI agent process
+spire-server entry create \
+  -parentID spiffe://dev.acme.com/devmachine/alice-laptop \
+  -spiffeID spiffe://dev.acme.com/agent/claude-code/alice \
+  -selector unix:user:alice \
+  -selector unix:path:/usr/local/bin/claude-code
+```
+
+- **Standalone containers** use Docker workload attestation with selectors like `docker:image_id` and `docker:label:app:ai-agent`.
+
+As of SPIRE v1.13.3, agents can source join tokens from files (`join_token_path`), enabling integration with platform credential providers for automated bootstrapping. 
+
+-----
+
+## How the audit trail works end-to-end
+
+The audit chain connects six distinct log sources into a single traceable narrative:
+
+**Layer 1 — IdP authentication log.** Records that `alice@acme.com` authenticated at `2026-02-20T10:30:00Z` and was issued token `jti:tok-789` with `may_act` authorizing `agent:query-agent-v2`.
+
+**Layer 2 — Identity gateway log.** Records the token exchange: human token `jti:tok-789` + agent SVID `spiffe://acme.com/.../query-agent/instance/pod-abc123` → OPA decision `allow` → delegation session `sess-abc123` created.
+
+**Layer 3 — Vault audit log.** Every Vault API request is logged as JSON with the full identity context: 
+
+```json
+{
+  "auth": {
+    "display_name": "spiffe-spiffe://acme.com/ns/ai-agents/sa/query-agent",
+    "entity_id": "8904661e-...",
+    "metadata": {
+      "delegating_human": "alice@acme.com",
+      "delegation_scope": "readonly",
+      "session_id": "sess-abc123"
+    },
+    "policy_results": {
+      "allowed": true,
+      "granting_policies": [{"name": "ai-agent-db-read", "type": "acl"}]
+    }
+  },
+  "request": {
+    "id": "req-456",
+    "operation": "read",
+    "path": "database/creds/ai-agent-readonly"
+  }
+}
+```
+
+**Layer 4 — Vault lease record.** Maps the dynamic credential username `v-spiffe-ai-agent-readonly-xYZ` to lease `database/creds/ai-agent-readonly/2f6a614c-...`, entity `8904661e-...`, and session `sess-abc123`.
+
+**Layer 5 — PostgreSQL audit log.** Records all queries executed by `v-spiffe-ai-agent-readonly-xYZ`, including statement text, timestamp, and source IP.
+
+**Layer 6 — SPIRE telemetry.** Records SVID issuance, rotation, and attestation events for the agent workload.
+
+**Correlation path for forensic investigation:** Start from any database query username → look up Vault lease → extract entity ID and delegation metadata → identify the human delegator and agent instance → cross-reference with IdP logs for the original authentication event. The `session_id` field provides direct correlation across all layers.
+
+-----
+
+## Proof-of-concept demo plan
+
+### Architecture decisions
+
+|Decision       |Recommended Choice                          |Rationale                                                               |
+|---------------|--------------------------------------------|------------------------------------------------------------------------|
+|Vault edition  |OSS (JWT auth with SPIRE OIDC)              |Broader accessibility; upgrade path to Enterprise for native SPIFFE auth|
+|Human IdP      |Keycloak                                    |Open-source, supports RFC 8693 token exchange, MCP-compatible           |
+|Agent framework|LangChain/LangGraph                         |HashiCorp published a working LangChain+Vault PoC                       |
+|Policy engine  |OPA with Rego                               |Official SPIFFE integration tutorials exist                             |
+|Database       |PostgreSQL 16                               |Standard, well-supported by Vault database engine                       |
+|Environment    |Docker Compose (Phase 1), Kind K8s (Phase 2)|Progressive complexity                                                  |
+
+### Phase 1: Docker Compose local demo (1-2 weeks)
+
+Build the minimal viable flow with seven containers:
+
+- **spire-server** — SPIFFE trust domain root, join token attestation
+- **spire-agent** — Workload attestation, SVID distribution, OIDC Discovery Provider
+- **keycloak** — Human OIDC IdP, RFC 8693 token exchange endpoint
+- **vault** — JWT auth (SPIRE OIDC), database secrets engine, audit logging
+- **identity-gateway** — Custom Go/Python service: validates human OIDC token, validates agent JWT-SVID, consults OPA, exchanges for scoped Vault token
+- **ai-agent** — LangChain application with natural language SQL query tool, gets SVID from SPIRE, uses identity gateway for Vault access
+- **postgresql** — Target database with sample data
+
+**Key configuration steps:**
+
+1. Initialize SPIRE Server with `trust_domain = "demo.local"` and join token node attestor
+1. Register the AI agent workload: `spiffe://demo.local/agent/query-agent`
+1. Configure SPIRE OIDC Discovery Provider at `https://spire-oidc:8082`
+1. Configure Keycloak realm with test user, agent client, and token exchange policy
+1. Configure Vault JWT auth pointing to SPIRE OIDC endpoint
+1. Configure Vault database secrets engine for PostgreSQL with 5-minute TTL
+1. Create Vault policies using entity metadata templating
+1. Build the identity gateway with token validation, OPA integration, and Vault token creation
+1. Build the AI agent that fetches SVID, calls gateway, gets Vault token, reads DB creds, queries PostgreSQL
+1. Enable Vault file audit device, configure PostgreSQL `pgaudit` extension
+
+**Demo script:** Alice logs in → types “Show me all orders over $1000 from last month” → AI agent receives delegation → SPIRE attests agent → gateway validates both identities → Vault issues 5-min DB credentials → agent queries PostgreSQL → results returned → credentials auto-revoke → full audit trail visible in Vault logs.
+
+### Phase 2: Kubernetes deployment (2-3 weeks)
+
+Migrate to Kind cluster with production-like patterns:
+
+- SPIRE as StatefulSet + DaemonSet with SPIFFE CSI Driver
+- SPIRE Controller Manager with ClusterSPIFFEID auto-registration
+- Vault with Agent Injector for sidecar credential management
+- Envoy sidecars with OPA ext_authz for per-request authorization 
+- NetworkPolicy enforcing default-deny between namespaces
+- Dedicated `ai-agents`, `identity`, and `data` namespaces
+
+### Phase 3: Non-K8s environment (1 week)
+
+Demonstrate the same flow with a local AI agent:
+
+- SPIRE Agent on local machine with join token attestation
+- Unix workload attestor matching the agent’s binary path and user
+- Same identity gateway and Vault flow, proving environment portability
+
+### Existing starting points
+
+Several open-source projects provide working code to accelerate the PoC:
+
+- **philips-labs/spiffe-vault** — Go CLI integrating SPIFFE SVID auth with Vault JWT auth, includes K8s Helm examples  
+- **darkedges/spiffe-vault-terraform** — Docker Compose setup with Vault, Terraform, and SPIFFE OIDC tokens
+- **HashiCorp validated pattern** — Full Terraform IaC with GitHub repository for OAuth 2.0 + Vault + AI agent  
+- **Christian Posta’s MCP+SPIFFE demo** — Docker Compose with SPIRE + Keycloak + MCP OAuth client authentication 
+- **opa-envoy-spire-ext-authz** — Official OPA reference implementation with Envoy + SPIRE for ext_authz  
+
+-----
+
+## Security considerations and zero-trust alignment
+
+### Credential lifecycle management
+
+Every credential in this architecture is **short-lived and automatically rotated**:
+
+- SPIFFE SVIDs: 1-hour default TTL, auto-rotated by SPIRE Agent without application changes  
+- Vault tokens: 15-minute TTL, renewable up to 1-hour max
+- Database credentials: **5-minute TTL**, unique per session, automatically revoked by Vault
+- Delegation tokens: Scoped to specific operation, non-transferable, with explicit expiry
+
+This eliminates the #1 cause of machine identity breaches: **static, long-lived credentials**.   Okta’s 2025 benchmarks showed **92% reduction in credential theft** when using 300-second tokens versus 24-hour sessions.
+
+### Blast radius limitation
+
+If an agent is compromised, the damage is strictly bounded. The agent’s Vault token accesses only `database/creds/readonly`—not write paths, not other secrets engines, not system paths. The database credentials grant only `SELECT` on public schema tables. The 5-minute TTL means stolen credentials expire before most exfiltration attacks complete. Emergency revocation is immediate: delete the SPIRE registration entry to kill the agent’s identity, or revoke the Vault lease to drop the database role.
+
+### Anti-patterns this architecture prevents
+
+- **Token passthrough** (sharing the human’s token with the agent) — eliminated by RFC 8693 token exchange, which creates a new scoped token
+- **Static service accounts** (shared credentials with no human attribution) — eliminated by per-session dynamic credentials with delegation metadata
+- **Implicit trust based on network** — eliminated by mandatory SPIFFE mTLS and per-request OPA authorization
+- **Inline credential injection** (secrets in environment variables) — eliminated by Vault Agent sidecar that writes credentials to tmpfs with strict file permissions
+
+### Emerging standards alignment
+
+This architecture aligns with every major standards effort underway:
+
+- **NIST NCCoE concept paper** (Feb 2026) specifically plans a demonstration using OAuth 2.0/2.1, OIDC, SPIFFE/SPIRE, and SCIM—precisely this stack 
+- **IETF Transaction Tokens draft** (draft-07) defines short-lived JWTs for propagating identity across workload chains, directly applicable to multi-agent scenarios 
+- **IETF WIMSE working group** is advancing SPIFFE+OAuth2 integration standards including SPIFFE client authentication for OAuth2  
+- **OpenID Foundation AIIMCG** recommends the “Enhanced Service Account” model—treating agents as enriched workload identities— which is exactly what SPIFFE SVIDs with custom claims provide
+- **OWASP Top 10 for Agentic Applications** (Dec 2025) identifies tool misuse, excessive agency, and insufficient authorization as top risks—  all addressed by the gateway pattern with OPA policy enforcement
+
+-----
+
+## Conclusion: building on converging standards
+
+This reference architecture is not speculative—it builds on production-ready components (SPIFFE/SPIRE as CNCF graduated projects,   Vault’s decade of secrets management, OAuth 2.0 token exchange as a published RFC) combined with rapidly maturing AI-specific standards. The key architectural insight is that **SPIFFE serves as the foundational trust anchor** (the “bottom turtle”), providing cryptographic workload identity that enables everything above:   token exchange for delegation, Vault authentication for secrets, and OPA authorization for policy.
+
+Three novel aspects distinguish this from standard service-to-service patterns. First, the **dual-identity model** preserves both agent and human identity through every layer, solving the attribution problem that plagues current AI deployments. Second, the **identity gateway pattern** (formalized by Avirneni’s 2025 credential broker paper and implemented by the Kagenti open-source project) decouples identity from access— SPIFFE proves who the agent is, but the gateway decides what it gets. Third, the **environment-portable SPIRE attestation** means the same identity flow works in Kubernetes production, EC2 staging, and a developer’s laptop running Claude Code—critical for AI agent development workflows where agents are tested locally before deployment. 
+
+The PoC can be built in 4-6 weeks using existing open-source projects as starting points, with the Docker Compose phase demonstrating the full identity chain in days. For customer-facing deployments, the upgrade path to Vault Enterprise 1.21’s native SPIFFE auth   and Sentinel policy enforcement adds enterprise-grade controls without architectural changes.

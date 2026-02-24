@@ -152,49 +152,20 @@ class TestSPIFFEIdentity(unittest.TestCase):
         identity = SPIFFEIdentity(config)
         self.assertEqual(identity.spiffe_id, "spiffe://demo.local/agent/test")
 
-    def test_generate_demo_svid(self):
-        config = AgentConfig()
-        identity = SPIFFEIdentity(config)
-        svid = identity._generate_demo_svid("test-audience")
-
-        self.assertIsNotNone(svid)
-        self.assertIsInstance(svid, str)
-
-        # Decode and verify claims
-        claims = pyjwt.decode(svid, "demo-secret", algorithms=["HS256"], audience="test-audience")
-        self.assertEqual(claims["sub"], config.agent_spiffe_id)
-        self.assertEqual(claims["aud"], ["test-audience"])
-        self.assertEqual(claims["client_type"], "ai_agent")
-        self.assertIn("exp", claims)
-        self.assertIn("iat", claims)
-
-    def test_generate_demo_svid_expiry(self):
-        config = AgentConfig()
-        identity = SPIFFEIdentity(config)
-        svid = identity._generate_demo_svid("test-audience")
-        claims = pyjwt.decode(svid, "demo-secret", algorithms=["HS256"], audience="test-audience")
-
-        # Should expire in ~1 hour
-        now = int(time.time())
-        self.assertAlmostEqual(claims["exp"], now + 3600, delta=5)
-
-    def test_fetch_jwt_svid_falls_back_to_demo(self):
-        """Without SPIRE, should fall back to demo SVID."""
+    def test_fetch_jwt_svid_raises_without_spire(self):
+        """Without SPIRE, should raise RuntimeError (no silent fallback)."""
         config = AgentConfig(spire_socket_path="/nonexistent/socket")
         identity = SPIFFEIdentity(config)
-        svid = identity.fetch_jwt_svid(audience="token-exchange")
 
-        self.assertIsNotNone(svid)
-        claims = pyjwt.decode(svid, "demo-secret", algorithms=["HS256"], audience="token-exchange")
-        self.assertEqual(claims["sub"], config.agent_spiffe_id)
+        with self.assertRaises(RuntimeError) as ctx:
+            identity.fetch_jwt_svid(audience="token-exchange")
 
-    def test_svid_stored_internally(self):
+        self.assertIn("SPIRE Workload API unavailable", str(ctx.exception))
+
+    def test_svid_none_before_fetch(self):
         config = AgentConfig()
         identity = SPIFFEIdentity(config)
         self.assertIsNone(identity._jwt_svid)
-
-        identity._generate_demo_svid("test")
-        self.assertIsNotNone(identity._jwt_svid)
 
 
 class TestHumanAuthenticator(unittest.TestCase):

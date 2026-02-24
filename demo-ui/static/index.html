@@ -543,11 +543,11 @@ label {
     </button>
     <button class="step-btn" onclick="showStep(6)">
       <span class="step-num" id="stepNum6">6</span>
-      <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
+      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
     </button>
     <button class="step-btn" onclick="showStep(7)">
       <span class="step-num" id="stepNum7">7</span>
-      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+      <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
     </button>
   </nav>
 
@@ -840,27 +840,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 6: Audit -->
+    <!-- Step 6: Revocation -->
     <div class="step-panel" id="panel6">
-      <div class="panel-header">
-        <h2>Audit Trail</h2>
-        <span class="timing-badge" id="auditTiming"></span>
-      </div>
-      <p class="panel-desc">Fetch the complete audit log from the Token Exchange Service. Every token exchange, delegation, and revocation is recorded.</p>
-      <div class="controls">
-        <button class="btn btn-primary" onclick="fetchAudit()" id="auditBtn" disabled>Fetch Audit Log</button>
-      </div>
-      <div class="card" id="auditCard" style="display:none;">
-        <div class="card-header">Audit Entries</div>
-        <div class="card-body">
-          <pre class="json" id="auditResponse"></pre>
-          <div id="auditAnnotations"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Step 7: Revocation -->
-    <div class="step-panel" id="panel7">
       <div class="panel-header">
         <h2>Credential Revocation</h2>
         <span class="timing-badge" id="revokeTiming"></span>
@@ -884,6 +865,25 @@ label {
             <pre class="json" id="verifyResponse"></pre>
             <div id="verifyAnnotations"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Audit -->
+    <div class="step-panel" id="panel7">
+      <div class="panel-header">
+        <h2>Audit Trail</h2>
+        <span class="timing-badge" id="auditTiming"></span>
+      </div>
+      <p class="panel-desc">Fetch the complete audit log from the Token Exchange Service. Every token exchange, delegation, and revocation is recorded.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="fetchAudit()" id="auditBtn" disabled>Fetch Audit Log</button>
+      </div>
+      <div class="card" id="auditCard" style="display:none;">
+        <div class="card-header">Audit Entries</div>
+        <div class="card-body">
+          <pre class="json" id="auditResponse"></pre>
+          <div id="auditAnnotations"></div>
         </div>
       </div>
     </div>
@@ -1724,33 +1724,7 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: Audit
-// ---------------------------------------------------------------------------
-async function fetchAudit() {
-  btnLoading('auditBtn', 'Fetching...');
-
-  try {
-    const { data } = await api('GET', '/api/audit');
-    setTiming('auditTiming', data.elapsed_ms || 0, true);
-
-    const entries = data.entries || data;
-    document.getElementById('auditCard').style.display = '';
-    showJson('auditResponse', entries);
-    // Annotate the first entry if it exists
-    if (Array.isArray(entries) && entries.length > 0) {
-      renderAnnotatedResponse('auditAnnotations', entries[0], ANNOTATIONS.audit);
-    }
-    state.auditEntries = entries;
-    completeStep(6);
-  } catch (e) {
-    showJson('auditResponse', { error: e.message });
-    failStep(6);
-  }
-  btnRestore('auditBtn', 'Fetch Audit Log');
-}
-
-// ---------------------------------------------------------------------------
-// Step 7: Revocation
+// Step 6: Revocation
 // ---------------------------------------------------------------------------
 async function doRevoke() {
   btnLoading('revokeBtn', 'Revoking...');
@@ -1795,7 +1769,7 @@ async function verifyRevoked() {
 
     if (data.revoked) {
       document.getElementById('verifyResponseCard').className = 'card success';
-      completeStep(7);
+      completeStep(6);
     } else {
       document.getElementById('verifyResponseCard').className = 'card error';
     }
@@ -1804,6 +1778,32 @@ async function verifyRevoked() {
     showJson('verifyResponse', { error: e.message });
   }
   btnRestore('verifyBtn', 'Verify Revocation');
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: Audit
+// ---------------------------------------------------------------------------
+async function fetchAudit() {
+  btnLoading('auditBtn', 'Fetching...');
+
+  try {
+    const { data } = await api('GET', '/api/audit');
+    setTiming('auditTiming', data.elapsed_ms || 0, true);
+
+    const entries = data.entries || data;
+    document.getElementById('auditCard').style.display = '';
+    showJson('auditResponse', entries);
+    // Annotate the first entry if it exists
+    if (Array.isArray(entries) && entries.length > 0) {
+      renderAnnotatedResponse('auditAnnotations', entries[0], ANNOTATIONS.audit);
+    }
+    state.auditEntries = entries;
+    completeStep(7);
+  } catch (e) {
+    showJson('auditResponse', { error: e.message });
+    failStep(7);
+  }
+  btnRestore('auditBtn', 'Fetch Audit Log');
 }
 
 // ---------------------------------------------------------------------------

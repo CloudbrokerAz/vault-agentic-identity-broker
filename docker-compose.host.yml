@@ -212,6 +212,7 @@ services:
       VAULT_ADDR: "http://127.0.0.1:8200"
       VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
       TRUST_DOMAIN: "demo.local"
+      SPIRE_OIDC_URL: "http://127.0.0.1:8082"
       SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
       MAX_DELEGATION_DEPTH: "3"
       DEFAULT_TTL: "300"

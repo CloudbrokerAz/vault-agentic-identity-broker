@@ -85,9 +85,14 @@
                               |                     |
                               | - subject_token     |
                               | - actor_token       |
+                              | - SPIFFE JWKS verify|
+                              |   (SPIRE OIDC)     |
+                              | - RS256 delegation  |
+                              |   token signing     |
                               | - delegation chain  |
                               | - act{} claim       |
                               | - scope narrowing   |
+                              | - fail-closed       |
                               +==========+==========+
                                          |
                               +----------+----------+
@@ -124,55 +129,58 @@
 ## RFC 8693 Token Exchange Flow
 
 ```
- Human      Keycloak    Agent     SPIRE    AgentGW    TokenExchange    OPA       Vault     PostgreSQL
-   |            |          |        |         |             |            |          |           |
-   |-(login)--->|          |        |         |             |            |          |           |
-   |<--(JWT)----|          |        |         |             |            |          |           |
-   |  {sub, email,         |        |         |             |            |          |           |
-   |   groups, may_act}    |        |         |             |            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |---(token)->| (task)   |        |         |             |            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |-(SVID)->|        |             |            |          |           |
-   |            |          |<(SVID)--|        |             |            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |  RFC 8693 Token Exchange    |             |            |          |           |
-   |            |          |----(POST /v1/token/exchange)-->|            |          |           |
-   |            |          |  grant_type: token-exchange    |            |          |           |
-   |            |          |  subject_token: human_jwt      |            |          |           |
-   |            |          |  actor_token: agent_svid       |            |          |           |
-   |            |          |  scope: readonly               |            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |        |         |   [Validate subject_token]          |           |
-   |            |<----------------------------------(userinfo)          |          |           |
-   |            |-----------------------------------(claims)>|          |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |        |         |   [Validate actor_token]            |           |
-   |            |          |        |         |   SPIFFE trust domain OK            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |        |         |   [OPA Policy]          |          |           |
-   |            |          |        |         |             |-(evaluate)->|         |           |
-   |            |          |        |         |             |<-(allow)---|         |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |        |         |   [Build delegation chain]          |           |
-   |            |          |        |         |   act: {sub: agent,     |          |           |
-   |            |          |        |         |     act: {sub: alice}}  |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |        |         |   [Broker Vault creds]  |          |           |
-   |            |          |        |         |             |----------(GET creds)->|           |
-   |            |          |        |         |             |<-(username,password)--|           |
-   |            |          |        |         |             |            |   (CREATE ROLE)----->|
-   |            |          |        |         |             |            |          |           |
-   |            |          |<-----(Token Exchange Response)-|            |          |           |
-   |            |          |  {access_token: delegation_jwt,|            |          |           |
-   |            |          |   issued_token_type: delegation|            |          |           |
-   |            |          |   expires_in: 300,             |            |          |           |
-   |            |          |   db_credential: {user,pass},  |            |          |           |
-   |            |          |   delegation_chain: [...]}     |            |          |           |
-   |            |          |        |         |             |            |          |           |
-   |            |          |--------(SQL query with dynamic creds)------|--------->|           |
-   |            |          |<-------(results)-----------------------------------------------|
-   |            |          |        |         |             |            |          |           |
+ Human      Keycloak    Agent     SPIRE    AgentGW    TokenExchange    OPA       Vault     PostgreSQL  SPIRE OIDC
+   |            |          |        |         |             |            |          |           |          |
+   |-(login)--->|          |        |         |             |            |          |           |          |
+   |<--(JWT)----|          |        |         |             |            |          |           |          |
+   |  {sub, email,         |        |         |             |            |          |           |          |
+   |   groups, may_act}    |        |         |             |            |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |---(token)->| (task)   |        |         |             |            |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |-(SVID)->|        |             |            |          |           |          |
+   |            |          |<(SVID)--|        |             |            |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |  RFC 8693 Token Exchange    |             |            |          |           |          |
+   |            |          |----(POST /v1/token/exchange)-->|            |          |           |          |
+   |            |          |  grant_type: token-exchange    |            |          |           |          |
+   |            |          |  subject_token: human_jwt      |            |          |           |          |
+   |            |          |  actor_token: agent_svid       |            |          |           |          |
+   |            |          |  scope: readonly               |            |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |        |         |   [Validate subject_token]          |           |          |
+   |            |<----------------------------------(userinfo)          |          |           |          |
+   |            |-----------------------------------(claims)>|          |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |        |         |   [Validate actor_token (SPIFFE JWT-SVID)]     |          |
+   |            |          |        |         |             |------(GET /keys)-----|---------->|          |
+   |            |          |        |         |             |<-----(JWKS)----------|-----------|          |
+   |            |          |        |         |   Signature verified (RS256) via SPIRE JWKS    |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |        |         |   [OPA Policy]          |          |           |          |
+   |            |          |        |         |             |-(evaluate)->|         |           |          |
+   |            |          |        |         |             |<-(allow)---|         |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |        |         |   [Build delegation chain]          |           |          |
+   |            |          |        |         |   act: {sub: agent,     |          |           |          |
+   |            |          |        |         |     act: {sub: alice}}  |          |           |          |
+   |            |          |        |         |   Sign delegation token (RS256, in-memory RSA keypair)    |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |        |         |   [Broker Vault creds]  |          |           |          |
+   |            |          |        |         |             |----------(GET creds)->|           |          |
+   |            |          |        |         |             |<-(username,password)--|           |          |
+   |            |          |        |         |             |            |   (CREATE ROLE)----->|          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |<-----(Token Exchange Response)-|            |          |           |          |
+   |            |          |  {access_token: delegation_jwt,|            |          |           |          |
+   |            |          |   issued_token_type: delegation|            |          |           |          |
+   |            |          |   expires_in: 300,             |            |          |           |          |
+   |            |          |   db_credential: {user,pass},  |            |          |           |          |
+   |            |          |   delegation_chain: [...]}     |            |          |           |          |
+   |            |          |        |         |             |            |          |           |          |
+   |            |          |--------(SQL query with dynamic creds)------|--------->|           |          |
+   |            |          |<-------(results)-----------------------------------------------|          |
+   |            |          |        |         |             |            |          |           |          |
 ```
 
 ## Sub-Agent Delegation Chain Extension
@@ -329,9 +337,24 @@
 |  | |  GET  /v1/delegation/chain -- Query delegation chain            || |
 |  | |  GET  /health             -- Service health                     || |
 |  | |  GET  /v1/audit           -- Audit trail                        || |
+|  | |  GET  /.well-known/jwks.json -- Delegation token JWKS           || |
+|  | |                                                                  || |
+|  | |  Token Signing: RS256 (in-memory RSA-2048 keypair)              || |
+|  | |    Key can be loaded from SIGNING_KEY_PATH env var              || |
+|  | |    Public key exposed at /.well-known/jwks.json                 || |
+|  | |                                                                  || |
+|  | |  SPIFFE Verification: Cryptographic (not string prefix)         || |
+|  | |    Fetches JWKS from SPIRE OIDC (GET /keys)                    || |
+|  | |    Validates JWT-SVID signature (RS256)                         || |
+|  | |                                                                  || |
+|  | |  Fail-Closed Behavior:                                           || |
+|  | |    OPA unavailable --------> deny (not allow)                   || |
+|  | |    Keycloak unavailable ---> reject token (not accept)          || |
+|  | |    SPIRE OIDC unavailable -> reject actor (not accept)          || |
 |  | |                                                                  || |
 |  | |  Connects to:                                                    || |
 |  | |   Keycloak ----> validate subject_token (human OIDC)            || |
+|  | |   SPIRE OIDC --> fetch JWKS for JWT-SVID verification           || |
 |  | |   OPA ---------> evaluate delegation policy                     || |
 |  | |   Vault -------> broker dynamic DB credentials                  || |
 |  | |                                                                  || |
@@ -408,23 +431,31 @@
 | authorized|          | chain_depth_ok   |
 | delegation|          | depth < max (3)  |
 | may_act{} |          +--------+---------+
-+-----+-----+                  |
-      |                 yes    |    no
-yes   |  no            +-------+--------+
-+-----+-----+         |                |
-|           |         v                v
-v           v    +------------------+ DENY: "max_depth_exceeded"
-+---------+ DENY | scope_narrowing  |
-| scope   |      | - scope <=       |
-| permitted      |   parent scope   |
-| group   |      +--------+---------+
-| check   |              |
-+----+----+        yes    |    no
-     |            +-------+--------+
-yes  | no        |                |
-+----+----+     v                v
-|        |   ALLOW            DENY: "scope_narrowing_violation"
-v        v   "allowed"
+| - sub must|                  |
+|   be SPIFFE ID        yes    |    no
+|   (exact match)      +-------+--------+
+| - OR aud[] list      |                |
+|   contains agent     v                v
+|   SPIFFE ID    +------------------+ DENY: "max_depth_exceeded"
+| (no legacy     | scope_narrowing  |
+|  bypass)       | - parent_scope   |
++-----+-----+   |   passed to OPA  |
+      |          |   for enforcement |
+yes   |  no      | - scope <=       |
++-----+-----+   |   parent scope   |
+|           |    +--------+---------+
+v           v            |
++---------+ DENY   yes   |    no
+| scope   |       +------+--------+
+| permitted       |               |
+| group   |       v               v
+| check   |    ALLOW           DENY: "scope_narrowing_violation"
++----+----+    "allowed"
+     |
+yes  | no
++----+----+
+|        |
+v        v
 ALLOW   DENY
 "ok"    "scope_not_permitted"
 
@@ -527,9 +558,11 @@ ALLOW   DENY
   |                                                                       |
   |  :8080   Keycloak       (OIDC login, admin UI at /admin)             |
   |  :8081   SPIRE          (internal trust infrastructure)              |
+  |  :8082   SPIRE OIDC     (JWKS endpoint for JWT-SVID verification)   |
   |  :8090   Token Exchange (RFC 8693 API)                 <-- NEW       |
   |  :8181   OPA            (policy API)                                 |
   |  :8200   Vault          (secrets API & UI)                           |
+  |  :8500   Demo UI        (interactive educational walkthrough)        |
   |  :5432   PostgreSQL     (database connections)                       |
   |  :9080   AgentGateway   (MCP/HTTP proxy for agents)    <-- CHANGED  |
   |  :19000  AgentGateway   (Admin API: health, metrics)   <-- NEW      |
@@ -602,8 +635,9 @@ ALLOW   DENY
   | Human attribution           | OIDC token with sub, email, groups       |
   |                             | Preserved through entire delegation chain|
   +-----------------------------+------------------------------------------+
-  | Agent attestation           | SPIFFE SVID proves workload identity     |
-  |                             | Cryptographically verified by SPIRE      |
+  | Agent attestation           | SPIFFE JWT-SVID proves workload identity |
+  |                             | Cryptographically verified via SPIRE     |
+  |                             | OIDC JWKS endpoint (RS256 signature)     |
   +-----------------------------+------------------------------------------+
   | RFC 8693 Token Exchange     | Standard OAuth 2.0 delegation flow       |   <-- NEW
   |                             | subject_token + actor_token -> delegated |
@@ -613,6 +647,8 @@ ALLOW   DENY
   +-----------------------------+------------------------------------------+
   | Scope narrowing             | Each delegation level can only narrow    |   <-- NEW
   |                             | scope, never widen it                    |
+  |                             | parent_scope passed to OPA for enforce-  |
+  |                             | ment (not just general scope check)      |
   +-----------------------------+------------------------------------------+
   | Max chain depth             | Configurable limit (default: 3)          |   <-- NEW
   |                             | Prevents infinite delegation             |
@@ -632,9 +668,27 @@ ALLOW   DENY
   +-----------------------------+------------------------------------------+
   | Zero trust                  | Every request validated end-to-end       |
   |                             | No implicit trust from network position  |
+  |                             | Fail-closed when dependencies unavailable|
   +-----------------------------+------------------------------------------+
   | Credential lifecycle        | Auto-revocation after TTL                |
   |                             | Manual revocation via token revoke API   |
   |                             | PostgreSQL role dropped on expiry        |
+  +-----------------------------+------------------------------------------+
+  | Asymmetric token signing    | Delegation tokens signed with RS256      |
+  |                             | In-memory RSA-2048 keypair (or from env) |
+  |                             | Public key at /.well-known/jwks.json     |
+  +-----------------------------+------------------------------------------+
+  | Fail-closed defaults        | OPA unavailable -> deny (not allow)      |
+  |                             | Keycloak unavailable -> reject token     |
+  |                             | SPIRE OIDC unavailable -> reject actor   |
+  +-----------------------------+------------------------------------------+
+  | No synthetic identities     | Agents require real SPIFFE JWT-SVIDs     |
+  |                             | from SPIRE; no demo/synthetic fallback   |
+  |                             | SPIRE unavailable -> agent fails clearly |
+  +-----------------------------+------------------------------------------+
+  | SPIFFE-based authorization  | may_act claim uses SPIFFE IDs            |
+  |                             | (spiffe://demo.local/agent/...) not      |
+  |                             | descriptive names; aud[] list supported  |
+  |                             | No legacy bypass for non-SPIFFE values   |
   +-----------------------------+------------------------------------------+
 ```

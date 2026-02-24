@@ -5,7 +5,7 @@ Token Exchange Service - RFC 8693 Implementation for Agentic AI Delegation
 Implements OAuth 2.0 Token Exchange (RFC 8693) with delegation semantics
 for AI agent identity chains:
 
-  Human (OIDC) → Agent (SPIFFE) → Sub-Agent → ... → Database
+  Human (OIDC) -> Agent (SPIFFE) -> Sub-Agent -> ... -> Database
 
 Key concepts:
   - subject_token: The human's OIDC token (the identity being delegated)
@@ -35,8 +35,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlencode
 
+import base64
+
 import jwt as pyjwt
+from jwt import PyJWKSet
 import requests
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -58,10 +63,13 @@ class ServiceConfig:
     vault_addr: str = "http://vault:8200"
     vault_token: str = ""
     trust_domain: str = "demo.local"
-    signing_secret: str = "token-exchange-secret-change-in-production"
+    spire_oidc_url: str = "http://spire-oidc:8082"
+    signing_secret: str = "token-exchange-secret-change-in-production"  # deprecated: use RS256
+    signing_key_path: str = ""  # Path to PEM private key; if empty, generates in-memory keypair
     max_delegation_depth: int = 3
     default_ttl: int = 300  # 5 minutes
     max_ttl: int = 1800     # 30 minutes
+    jwks_cache_ttl: int = 300  # JWKS cache TTL in seconds
 
     @classmethod
     def from_env(cls) -> "ServiceConfig":
@@ -73,10 +81,13 @@ class ServiceConfig:
             vault_addr=os.getenv("VAULT_ADDR", "http://vault:8200"),
             vault_token=os.getenv("VAULT_TOKEN", ""),
             trust_domain=os.getenv("TRUST_DOMAIN", "demo.local"),
+            spire_oidc_url=os.getenv("SPIRE_OIDC_URL", "http://spire-oidc:8082"),
             signing_secret=os.getenv("SIGNING_SECRET", "token-exchange-secret-change-in-production"),
+            signing_key_path=os.getenv("SIGNING_KEY_PATH", ""),
             max_delegation_depth=int(os.getenv("MAX_DELEGATION_DEPTH", "3")),
             default_ttl=int(os.getenv("DEFAULT_TTL", "300")),
             max_ttl=int(os.getenv("MAX_TTL", "1800")),
+            jwks_cache_ttl=int(os.getenv("JWKS_CACHE_TTL", "300")),
         )
 
 
@@ -132,8 +143,8 @@ class TokenExchangeService:
     Implements RFC 8693 Token Exchange with delegation semantics.
 
     Supports:
-    - Human → Agent delegation (initial delegation)
-    - Agent → Sub-Agent delegation (chain extension)
+    - Human -> Agent delegation (initial delegation)
+    - Agent -> Sub-Agent delegation (chain extension)
     - Full delegation chain tracking and validation
     - Integration with OPA for policy decisions
     - Integration with Vault for dynamic credentials
@@ -145,6 +156,66 @@ class TokenExchangeService:
         self.token_to_session: dict[str, str] = {}  # token_hash -> session_id
         self.audit_log: list[dict] = []
         self.issuer = f"http://token-exchange:{config.listen_port}"
+
+        # JWKS cache for SPIRE OIDC provider
+        self._jwks_cache: Optional[dict] = None
+        self._jwks_cache_time: float = 0.0
+
+        # Generate or load RSA signing keypair for delegation tokens
+        if config.signing_key_path:
+            with open(config.signing_key_path, "rb") as f:
+                self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+            logger.info("Loaded signing key from %s", config.signing_key_path)
+        else:
+            self._private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+            )
+            logger.info("Generated in-memory RSA-2048 signing keypair")
+        self._public_key = self._private_key.public_key()
+        self._kid = hashlib.sha256(
+            self._public_key.public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        ).hexdigest()[:16]
+
+    # ── SPIRE JWKS Fetching ──────────────────────────────────────────────
+
+    def _fetch_spire_jwks(self) -> Optional[dict]:
+        """
+        Fetch JWKS from the SPIRE OIDC Discovery Provider.
+
+        Returns the JWKS dict on success, or None on failure.
+        Results are cached for jwks_cache_ttl seconds.
+        """
+        now = time.time()
+        if self._jwks_cache is not None and (now - self._jwks_cache_time) < self.config.jwks_cache_ttl:
+            return self._jwks_cache
+
+        jwks_url = f"{self.config.spire_oidc_url}/keys"
+        try:
+            resp = requests.get(jwks_url, timeout=10)
+            if resp.status_code == 200:
+                jwks_data = resp.json()
+                self._jwks_cache = jwks_data
+                self._jwks_cache_time = now
+                logger.info(
+                    "SPIRE JWKS fetched successfully from %s (%d keys)",
+                    jwks_url,
+                    len(jwks_data.get("keys", [])),
+                )
+                return jwks_data
+            else:
+                logger.warning(
+                    "SPIRE JWKS fetch failed: HTTP %d from %s",
+                    resp.status_code,
+                    jwks_url,
+                )
+                return None
+        except requests.RequestException as e:
+            logger.warning("SPIRE JWKS fetch failed: %s (url: %s)", e, jwks_url)
+            return None
 
     # ── RFC 8693 Token Exchange ───────────────────────────────────────────
 
@@ -232,7 +303,7 @@ class TokenExchangeService:
         # Build chain links
         chain = list(existing_chain)
         if chain_depth == 0:
-            # Initial delegation: human → agent
+            # Initial delegation: human -> agent
             chain.append(DelegationChainLink(
                 subject=subject_claims.get("sub", subject_claims.get("email", "unknown")),
                 actor=actor_claims.get("sub", "unknown"),
@@ -243,7 +314,7 @@ class TokenExchangeService:
                 depth=0,
             ))
         else:
-            # Chain extension: agent → sub-agent
+            # Chain extension: agent -> sub-agent
             chain.append(DelegationChainLink(
                 subject=subject_claims.get("sub", "unknown"),
                 actor=actor_claims.get("sub", "unknown"),
@@ -297,11 +368,12 @@ class TokenExchangeService:
             "client_id": actor_claims.get("client_id", actor_claims.get("sub", "")),
         }
 
-        # Sign the delegation token
+        # Sign the delegation token with RS256
         delegation_token = pyjwt.encode(
             delegation_token_claims,
-            self.config.signing_secret,
-            algorithm="HS256",
+            self._private_key,
+            algorithm="RS256",
+            headers={"kid": self._kid},
         )
 
         # Step 8: Get Vault credentials if this is a terminal delegation
@@ -371,14 +443,22 @@ class TokenExchangeService:
         the legacy delegation API).
 
         Converts to RFC 8693 token exchange internally.
+        Requires agent_jwt_svid to be provided for cryptographic verification.
         """
         human_token = request.get("human_token", "")
         agent_spiffe_id = request.get("agent_spiffe_id", "")
         agent_jwt_svid = request.get("agent_jwt_svid", "")
         requested_scope = request.get("requested_scope", "readonly")
 
-        # Convert to token exchange parameters
-        actor_token = agent_jwt_svid if agent_jwt_svid else self._create_spiffe_token(agent_spiffe_id)
+        # Require a real JWT-SVID for cryptographic verification
+        if not agent_jwt_svid:
+            return self._error_response(
+                "invalid_request",
+                "agent_jwt_svid is required. Synthetic SPIFFE tokens are no longer "
+                "accepted; provide a real SPIFFE JWT-SVID from the SPIRE agent."
+            )
+
+        actor_token = agent_jwt_svid
 
         exchange_params = {
             "grant_type": GRANT_TYPE_TOKEN_EXCHANGE,
@@ -422,8 +502,8 @@ class TokenExchangeService:
         try:
             claims = pyjwt.decode(
                 token,
-                self.config.signing_secret,
-                algorithms=["HS256"],
+                self._public_key,
+                algorithms=["RS256"],
                 options={"verify_aud": False},
             )
             if claims.get("iss") == self.issuer:
@@ -436,27 +516,118 @@ class TokenExchangeService:
         return self._validate_keycloak_token(token)
 
     def _validate_actor_token(self, token: str, token_type: str) -> dict:
-        """Validate the actor token (SPIFFE SVID or agent identity)."""
-        # Try to decode as JWT (SPIFFE SVIDs are JWTs)
+        """
+        Validate the actor token (SPIFFE JWT-SVID or agent identity).
+
+        For SPIFFE JWT-SVIDs, verifies the cryptographic signature against
+        the SPIRE OIDC Discovery Provider's JWKS endpoint. This ensures
+        only tokens issued by the trusted SPIRE server are accepted.
+
+        Behavior is fail-closed: if JWKS cannot be fetched, the token is
+        rejected rather than silently accepted.
+        """
+        # First, peek at the token header to determine the algorithm
         try:
-            claims = pyjwt.decode(
+            unverified_header = pyjwt.get_unverified_header(token)
+        except pyjwt.exceptions.DecodeError as e:
+            return self._error_response("invalid_request", f"Invalid actor token: {e}")
+
+        # Peek at the claims to check if this is a SPIFFE token
+        try:
+            unverified_claims = pyjwt.decode(
                 token, options={"verify_signature": False, "verify_aud": False}
             )
-            sub = claims.get("sub", "")
-            if sub.startswith("spiffe://"):
-                # Validate SPIFFE trust domain
-                if not sub.startswith(f"spiffe://{self.config.trust_domain}/"):
-                    return self._error_response(
-                        "invalid_request",
-                        f"SPIFFE ID not in trust domain {self.config.trust_domain}"
-                    )
-                logger.info("Actor token validated: SPIFFE ID %s", sub)
-                return claims
-
-            logger.info("Actor token validated: sub=%s", sub)
-            return claims
         except pyjwt.InvalidTokenError as e:
             return self._error_response("invalid_request", f"Invalid actor token: {e}")
+
+        sub = unverified_claims.get("sub", "")
+
+        # If this is a SPIFFE token, verify signature against SPIRE JWKS
+        if sub.startswith("spiffe://"):
+            # Validate trust domain first (cheap check before network call)
+            if not sub.startswith(f"spiffe://{self.config.trust_domain}/"):
+                return self._error_response(
+                    "invalid_request",
+                    f"SPIFFE ID not in trust domain {self.config.trust_domain}"
+                )
+
+            # Fetch JWKS from SPIRE OIDC provider
+            jwks_data = self._fetch_spire_jwks()
+            if jwks_data is None:
+                logger.error(
+                    "SPIRE JWKS unavailable - rejecting actor token (fail-closed). "
+                    "SPIRE OIDC provider at %s may be down.",
+                    self.config.spire_oidc_url,
+                )
+                return self._error_response(
+                    "temporarily_unavailable",
+                    "SPIRE JWKS endpoint is unavailable. Cannot verify actor token signature."
+                )
+
+            # Verify the JWT signature against the SPIRE JWKS
+            try:
+                # Build signing keys from JWKS
+                jwk_set = PyJWKSet.from_dict(jwks_data)
+
+                # Find the right key (match by kid if present in header)
+                kid = unverified_header.get("kid")
+                signing_key = None
+                for jwk_key in jwk_set.keys:
+                    if kid and jwk_key.key_id == kid:
+                        signing_key = jwk_key.key
+                        break
+                    elif not kid:
+                        # No kid in header, use the first key
+                        signing_key = jwk_key.key
+                        break
+
+                if signing_key is None:
+                    return self._error_response(
+                        "invalid_request",
+                        f"No matching key found in SPIRE JWKS for kid={kid}"
+                    )
+
+                # Verify with actual cryptographic signature check
+                alg = unverified_header.get("alg", "RS256")
+                allowed_algorithms = ["RS256", "ES256"]
+                if alg not in allowed_algorithms:
+                    return self._error_response(
+                        "invalid_request",
+                        f"Unsupported algorithm {alg} in actor token. "
+                        f"Allowed: {allowed_algorithms}"
+                    )
+
+                verified_claims = pyjwt.decode(
+                    token,
+                    signing_key,
+                    algorithms=allowed_algorithms,
+                    audience="token-exchange",
+                    options={"verify_aud": True},
+                )
+
+                logger.info(
+                    "Actor token cryptographically verified: SPIFFE ID %s (alg=%s, kid=%s)",
+                    sub, alg, kid,
+                )
+                return verified_claims
+
+            except pyjwt.InvalidTokenError as e:
+                logger.warning(
+                    "SPIFFE JWT-SVID signature verification failed for %s: %s",
+                    sub, e,
+                )
+                return self._error_response(
+                    "invalid_request",
+                    f"SPIFFE JWT-SVID signature verification failed: {e}"
+                )
+
+        # Non-SPIFFE actor tokens are rejected - all actors must have
+        # cryptographically verifiable identities
+        return self._error_response(
+            "invalid_request",
+            f"Actor token subject '{sub}' is not a valid SPIFFE ID. "
+            "All actor tokens must be SPIFFE JWT-SVIDs."
+        )
 
     def _validate_keycloak_token(self, token: str) -> dict:
         """Validate a token against Keycloak's userinfo endpoint."""
@@ -493,20 +664,20 @@ class TokenExchangeService:
 
                 logger.info("Subject token validated via Keycloak userinfo: sub=%s", claims.get("sub"))
                 return claims
+            else:
+                logger.warning(
+                    "Keycloak userinfo returned %d: %s", resp.status_code, resp.text[:200]
+                )
+                return self._error_response(
+                    "invalid_request",
+                    f"Identity provider rejected token (HTTP {resp.status_code})"
+                )
         except requests.RequestException as e:
-            logger.warning("Keycloak userinfo failed: %s", e)
-
-        # Fallback: parse unverified (demo mode)
-        try:
-            claims = pyjwt.decode(
-                token, options={"verify_signature": False, "verify_aud": False}
+            logger.error("Keycloak userinfo validation failed: %s", e)
+            return self._error_response(
+                "temporarily_unavailable",
+                "Identity provider is unavailable. Cannot validate subject token."
             )
-            if "email" in claims and claims["email"]:
-                claims["sub"] = claims["email"]
-            logger.info("Subject token parsed (unverified): sub=%s", claims.get("sub"))
-            return claims
-        except pyjwt.InvalidTokenError as e:
-            return self._error_response("invalid_request", f"Invalid subject token: {e}")
 
     # ── Delegation Chain ──────────────────────────────────────────────────
 
@@ -533,7 +704,7 @@ class TokenExchangeService:
         The `act` claim is nested: the outermost is the immediate actor,
         each nested `act` is the next actor in the chain.
 
-        Example for human → agent → sub-agent:
+        Example for human -> agent -> sub-agent:
         {
             "sub": "spiffe://demo.local/subagent/sql-executor",
             "act": {
@@ -580,10 +751,7 @@ class TokenExchangeService:
             if group in group_permissions:
                 permitted.update(group_permissions[group])
 
-        # If no groups found, allow readonly as default
-        if not permitted:
-            permitted.add("readonly")
-
+        # If no groups found, deny — no implicit permissions
         return list(permitted)
 
     # ── OPA Policy Evaluation ─────────────────────────────────────────────
@@ -628,6 +796,12 @@ class TokenExchangeService:
             "delegation_depth": delegation_depth,
         }
 
+        # For chain extensions, pass the parent's scope so OPA can enforce narrowing
+        if delegation_depth > 0:
+            parent_scope = subject_claims.get("scope", "")
+            if parent_scope:
+                opa_input["parent_scope"] = parent_scope
+
         try:
             resp = requests.post(
                 f"{self.config.opa_endpoint}/v1/data/delegation/allow",
@@ -656,8 +830,8 @@ class TokenExchangeService:
         except requests.RequestException as e:
             logger.error("OPA evaluation failed: %s", e)
 
-        # Fail-open in demo mode (fail-closed in production)
-        return {"allowed": True, "reason": "opa_unavailable_demo_mode"}
+        # Fail-closed: deny when policy engine is unavailable
+        return {"allowed": False, "reason": "policy_engine_unavailable"}
 
     # ── Vault Credential Brokering ────────────────────────────────────────
 
@@ -710,7 +884,7 @@ class TokenExchangeService:
                         entity_id, session_id,
                     )
                 else:
-                    # No entity attached to token — create a named entity
+                    # No entity attached to token - create a named entity
                     entity_name = f"delegation-{session_id}"
                     requests.post(
                         f"{self.config.vault_addr}/v1/identity/entity",
@@ -824,17 +998,6 @@ class TokenExchangeService:
 
     # ── Helper Methods ────────────────────────────────────────────────────
 
-    def _create_spiffe_token(self, spiffe_id: str) -> str:
-        """Create a synthetic SPIFFE token for backward compatibility."""
-        claims = {
-            "sub": spiffe_id,
-            "aud": ["token-exchange"],
-            "exp": int(time.time()) + 3600,
-            "iat": int(time.time()),
-            "client_type": "ai_agent",
-        }
-        return pyjwt.encode(claims, "demo-secret", algorithm="HS256")
-
     def _error_response(self, error: str, description: str) -> dict:
         """Build an RFC 8693 error response."""
         return {
@@ -869,10 +1032,29 @@ class TokenExchangeHandler(BaseHTTPRequestHandler):
             self._json_response(200, {
                 "status": "healthy",
                 "service": "token-exchange",
-                "version": "2.0.0",
-                "features": ["rfc8693", "delegation-chain", "vault-brokering"],
+                "version": "3.0.0",
+                "features": ["rfc8693", "delegation-chain", "vault-brokering", "rs256-signing", "spiffe-verification"],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
+        elif self.path == "/.well-known/jwks.json":
+            # Serve the public key for delegation token verification
+            pub_numbers = self.service._public_key.public_numbers()
+
+            def _int_to_base64url(n):
+                b = n.to_bytes((n.bit_length() + 7) // 8, byteorder='big')
+                return base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+
+            jwks = {
+                "keys": [{
+                    "kty": "RSA",
+                    "use": "sig",
+                    "alg": "RS256",
+                    "kid": self.service._kid,
+                    "n": _int_to_base64url(pub_numbers.n),
+                    "e": _int_to_base64url(pub_numbers.e),
+                }]
+            }
+            self._json_response(200, jwks)
         elif self.path == "/v1/audit":
             self._json_response(200, self.service.audit_log)
         elif self.path.startswith("/v1/delegation/chain"):
@@ -942,6 +1124,7 @@ def main():
     logger.info("  OPA: %s", config.opa_endpoint)
     logger.info("  Vault: %s", config.vault_addr)
     logger.info("  Trust domain: %s", config.trust_domain)
+    logger.info("  SPIRE OIDC: %s", config.spire_oidc_url)
     logger.info("  Max delegation depth: %d", config.max_delegation_depth)
 
     service = TokenExchangeService(config)

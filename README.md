@@ -186,7 +186,11 @@ docker compose up -d
 # 3. Verify the deployment
 docker compose --profile test run --rm test-runner
 
-# 4. Run the demo (default: Device Authorization Flow)
+# 4a. Interactive demo UI (recommended — browser-based walkthrough)
+#     Open http://localhost:8500 after bootstrap
+#     Supports Device Flow (RFC 8628) and Authorization Code Flow
+
+# 4b. CLI demo (headless)
 ./scripts/demo.sh
 
 # Or choose an auth mode:
@@ -203,9 +207,9 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 |---|---|---|---|---|
 | **Device Flow** | `device` (default) | **No** | Yes | Agent displays a URL + code. Human opens browser, authenticates directly with Keycloak (with MFA if configured), and approves. Agent polls for the token. |
 | **Pre-supplied Token** | `token` | **No** | Yes | An upstream app (chat UI, IDE, orchestrator) already authenticated the human and passes the access token via `HUMAN_ACCESS_TOKEN` env var. |
-| **Password Grant** | `password` | **YES** | **No** | Agent calls Keycloak with the human's username/password. This is a demo shortcut only — [OAuth 2.1 removes this grant type entirely](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-07#section-2.1). |
+| **Authorization Code Flow** | (demo UI only) | **No** | Yes | Standard OAuth 2.0 redirect flow — user is redirected to Keycloak, authenticates, and is redirected back with an authorization code exchanged for tokens server-side. Used by the interactive demo UI. |
 
-> **Security note:** In `device` and `token` modes, the agent **never possesses the human's password**. It only receives a scoped, time-limited access token after the human explicitly consents. This is the correct pattern for production AI agent deployments.
+> **Security note:** In all three modes, the agent **never possesses the human's password**. It only receives a scoped, time-limited access token after the human explicitly consents. This is the correct pattern for production AI agent deployments.
 
 ### What the demo does
 
@@ -225,6 +229,11 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 ```
 ├── docker-compose.yml           # 10-service container orchestration
 ├── ARCHITECTURE.md              # Detailed architecture documentation
+├── demo-ui/                     # Interactive educational demo (browser-based)
+│   ├── server.py                # Python backend with Keycloak reverse proxy
+│   ├── static/index.html        # Single-page UI walking through the delegation flow
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── agentgateway/                # AgentGateway proxy configuration (NEW)
 │   └── config/
 │       └── gateway.yaml         # MCP/A2A proxy config (OIDC, RBAC, routing)
@@ -307,12 +316,20 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
   - `spiffe://demo.local/agent/write-agent` (write agent)
   - `spiffe://demo.local/subagent/sql-executor` (sub-agent)
   - `spiffe://demo.local/subagent/result-formatter` (sub-agent)
+### Demo UI (Interactive Walkthrough)
+
+- **Language**: Python + vanilla HTML/JS
+- **Port**: `:8500`
+- **Purpose**: Browser-based educational tool that walks through the identity delegation flow step by step, with live API calls, decoded JWTs, and annotated responses
+- **Auth flows**: Device Flow (RFC 8628) and Authorization Code Flow via Keycloak reverse proxy
+- **Steps**: Health Check → Human Auth → Agent Identity (SPIFFE) → Policy Check (OPA) → Token Exchange (RFC 8693) → Database Query → Revocation → Audit Trail
+
 ### Keycloak (Human Identity Provider)
 
 - **Realm**: `demo`
 - **Users**: `alice` (data-analyst, groups: data-analysts, trading-team), `bob` (data-engineer, group: engineering)
-- **Clients**: `demo-cli` (public, device auth + direct access), `ai-agent-service` (confidential, token exchange enabled)
-- **Device Auth**: `demo-cli` supports OAuth 2.0 Device Authorization Grant (RFC 8628) — the recommended auth flow for AI agents
+- **Clients**: `demo-cli` (public, device auth + authorization code + direct access), `ai-agent-service` (confidential, token exchange enabled)
+- **Auth flows**: Device Authorization Grant (RFC 8628, recommended for agents), Authorization Code Flow (demo UI)
 - **Custom claims**: `groups` membership, `may_act` delegation authorization (hardcoded protocol mapper)
 
 ### HashiCorp Vault
@@ -334,7 +351,7 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 
 - **Language**: Python
 - **SPIFFE**: spiffe library (falls back to demo mode without SPIRE)
-- **Human auth**: Supports Device Flow (RFC 8628, recommended), pre-supplied token, or legacy password grant (demo only)
+- **Human auth**: Supports Device Flow (RFC 8628, recommended), pre-supplied token, or password grant (CLI demo only)
 - **Token exchange**: RFC 8693 client for delegation via Token Exchange Service
 - **Sub-agents**: `sql-executor` — can receive delegation from parent agent and extend the chain
 - **Queries**: Pre-mapped natural language → SQL for demo
@@ -363,8 +380,10 @@ The agent supports three modes for obtaining the human's OIDC token, controlled 
 
 | Service | URL | Credentials |
 |---|---|---|
+| **Demo UI** | http://localhost:8500 | (no auth — educational walkthrough) |
 | Keycloak Admin | http://localhost:8080 | admin / admin |
 | SPIRE Server | localhost:8081 | (internal) |
+| SPIRE OIDC | http://localhost:8082 | (JWKS endpoint) |
 | Token Exchange | http://localhost:8090 | (no auth for demo) |
 | OPA | http://localhost:8181 | (no auth) |
 | Vault UI | http://localhost:8200 | Root token from `.vault-root-token` |

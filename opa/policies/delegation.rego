@@ -62,15 +62,10 @@ authorized_delegation if {
     input.human_token.may_act.aud[_] == input.agent_spiffe_id
 }
 
-# Legacy/demo mode: may_act.sub is a descriptive name (not a SPIFFE ID)
-# and no aud constraint is set — allow if the agent is registered.
-# This preserves backward compatibility with existing Keycloak configs
-# that use names like "agent:query-agent-v2".
-authorized_delegation if {
-    input.human_token.may_act.sub != ""
-    not startswith(input.human_token.may_act.sub, "spiffe://")
-    not input.human_token.may_act.aud
-}
+# NOTE: Legacy bypass rule removed. All may_act claims must now use
+# either exact SPIFFE ID matching or aud-based authorization.
+# Hardcoded descriptive names like "agent:query-agent-v2" are no longer
+# accepted as they bypass agent-specific authorization checks.
 
 # ─── Delegation Chain Validation (RFC 8693) ──────────────────────────────────
 

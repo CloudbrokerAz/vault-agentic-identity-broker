@@ -73,19 +73,27 @@ class SQLExecutorSubAgent:
         self._db_credentials: Optional[dict] = None
         self._session_id: Optional[str] = None
 
-    def request_subdelegation(self, parent_delegation_token: str, scope: str = "readonly") -> dict:
+    def request_subdelegation(
+        self,
+        parent_delegation_token: str,
+        scope: str = "readonly",
+        agent_jwt_svid: str = "",
+    ) -> dict:
         """
         Extend the delegation chain by exchanging the parent's delegation
         token for a sub-delegation token.
 
         This is the RFC 8693 Token Exchange with:
           - subject_token = parent's delegation token
-          - actor_token = this sub-agent's SPIFFE identity
+          - actor_token = this sub-agent's SPIFFE JWT-SVID
         """
         logger.info("Requesting sub-delegation: scope=%s", scope)
 
-        # Create sub-agent's identity token
-        actor_token = self._create_identity_token()
+        # Use the provided SPIFFE JWT-SVID or fetch from SPIRE
+        if agent_jwt_svid:
+            actor_token = agent_jwt_svid
+        else:
+            actor_token = self._fetch_jwt_svid()
 
         exchange_params = {
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -172,17 +180,25 @@ class SQLExecutorSubAgent:
         except pyjwt.InvalidTokenError:
             return []
 
-    def _create_identity_token(self) -> str:
-        """Create this sub-agent's SPIFFE identity token."""
-        claims = {
-            "sub": self.config.spiffe_id,
-            "aud": ["token-exchange"],
-            "exp": int(time.time()) + 3600,
-            "iat": int(time.time()),
-            "client_type": "sub_agent",
-            "capabilities": ["sql_execute", "read_only"],
-        }
-        return pyjwt.encode(claims, "demo-secret", algorithm="HS256")
+    def _fetch_jwt_svid(self, audience: str = "token-exchange") -> str:
+        """Fetch a JWT-SVID from the SPIRE Workload API."""
+        spire_socket = os.getenv("SPIRE_AGENT_SOCKET", "/tmp/spire-agent/public/api.sock")
+        try:
+            from spiffe import WorkloadApiClient
+            client = WorkloadApiClient(
+                spiffe_socket=f"unix://{spire_socket}"
+            )
+            jwt_svid = client.fetch_jwt_svid(
+                audiences=[audience],
+                hint=self.config.spiffe_id,
+            )
+            logger.info("JWT-SVID obtained for sub-agent: %s", jwt_svid.spiffe_id)
+            return jwt_svid.token
+        except Exception as e:
+            raise RuntimeError(
+                f"SPIRE Workload API unavailable: {e}. "
+                "Sub-agent cannot obtain a cryptographically verifiable identity."
+            ) from e
 
     @property
     def session_id(self) -> Optional[str]:

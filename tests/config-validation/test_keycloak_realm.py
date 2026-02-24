@@ -178,7 +178,10 @@ class TestKeycloakRealmConfig(unittest.TestCase):
         # Validate the may_act claim value is valid JSON
         claim_value = json.loads(may_act_mapper["config"]["claim.value"])
         self.assertIn("sub", claim_value)
-        self.assertEqual(claim_value["sub"], "agent:query-agent-v2")
+        self.assertEqual(claim_value["sub"], "spiffe://demo.local/agent/query-agent")
+        # Verify aud list includes registered agents
+        self.assertIn("aud", claim_value)
+        self.assertIn("spiffe://demo.local/agent/query-agent", claim_value["aud"])
 
     def test_groups_mapper_on_demo_cli(self):
         client = next(

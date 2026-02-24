@@ -172,11 +172,14 @@ Credentials saved by bootstrap:
 - Python service on port 8090
 - Key endpoints: `POST /v1/token/exchange` (RFC 8693), `POST /v1/delegate` (legacy), `POST /v1/token/revoke`, `GET /v1/delegation/chain`, `GET /v1/audit`, `GET /health`
 - Validates human tokens via Keycloak userinfo endpoint
-- Validates agent identity via SPIFFE trust domain check
+- Validates agent identity via cryptographic SPIFFE JWT-SVID verification against SPIRE OIDC JWKS
 - Evaluates OPA policy at `http://opa:8181/v1/data/delegation/allow`
 - Brokers Vault credentials at `GET /v1/database/creds/ai-agent-{scope}`
+- Signs delegation tokens with RS256 (in-memory RSA keypair or loaded from `SIGNING_KEY_PATH`)
+- Serves delegation token JWKS at `GET /.well-known/jwks.json`
 - Builds delegation tokens with nested `act{}` claims per RFC 8693 Section 4.1
 - Supports sub-agent chain extension with scope narrowing and depth limits
+- Fail-closed: rejects requests when Keycloak, OPA, or SPIRE OIDC are unavailable
 
 ### AgentGateway
 
@@ -295,7 +298,9 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | token-exchange | Vault token for credential brokering |
 | `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
 | `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh, test-runner, E2E tests | Set to `true` as alternative to `--host` flag |
-| `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | HMAC secret for delegation tokens |
+| `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | Deprecated: HMAC secret (RS256 keypair used by default) |
+| `SIGNING_KEY_PATH` | (none) | token-exchange | Path to PEM private key for RS256 signing (generates in-memory if empty) |
+| `SPIRE_OIDC_URL` | `http://spire-oidc:8082` | token-exchange | SPIRE OIDC Discovery Provider URL for JWKS verification |
 | `MAX_DELEGATION_DEPTH` | `3` | token-exchange | Maximum delegation chain depth |
 | `DEFAULT_TTL` | `300` | token-exchange | Default credential TTL in seconds |
 | `MAX_TTL` | `1800` | token-exchange | Maximum credential TTL in seconds |

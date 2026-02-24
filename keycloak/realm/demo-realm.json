@@ -134,7 +134,7 @@
           "consentRequired": false,
           "config": {
             "claim.name": "may_act",
-            "claim.value": "{\"sub\":\"agent:query-agent-v2\",\"client_id\":\"ai-agent-service\"}",
+            "claim.value": "{\"sub\":\"spiffe://demo.local/agent/query-agent\",\"aud\":[\"spiffe://demo.local/agent/query-agent\",\"spiffe://demo.local/agent/analysis-agent\",\"spiffe://demo.local/agent/write-agent\"],\"client_id\":\"ai-agent-service\"}",
             "jsonType.label": "JSON",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -191,7 +191,7 @@
           "consentRequired": false,
           "config": {
             "claim.name": "may_act",
-            "claim.value": "{\"sub\":\"agent:query-agent-v2\",\"client_id\":\"ai-agent-service\"}",
+            "claim.value": "{\"sub\":\"spiffe://demo.local/agent/query-agent\",\"aud\":[\"spiffe://demo.local/agent/query-agent\",\"spiffe://demo.local/agent/analysis-agent\",\"spiffe://demo.local/agent/write-agent\"],\"client_id\":\"ai-agent-service\"}",
             "jsonType.label": "JSON",
             "id.token.claim": "true",
             "access.token.claim": "true",
