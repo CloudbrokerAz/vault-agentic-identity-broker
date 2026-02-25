@@ -73,6 +73,11 @@ class TestBootstrapScript(unittest.TestCase):
         """Bootstrap must configure the Vault JWT auth method."""
         self.assertIn("auth/jwt", self.script)
 
+    def test_jwt_claim_mappings_include_may_act(self):
+        """Bootstrap must map /may_act/sub to entity metadata for Sentinel enforce-may-act."""
+        self.assertIn("/may_act/sub", self.script)
+        self.assertIn('"may_act"', self.script)
+
     def test_saves_credentials_with_chmod_600(self):
         """Bootstrap must set chmod 600 on saved credential files."""
         self.assertIn("chmod 600", self.script)

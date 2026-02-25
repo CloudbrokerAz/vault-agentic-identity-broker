@@ -330,6 +330,7 @@ log_ok "Legacy SPIRE JWT roles removed (spire-gateway, spire-agent-readonly, spi
 #   groups = Keycloak groups (used for external identity group mapping)
 #   scope = delegation scope (readonly, readwrite, etc.)
 #   delegation_depth = chain depth (1 = direct, 2+ = sub-agent)
+#   may_act.sub = authorized agent SPIFFE pattern (e.g. spiffe://demo.local/agent/*)
 log_info "Creating JWT auth role 'delegated-agent'..."
 curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
     -X POST \
@@ -348,7 +349,8 @@ curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
             "sub": "human_user",
             "/act/sub": "agent_identity",
             "scope": "delegation_scope",
-            "delegation_depth": "chain_depth"
+            "delegation_depth": "chain_depth",
+            "/may_act/sub": "may_act"
         },
         "token_policies": ["ai-agent-db-read"],
         "token_ttl": "5m",
