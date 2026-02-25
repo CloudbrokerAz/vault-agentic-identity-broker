@@ -921,7 +921,7 @@ fi
 
 # ─── Step 8f: Load Sentinel EGP Policies (Enterprise Only) ─────────────────
 # Sentinel Endpoint Governing Policies enforce delegation constraints directly
-# inside Vault. These replace OPA as the policy engine for credential requests.
+# inside Vault. These are the policy engine for credential requests.
 # On Vault OSS, this step is skipped.
 
 log_step "8f" "Loading Sentinel EGP policies (Enterprise)"

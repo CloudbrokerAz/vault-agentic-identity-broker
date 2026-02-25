@@ -3,7 +3,6 @@
 Mock services for E2E testing without Docker.
 
 Simulates:
-- OPA Policy Engine (port 8181)
 - Keycloak OIDC Provider (port 8080)
 - Vault Dynamic Secrets (port 8200)
 
@@ -26,7 +25,6 @@ import string
 # ─── Configuration ──────────────────────────────────────────────────────────
 
 KEYCLOAK_PORT = int(os.environ.get("MOCK_KEYCLOAK_PORT", "8080"))
-OPA_PORT = int(os.environ.get("MOCK_OPA_PORT", "8181"))
 VAULT_PORT = int(os.environ.get("MOCK_VAULT_PORT", "8200"))
 
 # Demo users and their credentials/groups
@@ -47,33 +45,6 @@ USERS = {
         "groups": ["engineering"],
         "realm_roles": ["data-engineer"],
     },
-}
-
-# OPA delegation policy data (mirrors opa/policies/data.json)
-OPA_CONFIG = {
-    "trusted_issuers": [
-        f"http://127.0.0.1:{KEYCLOAK_PORT}/realms/demo",
-        f"http://localhost:{KEYCLOAK_PORT}/realms/demo",
-        "http://keycloak:8080/realms/demo",
-    ],
-    "registered_agents": [
-        "spiffe://demo.local/agent/query-agent",
-        "spiffe://demo.local/agent/analysis-agent",
-        "spiffe://demo.local/agent/write-agent",
-        "spiffe://demo.local/agent/write-agent",
-    ],
-    "registered_subagents": [
-        "spiffe://demo.local/subagent/sql-executor",
-        "spiffe://demo.local/subagent/result-formatter",
-    ],
-    "max_delegation_depth": 3,
-    "group_permissions": {
-        "data-analysts": ["readonly", "db:read", "db:query"],
-        "trading-team": ["readonly", "db:read", "db:query"],
-        "engineering": ["readonly", "readwrite", "db:read", "db:write", "db:query"],
-    },
-    "max_delegation_ttl_seconds": 28800,
-    "require_may_act_claim": True,
 }
 
 # JWT signing key for mock tokens

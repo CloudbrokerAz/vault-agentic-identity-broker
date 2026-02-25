@@ -63,13 +63,6 @@ else
     fail "Vault health check" "not responding at ${VAULT_ADDR}"
 fi
 
-# OPA
-if curl -sf "http://localhost:8181/health" > /dev/null 2>&1; then
-    pass "OPA is healthy"
-else
-    fail "OPA health check" "not responding"
-fi
-
 # Keycloak
 if curl -sf "http://localhost:8080/health/ready" > /dev/null 2>&1; then
     pass "Keycloak is healthy"
@@ -181,108 +174,7 @@ else
     fail "Invalid credentials" "should have been rejected"
 fi
 
-# ─── Test 3: OPA Policy Evaluation ──────────────────────────────
-
-echo ""
-echo "── OPA Policy Evaluation ──"
-
-# Valid delegation: alice (data-analyst) → readonly → allowed
-OPA_ALLOW=$(curl -sf "http://localhost:8181/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts", "trading-team"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://keycloak:8080/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', False))" 2>/dev/null)
-
-if [ "${OPA_ALLOW}" = "True" ]; then
-    pass "OPA allows alice readonly delegation"
-else
-    fail "OPA alice readonly" "expected allow, got ${OPA_ALLOW}"
-fi
-
-# Deny: alice → readwrite (data-analyst can't write)
-OPA_DENY=$(curl -sf "http://localhost:8181/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://keycloak:8080/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readwrite",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_DENY}" = "False" ]; then
-    pass "OPA denies alice readwrite delegation"
-else
-    fail "OPA alice readwrite deny" "expected deny, got ${OPA_DENY}"
-fi
-
-# Allow: bob (engineering) → readwrite
-OPA_BOB=$(curl -sf "http://localhost:8181/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "bob@acme.com",
-                "groups": ["engineering"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://keycloak:8080/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readwrite",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', False))" 2>/dev/null)
-
-if [ "${OPA_BOB}" = "True" ]; then
-    pass "OPA allows bob readwrite delegation"
-else
-    fail "OPA bob readwrite" "expected allow, got ${OPA_BOB}"
-fi
-
-# Deny: untrusted agent
-OPA_BAD_AGENT=$(curl -sf "http://localhost:8181/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://keycloak:8080/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://evil.com/agent/bad",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_BAD_AGENT}" = "False" ]; then
-    pass "OPA denies untrusted agent"
-else
-    fail "OPA untrusted agent" "expected deny, got ${OPA_BAD_AGENT}"
-fi
-
-# ─── Test 4: Vault Dynamic Credentials ──────────────────────────
+# ─── Test 3: Vault Dynamic Credentials ──────────────────────────
 
 echo ""
 echo "── Vault Dynamic Credentials ──"
@@ -350,7 +242,7 @@ else
     fail "Vault credential generation" "no response from Vault"
 fi
 
-# ─── Test 5: Vault Audit Logging ────────────────────────────────
+# ─── Test 4: Vault Audit Logging ────────────────────────────────
 
 echo ""
 echo "── Vault Audit Logging ──"

@@ -28,14 +28,14 @@ class TestDockerCompose(unittest.TestCase):
     def test_all_services_defined(self):
         expected = {
             "spire-server", "spire-init", "spire-agent", "spire-oidc",
-            "keycloak", "vault", "opa", "postgresql", "ai-agent",
+            "keycloak", "vault", "postgresql", "ai-agent",
             "agentgateway", "token-exchange", "test-runner",
         }
         actual = set(self.config["services"].keys())
         self.assertEqual(expected, actual)
 
     def test_service_count(self):
-        self.assertEqual(len(self.config["services"]), 12)
+        self.assertEqual(len(self.config["services"]), 11)
 
     # ─── Network Configuration ───────────────────────────────────────
 
@@ -163,34 +163,6 @@ class TestDockerCompose(unittest.TestCase):
         svc = self.config["services"]["vault"]
         self.assertIn("healthcheck", svc)
 
-    # ─── OPA ─────────────────────────────────────────────────────────
-
-    def test_opa_image(self):
-        svc = self.config["services"]["opa"]
-        self.assertIn("opa", svc["image"])
-
-    def test_opa_loads_delegation_policy(self):
-        svc = self.config["services"]["opa"]
-        command = svc.get("command", [])
-        command_str = " ".join(str(c) for c in command)
-        self.assertIn("delegation.rego", command_str)
-
-    def test_opa_loads_data(self):
-        svc = self.config["services"]["opa"]
-        command = svc.get("command", [])
-        command_str = " ".join(str(c) for c in command)
-        self.assertIn("data.json", command_str)
-
-    def test_opa_server_mode(self):
-        svc = self.config["services"]["opa"]
-        command = svc.get("command", [])
-        self.assertIn("--server", command)
-
-    def test_opa_port(self):
-        svc = self.config["services"]["opa"]
-        ports = [str(p) for p in svc.get("ports", [])]
-        self.assertTrue(any("8181" in p for p in ports))
-
     # ─── PostgreSQL ──────────────────────────────────────────────────
 
     def test_postgresql_image(self):
@@ -227,26 +199,14 @@ class TestDockerCompose(unittest.TestCase):
         build = svc.get("build", {})
         self.assertEqual(build.get("context"), "./token-exchange")
 
-    def test_token_exchange_depends_on_vault(self):
-        svc = self.config["services"]["token-exchange"]
-        deps = svc.get("depends_on", {})
-        self.assertIn("vault", deps)
-
     def test_token_exchange_depends_on_keycloak(self):
         svc = self.config["services"]["token-exchange"]
         deps = svc.get("depends_on", {})
         self.assertIn("keycloak", deps)
 
-    def test_token_exchange_depends_on_opa(self):
-        svc = self.config["services"]["token-exchange"]
-        deps = svc.get("depends_on", {})
-        self.assertIn("opa", deps)
-
     def test_token_exchange_environment(self):
         svc = self.config["services"]["token-exchange"]
         env = svc.get("environment", {})
-        self.assertEqual(env.get("OPA_ENDPOINT"), "http://opa:8181")
-        self.assertEqual(env.get("VAULT_ADDR"), "http://vault:8200")
         self.assertEqual(env.get("TRUST_DOMAIN"), "demo.local")
 
     # ─── AI Agent ────────────────────────────────────────────────────
@@ -288,7 +248,7 @@ class TestDockerCompose(unittest.TestCase):
         """All infrastructure services should have health checks."""
         infra_services = [
             "spire-server", "spire-agent", "keycloak",
-            "vault", "opa", "postgresql",
+            "vault", "postgresql",
         ]
         for name in infra_services:
             svc = self.config["services"][name]

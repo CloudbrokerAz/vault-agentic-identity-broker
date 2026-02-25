@@ -3,18 +3,17 @@
 # Native End-to-End Integration Tests
 #
 # Runs all services natively (no Docker required):
-#   - Mock Keycloak, OPA, and Vault via Python
-#   - Real Token Exchange (Go binary)
+#   - Mock Keycloak and Vault via Python
+#   - Real Token Exchange (Python service)
 #   - Real PostgreSQL database
 #
 # Tests the full identity delegation chain:
 #   1. Service health checks
 #   2. Keycloak authentication (alice, bob, invalid)
-#   3. OPA policy evaluation (allow/deny scenarios)
-#   4. Vault dynamic credential lifecycle
-#   5. Token Exchange delegation flow
-#   6. Database queries with dynamic credentials
-#   7. Credential revocation
+#   3. Vault dynamic credential lifecycle
+#   4. Token Exchange delegation flow
+#   5. Database queries with dynamic credentials
+#   6. Credential revocation
 ###############################################################################
 
 set -uo pipefail
@@ -66,14 +65,12 @@ echo "── Starting Services ──"
 
 # Use alternate ports to avoid conflicts with live Docker services
 MOCK_KC_PORT=19080
-MOCK_OPA_PORT=19181
 MOCK_VAULT_PORT=19200
 TE_PORT=19090
 
 # Start mock services on alternate ports
-info "Starting mock Keycloak, OPA, and Vault..."
+info "Starting mock Keycloak and Vault..."
 MOCK_KEYCLOAK_PORT=${MOCK_KC_PORT} \
-MOCK_OPA_PORT=${MOCK_OPA_PORT} \
 MOCK_VAULT_PORT=${MOCK_VAULT_PORT} \
 python3 "${SCRIPT_DIR}/mock_services.py" &
 MOCK_PID=$!
@@ -107,7 +104,6 @@ info "Starting Token Exchange..."
 LISTEN_PORT=${TE_PORT} \
 KEYCLOAK_URL="http://127.0.0.1:${MOCK_KC_PORT}" \
 KEYCLOAK_REALM="demo" \
-OPA_ENDPOINT="http://127.0.0.1:${MOCK_OPA_PORT}" \
 VAULT_ADDR="http://127.0.0.1:${MOCK_VAULT_PORT}" \
 VAULT_TOKEN="${GATEWAY_VAULT_TOKEN}" \
 TRUST_DOMAIN="demo.local" \
@@ -134,13 +130,6 @@ if curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/sys/health" > /dev/null 2>&1
     pass "Vault is healthy"
 else
     fail "Vault health check" "not responding"
-fi
-
-# OPA health
-if curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/health" > /dev/null 2>&1; then
-    pass "OPA is healthy"
-else
-    fail "OPA health check" "not responding"
 fi
 
 # Keycloak health
@@ -262,180 +251,7 @@ else
     fail "Invalid credentials" "should have been rejected"
 fi
 
-# ─── Test 3: OPA Policy Evaluation ──────────────────────────────
-
-echo ""
-echo "── OPA Policy Evaluation ──"
-
-# Allow: alice (data-analyst) → readonly
-OPA_ALLOW=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts", "trading-team"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', False))" 2>/dev/null)
-
-if [ "${OPA_ALLOW}" = "True" ]; then
-    pass "OPA allows alice readonly delegation"
-else
-    fail "OPA alice readonly" "expected allow, got ${OPA_ALLOW}"
-fi
-
-# Deny: alice → readwrite (data-analyst can't write)
-OPA_DENY=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readwrite",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_DENY}" = "False" ]; then
-    pass "OPA denies alice readwrite delegation"
-else
-    fail "OPA alice readwrite deny" "expected deny, got ${OPA_DENY}"
-fi
-
-# Allow: bob (engineering) → readwrite
-OPA_BOB=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "bob@acme.com",
-                "groups": ["engineering"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readwrite",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', False))" 2>/dev/null)
-
-if [ "${OPA_BOB}" = "True" ]; then
-    pass "OPA allows bob readwrite delegation"
-else
-    fail "OPA bob readwrite" "expected allow, got ${OPA_BOB}"
-fi
-
-# Deny: untrusted agent
-OPA_BAD_AGENT=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://evil.com/agent/bad",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_BAD_AGENT}" = "False" ]; then
-    pass "OPA denies untrusted agent"
-else
-    fail "OPA untrusted agent" "expected deny, got ${OPA_BAD_AGENT}"
-fi
-
-# Deny: expired token
-OPA_EXPIRED=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 1000000000,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_EXPIRED}" = "False" ]; then
-    pass "OPA denies expired token"
-else
-    fail "OPA expired token" "expected deny, got ${OPA_EXPIRED}"
-fi
-
-# Deny: no may_act claim
-OPA_NO_MAYACT=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/allow" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', True))" 2>/dev/null)
-
-if [ "${OPA_NO_MAYACT}" = "False" ]; then
-    pass "OPA denies missing may_act claim"
-else
-    fail "OPA no may_act" "expected deny, got ${OPA_NO_MAYACT}"
-fi
-
-# Decision details
-OPA_REASON=$(curl -sf "http://127.0.0.1:${MOCK_OPA_PORT}/v1/data/delegation/decision" \
-    -X POST -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts"],
-                "may_act": {"sub": "agent:query-agent-v2"},
-                "exp": 9999999999,
-                "iss": "http://127.0.0.1:'"${MOCK_KC_PORT}"'/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['reason'])" 2>/dev/null)
-
-if [ "${OPA_REASON}" = "allowed" ]; then
-    pass "OPA decision endpoint returns reason=allowed"
-else
-    fail "OPA decision reason" "expected 'allowed', got ${OPA_REASON}"
-fi
-
-# ─── Test 4: Vault Dynamic Credentials ──────────────────────────
+# ─── Test 3: Vault Dynamic Credentials ──────────────────────────
 
 echo ""
 echo "── Vault Dynamic Credentials ──"
@@ -500,7 +316,7 @@ else
     fail "Vault credential generation" "no response from Vault"
 fi
 
-# ─── Test 5: Token Exchange Delegation Flow ───────────────────
+# ─── Test 4: Token Exchange Delegation Flow ───────────────────
 
 echo ""
 echo "── Token Exchange Delegation Flow ──"
@@ -666,7 +482,7 @@ else
     skip "Bob delegation test" "Bob authentication failed"
 fi
 
-# ─── Test 6: Gateway API Validation ─────────────────────────────
+# ─── Test 5: Gateway API Validation ─────────────────────────────
 
 echo ""
 echo "── Gateway API Validation ──"
@@ -707,7 +523,7 @@ else
     fail "Audit endpoint" "expected JSON array, got ${AUDIT_TYPE}"
 fi
 
-# ─── Test 7: Audit Trail Completeness ────────────────────────────
+# ─── Test 6: Audit Trail Completeness ────────────────────────────
 
 echo ""
 echo "── Audit Trail ──"
@@ -755,7 +571,7 @@ else
     fi
 fi
 
-# ─── Test 8: PostgreSQL Schema Validation ────────────────────────
+# ─── Test 7: PostgreSQL Schema Validation ────────────────────────
 
 echo ""
 echo "── PostgreSQL Schema ──"

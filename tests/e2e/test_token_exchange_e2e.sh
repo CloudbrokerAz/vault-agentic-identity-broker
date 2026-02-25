@@ -3,7 +3,7 @@
 # Token Exchange Service (RFC 8693) End-to-End Tests
 #
 # Tests the full token exchange and delegation chain flow:
-#   1. Service health checks (Token Exchange, Mock Keycloak, Mock OPA)
+#   1. Service health checks (Token Exchange, Mock Keycloak)
 #   2. RFC 8693 token exchange (valid/invalid scenarios)
 #   3. Delegation chain extension (sub-agent chains, depth enforcement)
 #   4. Legacy delegation API (/v1/delegate backward compatibility)
@@ -13,7 +13,6 @@
 # Services:
 #   - Token Exchange Service (port 8090) from token-exchange/token_exchange.py
 #   - Mock Keycloak (port 8080) from tests/e2e/mock_services.py
-#   - Mock OPA (port 8181) from tests/e2e/mock_services.py
 #   - Mock Vault (port 8200) from tests/e2e/mock_services.py
 #
 # Prerequisites:
@@ -117,14 +116,12 @@ section "Starting Services"
 
 # Use alternate ports to avoid conflicts with live Docker services
 MOCK_KC_PORT=18080
-MOCK_OPA_PORT=18181
 MOCK_VAULT_PORT=18200
 TE_PORT=18090
 
 # Start mock services on alternate ports
-info "Starting mock services (Keycloak:${MOCK_KC_PORT}, OPA:${MOCK_OPA_PORT}, Vault:${MOCK_VAULT_PORT})..."
+info "Starting mock services (Keycloak:${MOCK_KC_PORT}, Vault:${MOCK_VAULT_PORT})..."
 MOCK_KEYCLOAK_PORT=${MOCK_KC_PORT} \
-MOCK_OPA_PORT=${MOCK_OPA_PORT} \
 MOCK_VAULT_PORT=${MOCK_VAULT_PORT} \
 python3 "${SCRIPT_DIR}/mock_services.py" > /tmp/mock-services-e2e.log 2>&1 &
 MOCK_PID=$!
@@ -144,7 +141,6 @@ info "Starting Token Exchange Service on port ${TE_PORT}..."
 LISTEN_PORT=${TE_PORT} \
 KEYCLOAK_URL="http://127.0.0.1:${MOCK_KC_PORT}" \
 KEYCLOAK_REALM="demo" \
-OPA_ENDPOINT="http://127.0.0.1:${MOCK_OPA_PORT}" \
 VAULT_ADDR="http://127.0.0.1:${MOCK_VAULT_PORT}" \
 VAULT_TOKEN="${VAULT_ROOT_TOKEN}" \
 TRUST_DOMAIN="demo.local" \
@@ -297,19 +293,6 @@ test_keycloak_health() {
     fi
 }
 test_keycloak_health
-
-# Test 3: Mock OPA health
-test_opa_health() {
-    local RESP
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${MOCK_OPA_PORT}/health" 2>/dev/null)
-    if [ "${RESP}" = "200" ]; then
-        pass_test "Mock OPA health check (port 8181)"
-    else
-        fail_test "Mock OPA health check" "HTTP ${RESP}"
-    fi
-}
-test_opa_health
-
 
 ###############################################################################
 # CATEGORY 2: RFC 8693 Token Exchange (8 tests)
