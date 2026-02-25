@@ -1,18 +1,15 @@
 # Policy: ai-agent-db-read
-# Grants AI agents the ability to read dynamic database credentials
-# Scoped to readonly access only.
+# Grants AI agents read-only dynamic database credentials.
 #
-# When entity metadata is available (via delegation), the scope is
-# enforced via templated paths. A static fallback is included for
-# agents that authenticate directly via JWT without delegation metadata.
+# In the new architecture, agents authenticate directly to Vault via SPIFFE
+# auth (Enterprise) or JWT auth. Scope enforcement is handled by Sentinel
+# EGP policies, not templated ACL paths.
+#
+# Security: agents are explicitly denied identity/* access to prevent
+# self-attestation of delegation metadata. Entity metadata is populated
+# automatically via JWT claim_mappings during authentication.
 
-# Templated path: resolves to the scope stored in entity metadata
-# (e.g. "readonly" → database/creds/ai-agent-readonly)
-path "database/creds/ai-agent-{{identity.entity.metadata.delegation_scope}}" {
-  capabilities = ["read"]
-}
-
-# Static fallback: agents authenticated via JWT without delegation metadata
+# Read-only database credentials
 path "database/creds/ai-agent-readonly" {
   capabilities = ["read"]
 }
@@ -27,7 +24,22 @@ path "auth/token/renew-self" {
   capabilities = ["update"]
 }
 
-# Deny all system paths
+# Allow managing database credential leases (renew/revoke own leases)
+path "sys/leases/renew" {
+  capabilities = ["update"]
+}
+
+path "sys/leases/revoke" {
+  capabilities = ["update"]
+}
+
+# Deny identity access — agents must not self-attest delegation metadata.
+# Entity metadata is set automatically from JWT claims during auth.
+path "identity/*" {
+  capabilities = ["deny"]
+}
+
+# Deny all other system paths
 path "sys/*" {
   capabilities = ["deny"]
 }

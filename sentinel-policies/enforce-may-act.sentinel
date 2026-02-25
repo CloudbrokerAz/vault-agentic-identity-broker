@@ -1,0 +1,56 @@
+# enforce-may-act.sentinel
+#
+# Endpoint Governing Policy: Enforce may_act Authorization
+#
+# Validates that the human's may_act claim authorizes the specific agent
+# performing the request. The may_act value in entity metadata is the
+# authorized SPIFFE ID pattern (flattened from the JWT may_act.sub claim
+# via claim_mappings). It must match the agent_identity either exactly
+# or via wildcard suffix ("spiffe://demo.local/agent/*").
+#
+# Applied to: database/creds/*
+# Enforcement: hard-mandatory
+
+import "strings"
+
+validate_may_act = func() {
+    meta = identity.entity.metadata
+
+    # may_act must be present and non-empty
+    if "may_act" not in keys(meta) or meta["may_act"] is "" {
+        print("DENIED: missing or empty 'may_act' in entity metadata")
+        return false
+    }
+
+    # agent_identity must also be present (require-delegation checks this too)
+    if "agent_identity" not in keys(meta) or meta["agent_identity"] is "" {
+        print("DENIED: missing 'agent_identity' for may_act comparison")
+        return false
+    }
+
+    may_act = meta["may_act"]
+    agent_id = meta["agent_identity"]
+
+    # Exact match: may_act directly names this agent
+    if may_act is agent_id {
+        return true
+    }
+
+    # Wildcard match: may_act ends with "/*"
+    # e.g., "spiffe://demo.local/agent/*" authorizes any agent in that path
+    if strings.has_suffix(may_act, "/*") {
+        prefix = strings.trim_suffix(may_act, "*")
+        if strings.has_prefix(agent_id, prefix) {
+            return true
+        }
+    }
+
+    print("DENIED: may_act", may_act, "does not authorize agent", agent_id)
+    return false
+}
+
+may_act_valid = validate_may_act()
+
+main = rule {
+    may_act_valid
+}

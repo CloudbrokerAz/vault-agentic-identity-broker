@@ -1,0 +1,53 @@
+# require-delegation.sentinel
+#
+# Endpoint Governing Policy: Require Delegation Metadata
+#
+# Ensures that every request for dynamic database credentials carries valid
+# delegation metadata on the requesting entity. This proves a human authorized
+# the agent's action and that the agent has a valid SPIFFE identity.
+#
+# Applied to: database/creds/*
+# Enforcement: hard-mandatory
+
+import "strings"
+
+# Require delegation metadata fields on the identity entity.
+# These are populated by Vault JWT/SPIFFE auth claim_mappings when an agent
+# authenticates with a fused delegation token.
+
+validate_delegation_metadata = func() {
+    # Access entity metadata (populated from JWT claim_mappings)
+    meta = identity.entity.metadata
+
+    # Require human_user is present and non-empty
+    if "human_user" not in keys(meta) or meta["human_user"] is "" {
+        print("DENIED: missing or empty 'human_user' in entity metadata")
+        return false
+    }
+
+    # Require agent_identity is present and non-empty
+    if "agent_identity" not in keys(meta) or meta["agent_identity"] is "" {
+        print("DENIED: missing or empty 'agent_identity' in entity metadata")
+        return false
+    }
+
+    # Require delegation_scope is present and non-empty
+    if "delegation_scope" not in keys(meta) or meta["delegation_scope"] is "" {
+        print("DENIED: missing or empty 'delegation_scope' in entity metadata")
+        return false
+    }
+
+    # Validate that the agent identity is within our SPIFFE trust domain
+    if not strings.has_prefix(meta["agent_identity"], "spiffe://demo.local/") {
+        print("DENIED: agent_identity is not in trust domain demo.local:", meta["agent_identity"])
+        return false
+    }
+
+    return true
+}
+
+delegation_valid = validate_delegation_metadata()
+
+main = rule {
+    delegation_valid
+}

@@ -75,7 +75,6 @@ wait_for_service() {
 log_step 1 "Waiting for infrastructure services"
 
 wait_for_service "Vault"      "http://localhost:8200/v1/sys/health?standbyok=true&uninitcode=200&sealedcode=200" 30
-wait_for_service "OPA"        "http://localhost:8181/health" 20
 wait_for_service "PostgreSQL" "http://localhost:5432" 20 || true  # pg_isready doesn't respond to HTTP
 # Keycloak 26+ serves health on management port 9000
 wait_for_service "Keycloak"   "http://localhost:8080/realms/demo" 60
@@ -321,11 +320,12 @@ chmod 600 "${PROJECT_DIR}/.gateway.env"
 
 log_ok "Token Exchange credentials saved to .gateway.env"
 
-# ─── Step 7: Configure Vault JWT Auth (roles only) ────────────────────
-# The JWKS URL (SPIRE OIDC) is configured later in Step 8b once the OIDC
-# discovery provider is running.
+# ─── Step 7: Configure Vault JWT Auth for fused delegation tokens ─────
+# The JWT auth method validates fused tokens minted by Token Exchange.
+# JWKS URL is configured later in Step 8b once Token Exchange is reachable.
+# Old SPIRE-based JWT roles are removed — SPIFFE auth handles agent authn.
 
-log_step 7 "Enabling Vault JWT auth method and creating roles"
+log_step 7 "Enabling Vault JWT auth method and creating delegated-agent role"
 
 # Enable JWT auth method
 curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
@@ -334,75 +334,50 @@ curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
     -H "Content-Type: application/json" \
     -d '{
         "type": "jwt",
-        "description": "SPIRE JWT-SVID authentication for agents"
+        "description": "Fused delegation token authentication"
     }' > /dev/null 2>&1 || log_warn "JWT auth method may already be enabled"
 log_ok "JWT auth method enabled"
 
-# Create JWT auth role for gateway (maps SPIFFE IDs to Vault policies)
-log_info "Creating JWT auth role for gateway..."
-curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-gateway" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "role_type": "jwt",
-        "bound_audiences": ["vault"],
-        "bound_claims": {
-            "sub": "spiffe://demo.local/gateway/*"
-        },
-        "user_claim": "sub",
-        "claim_mappings": {
-            "sub": "spiffe_id"
-        },
-        "token_policies": ["gateway-policy"],
-        "token_ttl": "1h",
-        "token_max_ttl": "4h"
-    }' > /dev/null
-log_ok "JWT auth role 'spire-gateway' created"
+# Remove legacy SPIRE-based JWT roles (idempotent — 404 is fine)
+for old_role in spire-gateway spire-agent-readonly spire-agent-readwrite; do
+    curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/${old_role}" \
+        -X DELETE \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" > /dev/null 2>&1 || true
+done
+log_ok "Legacy SPIRE JWT roles removed (spire-gateway, spire-agent-readonly, spire-agent-readwrite)"
 
-# Create JWT auth role for read-only agents
-log_info "Creating JWT auth role for read-only agents..."
-curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readonly" \
+# Create JWT auth role for fused delegation tokens
+# The fused JWT from Token Exchange contains:
+#   sub = human identity (e.g. alice@acme.com)
+#   act.sub = agent SPIFFE ID (e.g. spiffe://demo.local/agent/query-agent)
+#   groups = Keycloak groups (used for external identity group mapping)
+#   scope = delegation scope (readonly, readwrite, etc.)
+#   delegation_depth = chain depth (1 = direct, 2+ = sub-agent)
+log_info "Creating JWT auth role 'delegated-agent'..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
     -X POST \
     -H "X-Vault-Token: ${VAULT_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{
         "role_type": "jwt",
+        "user_claim": "sub",
+        "groups_claim": "groups",
         "bound_audiences": ["vault"],
         "bound_claims": {
-            "sub": "spiffe://demo.local/agent/*"
+            "/act/sub": "spiffe://demo.local/*"
         },
-        "user_claim": "sub",
+        "bound_claims_type": "glob",
         "claim_mappings": {
-            "sub": "spiffe_id"
+            "sub": "human_user",
+            "/act/sub": "agent_identity",
+            "scope": "delegation_scope",
+            "delegation_depth": "chain_depth"
         },
         "token_policies": ["ai-agent-db-read"],
-        "token_ttl": "30m",
-        "token_max_ttl": "1h"
+        "token_ttl": "5m",
+        "token_max_ttl": "30m"
     }' > /dev/null
-log_ok "JWT auth role 'spire-agent-readonly' created"
-
-# Create JWT auth role for readwrite agents (write-agent)
-log_info "Creating JWT auth role for readwrite agents..."
-curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/spire-agent-readwrite" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "role_type": "jwt",
-        "bound_audiences": ["vault"],
-        "bound_claims": {
-            "sub": "spiffe://demo.local/agent/write-agent"
-        },
-        "user_claim": "sub",
-        "claim_mappings": {
-            "sub": "spiffe_id"
-        },
-        "token_policies": ["ai-agent-db-readwrite"],
-        "token_ttl": "30m",
-        "token_max_ttl": "1h"
-    }' > /dev/null
-log_ok "JWT auth role 'spire-agent-readwrite' created"
+log_ok "JWT auth role 'delegated-agent' created (bound_claims: act.sub must be SPIFFE, TTL=5m)"
 
 # ─── Step 8: Register SPIRE Entries ─────────────────────────────────────
 
@@ -509,30 +484,513 @@ if [ -n "${JOIN_TOKEN}" ]; then
     SPIRE_JOIN_TOKEN="${JOIN_TOKEN}" ${COMPOSE} --profile spire up -d spire-oidc 2>/dev/null
     log_ok "SPIRE OIDC Discovery Provider started"
 
-    # ─── Step 8b: Configure Vault JWT JWKS URL (needs running OIDC provider) ──
-    log_info "Configuring Vault JWT auth with SPIRE OIDC Discovery Provider..."
+    # ─── Step 8b: Configure Vault JWT auth JWKS URL ──────────────────────
+    # Point JWT auth at Token Exchange JWKS (fused delegation tokens).
+    # SPIRE OIDC is still started for agent SVID verification by Token Exchange,
+    # but Vault no longer reads SPIRE JWKS directly — it validates fused tokens.
+    log_info "Waiting for SPIRE OIDC Provider (used by Token Exchange for SVID verification)..."
 
-    SPIRE_ISSUER="https://spire-server:8443"
     if [ "${HOST_MODE}" = "true" ]; then
         SPIRE_JWKS_URL="http://127.0.0.1:8082/keys"
     else
         SPIRE_JWKS_URL="http://spire-oidc:8082/keys"
     fi
-
     wait_for_service "SPIRE OIDC Provider" "${SPIRE_JWKS_URL}" 30
 
+    # JWT auth now validates fused tokens from Token Exchange, not SPIRE SVIDs
+    if [ "${HOST_MODE}" = "true" ]; then
+        TOKEN_EXCHANGE_JWKS_URL="http://127.0.0.1:8090/.well-known/jwks.json"
+    else
+        TOKEN_EXCHANGE_JWKS_URL="http://token-exchange:8090/.well-known/jwks.json"
+    fi
+
+    log_info "Configuring Vault JWT auth with Token Exchange JWKS..."
     curl -sf "${VAULT_ADDR}/v1/auth/jwt/config" \
         -X POST \
         -H "X-Vault-Token: ${VAULT_TOKEN}" \
         -H "Content-Type: application/json" \
         -d '{
-            "jwks_url": "'"${SPIRE_JWKS_URL}"'",
-            "bound_issuer": "'"${SPIRE_ISSUER}"'",
-            "default_role": "spire-agent"
+            "jwks_url": "'"${TOKEN_EXCHANGE_JWKS_URL}"'",
+            "bound_issuer": "token-exchange.demo.local",
+            "default_role": "delegated-agent"
         }' > /dev/null
-    log_ok "Vault JWT auth configured with SPIRE OIDC: ${SPIRE_JWKS_URL}"
+    log_ok "Vault JWT auth configured with Token Exchange JWKS: ${TOKEN_EXCHANGE_JWKS_URL}"
 else
     log_warn "Could not generate SPIRE join token (SPIRE may not be available)"
+fi
+
+# ─── Step 8c: Configure Vault SPIFFE Auth Method (Enterprise Only) ────────
+# Vault Enterprise supports native SPIFFE workload identity authentication.
+# Agents authenticate directly to Vault using their X.509 SVIDs issued by
+# SPIRE, eliminating the need for JWT-SVID intermediation for Vault access.
+#
+# This step is conditional: if `vault auth enable spiffe` fails (e.g. running
+# OSS Vault), it logs a warning and skips the configuration entirely.
+
+log_step "8c" "Configuring Vault SPIFFE auth method (Enterprise)"
+
+SPIFFE_AUTH_ENABLED="false"
+
+# Check if SPIFFE auth is already enabled
+SPIFFE_AUTH_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "${VAULT_ADDR}/v1/sys/auth/spiffe" \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "000")
+
+if [ "${SPIFFE_AUTH_CHECK}" = "200" ]; then
+    log_ok "SPIFFE auth method already enabled (skipping enable)"
+    SPIFFE_AUTH_ENABLED="true"
+else
+    log_info "Enabling SPIFFE auth method (requires Vault Enterprise)..."
+    SPIFFE_ENABLE_RESULT=$(curl -s -o /dev/null -w "%{http_code}" "${VAULT_ADDR}/v1/sys/auth/spiffe" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "type": "spiffe",
+            "description": "SPIFFE workload identity authentication for AI agents (Enterprise)"
+        }' 2>/dev/null || echo "000")
+
+    if [ "${SPIFFE_ENABLE_RESULT}" = "204" ] || [ "${SPIFFE_ENABLE_RESULT}" = "200" ]; then
+        log_ok "SPIFFE auth method enabled"
+        SPIFFE_AUTH_ENABLED="true"
+    else
+        log_warn "SPIFFE auth method not available (HTTP ${SPIFFE_ENABLE_RESULT})"
+        log_warn "This feature requires Vault Enterprise. Skipping SPIFFE auth configuration."
+        log_warn "Agents will continue to authenticate via JWT auth method."
+    fi
+fi
+
+if [ "${SPIFFE_AUTH_ENABLED}" = "true" ]; then
+
+    # Retrieve SPIRE trust bundle for the demo.local trust domain.
+    # The bundle is fetched from SPIRE server via CLI and contains the root
+    # CA certificates used to verify agent X.509 SVIDs.
+    log_info "Retrieving SPIRE trust bundle for demo.local..."
+    SPIRE_TRUST_BUNDLE=$(${COMPOSE} exec -T spire-server \
+        /opt/spire/bin/spire-server bundle show -format spiffe 2>/dev/null || echo "")
+
+    if [ -z "${SPIRE_TRUST_BUNDLE}" ]; then
+        log_warn "Could not retrieve SPIRE trust bundle. SPIFFE auth roles will be created"
+        log_warn "but trust domain configuration may need manual bundle upload."
+    fi
+
+    # Configure the SPIFFE auth method with the demo.local trust domain.
+    # The trust bundle enables Vault to cryptographically verify X.509 SVIDs
+    # presented by agents during authentication.
+    log_info "Configuring SPIFFE auth trust domain: demo.local..."
+
+    if [ -n "${SPIRE_TRUST_BUNDLE}" ]; then
+        # Construct JSON payload with trust bundle
+        SPIFFE_CONFIG_PAYLOAD=$(python3 -c "
+import json
+bundle = open('/dev/stdin').read().strip()
+print(json.dumps({
+    'spiffe_trust_domain': 'demo.local',
+    'spiffe_trust_bundle': bundle
+}))
+" <<< "${SPIRE_TRUST_BUNDLE}")
+
+        curl -sf "${VAULT_ADDR}/v1/auth/spiffe/config" \
+            -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${SPIFFE_CONFIG_PAYLOAD}" > /dev/null 2>&1 \
+            && log_ok "SPIFFE auth configured with trust bundle from SPIRE" \
+            || log_warn "SPIFFE auth config write returned non-zero (may need Enterprise API adjustments)"
+    else
+        # Configure without bundle — admin must upload trust bundle separately
+        curl -sf "${VAULT_ADDR}/v1/auth/spiffe/config" \
+            -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+                "spiffe_trust_domain": "demo.local"
+            }' > /dev/null 2>&1 \
+            && log_ok "SPIFFE auth configured (trust bundle must be uploaded separately)" \
+            || log_warn "SPIFFE auth config write failed (may need Enterprise API adjustments)"
+    fi
+
+    # Create SPIFFE auth role: agent-readonly
+    # Matches any agent workload with SPIFFE ID pattern spiffe://demo.local/agent/*
+    # Grants read-only database credential access.
+    log_info "Creating SPIFFE auth role: agent-readonly..."
+    curl -sf "${VAULT_ADDR}/v1/auth/spiffe/role/agent-readonly" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "workload_id_patterns": ["agent/*"],
+            "token_policies": ["ai-agent-db-read"],
+            "token_ttl": "30m",
+            "token_max_ttl": "1h"
+        }' > /dev/null 2>&1
+    log_ok "SPIFFE role 'agent-readonly' created (workload_id_patterns=[\"agent/*\"], TTL=30m)"
+
+    # Create SPIFFE auth role: agent-readwrite
+    # Only matches the specific write-agent workload for elevated access.
+    log_info "Creating SPIFFE auth role: agent-readwrite..."
+    curl -sf "${VAULT_ADDR}/v1/auth/spiffe/role/agent-readwrite" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "workload_id_patterns": ["agent/write-agent"],
+            "token_policies": ["ai-agent-db-readwrite"],
+            "token_ttl": "30m",
+            "token_max_ttl": "1h"
+        }' > /dev/null 2>&1
+    log_ok "SPIFFE role 'agent-readwrite' created (workload_id_patterns=[\"agent/write-agent\"], TTL=30m)"
+
+    # Create SPIFFE auth role: subagent
+    # Matches sub-agent workloads with reduced TTL for tighter security.
+    log_info "Creating SPIFFE auth role: subagent..."
+    curl -sf "${VAULT_ADDR}/v1/auth/spiffe/role/subagent" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "workload_id_patterns": ["subagent/*"],
+            "token_policies": ["ai-agent-db-read"],
+            "token_ttl": "15m",
+            "token_max_ttl": "30m"
+        }' > /dev/null 2>&1
+    log_ok "SPIFFE role 'subagent' created (workload_id_patterns=[\"subagent/*\"], TTL=15m)"
+
+    log_ok "Vault Enterprise SPIFFE auth configuration complete"
+fi
+
+# ─── Step 8d: Pre-provision Vault Identity Entities ──────────────────────
+# Pre-provision Identity entities for known agents as their baseline identity.
+# These entities are the agent's "self" -- the workload identity established
+# via SPIFFE auth (Enterprise) before any human delegation occurs.
+#
+# Entity model:
+#   - Each agent gets one Identity entity (e.g. "agent-query-agent")
+#   - SPIFFE auth alias: workload path (e.g. "agent/query-agent") -- created here
+#   - JWT auth alias: created DYNAMICALLY on first delegated login, not here
+#   - Entity metadata stores agent type and default scope for Sentinel/audit
+#
+# Why JWT aliases are NOT pre-provisioned:
+#   With fused delegation tokens, user_claim="sub" resolves to the HUMAN
+#   username (e.g. "alice"), not the agent SPIFFE ID. This means each
+#   human-agent delegation creates a SEPARATE Vault entity via JWT auth.
+#   This is the desired behavior: Vault tracks "alice delegated to
+#   query-agent" as distinct from "bob delegated to query-agent", giving
+#   per-human audit trails for delegated actions.
+#
+# The SPIFFE entity pre-provisioned here is the agent's baseline identity
+# used when the agent authenticates directly (no delegation). It carries
+# the agent's metadata (type, default scope, trust domain) which Sentinel
+# EGP policies can evaluate.
+#
+# Future consideration: if unified entities across SPIFFE and JWT auth are
+# needed (e.g. to see all of query-agent's activity regardless of which
+# human delegated), use the entity merge API:
+#   vault write identity/entity/merge \
+#     from_entity_ids=<jwt-entity-id> to_entity_id=<spiffe-entity-id>
+# This would need to run after the first JWT login per human-agent pair.
+
+log_step "8d" "Pre-provisioning Vault Identity entities for agent unification"
+
+# Retrieve SPIFFE auth mount accessor (Enterprise only).
+# JWT mount accessor is not needed here — JWT aliases are created dynamically.
+log_info "Retrieving auth mount accessors..."
+SPIFFE_ACCESSOR=""
+AUTH_MOUNTS=$(curl -sf "${VAULT_ADDR}/v1/sys/auth" \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "")
+
+if [ -n "${AUTH_MOUNTS}" ]; then
+    SPIFFE_ACCESSOR=$(echo "${AUTH_MOUNTS}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+spiffe = data.get('spiffe/', data.get('data', {}).get('spiffe/', {}))
+print(spiffe.get('accessor', ''))" 2>/dev/null || echo "")
+
+    if [ -n "${SPIFFE_ACCESSOR}" ]; then
+        log_ok "SPIFFE auth mount accessor: ${SPIFFE_ACCESSOR}"
+    else
+        log_info "SPIFFE auth mount not found (OSS Vault). Entities created without SPIFFE alias."
+    fi
+else
+    log_warn "Could not retrieve auth mounts."
+fi
+
+# Pre-provision entities for known agents and sub-agents.
+# Each entry: "entity_name|workload_path|agent_type|default_scope"
+KNOWN_AGENTS=(
+    "agent-query-agent|agent/query-agent|agent|readonly"
+    "agent-analysis-agent|agent/analysis-agent|agent|readonly"
+    "agent-write-agent|agent/write-agent|agent|readwrite"
+    "subagent-sql-executor|subagent/sql-executor|subagent|readonly"
+    "subagent-result-formatter|subagent/result-formatter|subagent|readonly"
+)
+
+for entry in "${KNOWN_AGENTS[@]}"; do
+    IFS='|' read -r ENTITY_NAME WORKLOAD_PATH AGENT_TYPE DEFAULT_SCOPE <<< "${entry}"
+    SPIFFE_ID="spiffe://demo.local/${WORKLOAD_PATH}"
+
+    log_info "Pre-provisioning entity: ${ENTITY_NAME}..."
+
+    # Check if entity already exists (idempotent)
+    ENTITY_CHECK=$(curl -s -o /dev/null -w "%{http_code}" \
+        "${VAULT_ADDR}/v1/identity/entity/name/${ENTITY_NAME}" \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "000")
+
+    if [ "${ENTITY_CHECK}" = "200" ]; then
+        log_ok "Entity '${ENTITY_NAME}' already exists (skipping)"
+        continue
+    fi
+
+    # Create entity with metadata for Sentinel evaluation and audit
+    ENTITY_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/identity/entity" \
+        -X POST \
+        -H "X-Vault-Token: ${VAULT_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$(python3 -c "
+import json
+print(json.dumps({
+    'name': '${ENTITY_NAME}',
+    'metadata': {
+        'spiffe_id': '${SPIFFE_ID}',
+        'agent_type': '${AGENT_TYPE}',
+        'default_scope': '${DEFAULT_SCOPE}',
+        'trust_domain': 'demo.local',
+        'workload_path': '${WORKLOAD_PATH}'
+    }
+}))")" 2>/dev/null || echo "")
+
+    if [ -z "${ENTITY_RESPONSE}" ]; then
+        log_warn "Failed to create entity '${ENTITY_NAME}'"
+        continue
+    fi
+
+    ENTITY_ID=$(echo "${ENTITY_RESPONSE}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('data', {}).get('id', ''))" 2>/dev/null || echo "")
+
+    if [ -z "${ENTITY_ID}" ]; then
+        log_warn "Could not extract entity ID for '${ENTITY_NAME}'"
+        continue
+    fi
+
+    log_ok "Entity '${ENTITY_NAME}' created (ID: ${ENTITY_ID})"
+
+    # Create SPIFFE auth alias (Enterprise only).
+    # The alias name is the workload path (e.g. "agent/query-agent"), which
+    # matches how Vault Enterprise SPIFFE auth resolves workload identity
+    # from the X.509 SVID's SPIFFE ID URI.
+    if [ -n "${SPIFFE_ACCESSOR}" ]; then
+        SPIFFE_ALIAS_RESULT=$(curl -sf "${VAULT_ADDR}/v1/identity/entity-alias" \
+            -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(python3 -c "
+import json
+print(json.dumps({
+    'name': '${WORKLOAD_PATH}',
+    'canonical_id': '${ENTITY_ID}',
+    'mount_accessor': '${SPIFFE_ACCESSOR}'
+}))")" 2>/dev/null || echo "")
+
+        if [ -n "${SPIFFE_ALIAS_RESULT}" ]; then
+            log_ok "  SPIFFE alias created: ${WORKLOAD_PATH}"
+        else
+            log_warn "  Failed to create SPIFFE alias for '${ENTITY_NAME}'"
+        fi
+    fi
+
+    # Note: JWT auth alias is NOT created here. It will be created dynamically
+    # when a fused delegation token is used for login. The JWT alias name will
+    # be the human username (e.g. "alice") from user_claim="sub", creating a
+    # per-human entity for each delegation. See design comments above.
+done
+
+log_ok "Identity entity pre-provisioning complete"
+
+# ─── Step 8e: Create external identity groups for Keycloak groups ────────
+# External identity groups map Keycloak group names (from the fused JWT
+# "groups" claim) to Vault policies. When a fused token with groups_claim
+# is used for JWT auth login, Vault looks up group aliases matching the
+# group names. The associated group policies are merged into the resulting
+# Vault token.
+#
+# This enables dynamic policy assignment based on the human's Keycloak
+# group membership:
+#   data-analysts  -> ai-agent-db-read
+#   trading-team   -> ai-agent-db-read
+#   engineering    -> ai-agent-db-read + ai-agent-db-readwrite
+
+log_step "8e" "Creating external identity groups for Keycloak group-to-policy mapping"
+
+if [ -n "${JWT_ACCESSOR:-}" ]; then
+    # Group definitions: "group_name|policies" (comma-separated policies)
+    IDENTITY_GROUPS=(
+        "data-analysts|ai-agent-db-read"
+        "trading-team|ai-agent-db-read"
+        "engineering|ai-agent-db-read,ai-agent-db-readwrite"
+    )
+
+    for entry in "${IDENTITY_GROUPS[@]}"; do
+        IFS='|' read -r GROUP_NAME GROUP_POLICIES <<< "${entry}"
+
+        # Convert comma-separated policies to JSON array
+        POLICIES_JSON=$(python3 -c "
+import json
+policies = '${GROUP_POLICIES}'.split(',')
+print(json.dumps(policies))")
+
+        # Check if group already exists by name
+        GROUP_CHECK=$(curl -s "${VAULT_ADDR}/v1/identity/group/name/${GROUP_NAME}" \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "")
+        GROUP_EXISTS=$(echo "${GROUP_CHECK}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('data', {}).get('id', ''))
+except: print('')" 2>/dev/null || echo "")
+
+        if [ -n "${GROUP_EXISTS}" ]; then
+            log_ok "External group '${GROUP_NAME}' already exists (ID: ${GROUP_EXISTS}, skipping)"
+            continue
+        fi
+
+        # Create external identity group
+        GROUP_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/identity/group" \
+            -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(python3 -c "
+import json
+print(json.dumps({
+    'name': '${GROUP_NAME}',
+    'type': 'external',
+    'policies': ${POLICIES_JSON},
+    'metadata': {
+        'source': 'keycloak',
+        'realm': 'demo',
+        'mapped_by': 'jwt-groups-claim'
+    }
+}))")" 2>/dev/null || echo "")
+
+        GROUP_ID=$(echo "${GROUP_RESPONSE}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('data', {}).get('id', ''))
+except: print('')" 2>/dev/null || echo "")
+
+        if [ -z "${GROUP_ID}" ]; then
+            log_warn "Failed to create external group '${GROUP_NAME}'"
+            continue
+        fi
+        log_ok "External group '${GROUP_NAME}' created (ID: ${GROUP_ID}, policies: ${GROUP_POLICIES})"
+
+        # Create group alias linking the Keycloak group name to the JWT auth mount.
+        # When JWT auth returns groups_claim values, Vault matches them against
+        # group alias names on the same mount accessor.
+        ALIAS_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/identity/group-alias" \
+            -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(python3 -c "
+import json
+print(json.dumps({
+    'name': '${GROUP_NAME}',
+    'mount_accessor': '${JWT_ACCESSOR}',
+    'canonical_id': '${GROUP_ID}'
+}))")" 2>/dev/null || echo "")
+
+        ALIAS_ID=$(echo "${ALIAS_RESPONSE}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('data', {}).get('id', ''))
+except: print('')" 2>/dev/null || echo "")
+
+        if [ -n "${ALIAS_ID}" ]; then
+            log_ok "  Group alias '${GROUP_NAME}' -> JWT mount (alias ID: ${ALIAS_ID})"
+        else
+            log_warn "  Failed to create group alias for '${GROUP_NAME}'"
+        fi
+    done
+
+    log_ok "External identity groups configured for Keycloak group-to-policy mapping"
+else
+    log_warn "Skipping external identity groups (JWT auth mount accessor not available)"
+fi
+
+# ─── Step 8f: Load Sentinel EGP Policies (Enterprise Only) ─────────────────
+# Sentinel Endpoint Governing Policies enforce delegation constraints directly
+# inside Vault. These replace OPA as the policy engine for credential requests.
+# On Vault OSS, this step is skipped.
+
+log_step "8f" "Loading Sentinel EGP policies (Enterprise)"
+
+# Check if Sentinel is available by attempting to list EGP policies.
+# This API endpoint only exists on Vault Enterprise.
+SENTINEL_CHECK=$(curl -s -o /dev/null -w "%{http_code}" \
+    "${VAULT_ADDR}/v1/sys/policies/egp" \
+    -X LIST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "000")
+
+if [ "${SENTINEL_CHECK}" = "200" ] || [ "${SENTINEL_CHECK}" = "404" ]; then
+    # 200 = policies exist, 404 = no policies yet (both mean Sentinel is available)
+    log_ok "Sentinel is available (Vault Enterprise detected)"
+
+    SENTINEL_DIR="${PROJECT_DIR}/sentinel-policies"
+    SENTINEL_POLICIES=(
+        "require-delegation"
+        "enforce-scope"
+        "enforce-chain-depth"
+        "enforce-may-act"
+    )
+
+    for policy_name in "${SENTINEL_POLICIES[@]}"; do
+        policy_file="${SENTINEL_DIR}/${policy_name}.sentinel"
+
+        if [ ! -f "${policy_file}" ]; then
+            log_warn "Sentinel policy file not found: ${policy_file}"
+            continue
+        fi
+
+        # Check if policy already exists
+        EGP_CHECK=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${VAULT_ADDR}/v1/sys/policies/egp/${policy_name}" \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "000")
+
+        if [ "${EGP_CHECK}" = "200" ]; then
+            log_ok "Sentinel EGP '${policy_name}' already exists (skipping)"
+            continue
+        fi
+
+        # Base64 encode the policy
+        POLICY_B64=$(base64 -w 0 < "${policy_file}")
+
+        log_info "Loading Sentinel EGP: ${policy_name}..."
+        EGP_RESULT=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${VAULT_ADDR}/v1/sys/policies/egp/${policy_name}" \
+            -X PUT \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(python3 -c "
+import json
+print(json.dumps({
+    'policy': '${POLICY_B64}',
+    'paths': ['database/creds/*'],
+    'enforcement_level': 'hard-mandatory'
+}))")" 2>/dev/null || echo "000")
+
+        if [ "${EGP_RESULT}" = "204" ] || [ "${EGP_RESULT}" = "200" ]; then
+            log_ok "Sentinel EGP '${policy_name}' loaded (hard-mandatory on database/creds/*)"
+        else
+            log_warn "Failed to load Sentinel EGP '${policy_name}' (HTTP ${EGP_RESULT})"
+        fi
+    done
+
+    log_ok "Sentinel EGP policy loading complete"
+else
+    log_warn "Sentinel not available (HTTP ${SENTINEL_CHECK}). This requires Vault Enterprise."
+    log_warn "Delegation enforcement will rely on ACL policies only."
 fi
 
 # ─── Step 9: Restart Token Exchange Service with Token ─────────────────────
@@ -563,7 +1021,6 @@ echo ""
 log_info "Service endpoints:"
 echo "  Vault:            http://localhost:8200  (UI available)"
 echo "  Keycloak:         http://localhost:8080  (admin/admin)"
-echo "  OPA:              http://localhost:8181"
 echo "  Token Exchange:   http://localhost:8090"
 if [ "${HOST_MODE}" = "true" ]; then
 echo "  AgentGateway MCP: http://localhost:9090"
@@ -587,30 +1044,24 @@ else
     log_warn "Keycloak authentication not ready yet (may need more time)"
 fi
 
-# Test OPA policy
-log_info "Testing OPA delegation policy..."
-OPA_RESULT=$(curl -sf "http://localhost:8181/v1/data/delegation/allow" \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -d '{
-        "input": {
-            "human_token": {
-                "sub": "alice@acme.com",
-                "groups": ["data-analysts", "trading-team"],
-                "may_act": {"sub": "agent:query-agent-v2", "client_id": "ai-agent-service"},
-                "exp": 9999999999,
-                "iss": "http://keycloak:8080/realms/demo"
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": '"$(date +%s)"'
-        }
-    }' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('result', False))" 2>/dev/null || echo "error")
+# Test Sentinel EGP policies (Enterprise only)
+log_info "Checking Sentinel EGP policy status..."
+EGP_LIST=$(curl -s "${VAULT_ADDR}/v1/sys/policies/egp" \
+    -X LIST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "")
+EGP_COUNT=$(echo "${EGP_LIST}" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    keys = data.get('data', data).get('keys', [])
+    print(len(keys))
+except:
+    print(0)" 2>/dev/null || echo "0")
 
-if [ "${OPA_RESULT}" = "True" ]; then
-    log_ok "OPA delegation policy works (alice → query-agent: allowed)"
+if [ "${EGP_COUNT}" -gt 0 ] 2>/dev/null; then
+    log_ok "Sentinel EGP policies active: ${EGP_COUNT} policies on database/creds/*"
 else
-    log_warn "OPA policy test result: ${OPA_RESULT}"
+    log_info "No Sentinel EGP policies loaded (Vault OSS or policies not yet applied)"
 fi
 
 # Test Vault dynamic credentials

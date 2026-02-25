@@ -1,18 +1,17 @@
 ###############################################################################
-# Vault Agentic Identity Broker - Docker Compose (v2 with AgentGateway)
+# Vault Agentic Identity Broker - Docker Compose (v3 with Vault Enterprise)
 #
-# Architecture: AgentGateway + Token Exchange (RFC 8693) + Sub-Agents
+# Architecture: AgentGateway + Token Exchange (RFC 8693) + Vault Enterprise
 #
 # Components:
 #   1. spire-server    - SPIFFE trust domain root
 #   2. spire-agent     - Workload attestation & SVID distribution
 #   3. keycloak        - Human OIDC Identity Provider
-#   4. vault           - Dynamic secrets management
-#   5. opa             - Policy engine for delegation decisions
-#   6. postgresql      - Target database with sample data
-#   7. agentgateway    - MCP/A2A proxy with RBAC
-#   8. token-exchange  - RFC 8693 Token Exchange Service
-#   9. ai-agent        - Demo AI agent with sub-agent delegation
+#   4. vault           - Vault Enterprise identity broker & dynamic secrets
+#   5. postgresql      - Target database with sample data
+#   6. agentgateway    - MCP/A2A proxy with RBAC
+#   7. token-exchange  - RFC 8693 Token Exchange Service
+#   8. ai-agent        - Demo AI agent with sub-agent delegation
 ###############################################################################
 
 services:
@@ -133,9 +132,9 @@ services:
     networks:
       - identity-net
 
-  # ─── HashiCorp Vault ───────────────────────────────────────────────────
+  # ─── HashiCorp Vault Enterprise ────────────────────────────────────────
   vault:
-    image: hashicorp/vault:1.17
+    image: hashicorp/vault-enterprise:1.19-ent
     hostname: vault
     command: server
     cap_add:
@@ -143,6 +142,7 @@ services:
     environment:
       VAULT_ADDR: "http://0.0.0.0:8200"
       VAULT_API_ADDR: "http://vault:8200"
+      VAULT_LICENSE: "${VAULT_LICENSE:-}"
     volumes:
       - ./vault/config/vault.hcl:/vault/config/vault.hcl:ro
       - ./vault/policies:/vault/policies:ro
@@ -156,31 +156,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-    networks:
-      - identity-net
-
-  # ─── OPA Policy Engine ────────────────────────────────────────────────
-  opa:
-    image: openpolicyagent/opa:0.70.0
-    platform: linux/amd64
-    hostname: opa
-    command:
-      - run
-      - --server
-      - --addr=0.0.0.0:8181
-      - --log-level=debug
-      - /policies/delegation.rego
-      - /policies/data.json
-    volumes:
-      - ./opa/policies:/policies:ro
-    ports:
-      - "8181:8181"
-    healthcheck:
-      test: ["CMD", "/opa", "version"]
-      interval: 10s
-      timeout: 30s
-      retries: 12
-      start_period: 15s
     networks:
       - identity-net
 
@@ -235,8 +210,6 @@ services:
     depends_on:
       keycloak:
         condition: service_healthy
-      opa:
-        condition: service_healthy
       token-exchange:
         condition: service_healthy
     # Note: agentgateway uses a minimal image without curl/wget.
@@ -247,8 +220,8 @@ services:
       - identity-net
 
   # ─── Token Exchange Service (RFC 8693) ─────────────────────────────────
-  # New service implementing OAuth 2.0 Token Exchange with delegation
-  # semantics for AI agent identity chains
+  # OAuth 2.0 Token Exchange with delegation semantics for AI agent
+  # identity chains. Validates human + agent identity, delegates to Vault.
   token-exchange:
     build:
       context: ./token-exchange
@@ -258,9 +231,7 @@ services:
       LISTEN_PORT: "8090"
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "demo"
-      OPA_ENDPOINT: "http://opa:8181"
-      VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
+      KEYCLOAK_JWKS_URL: "http://keycloak:8080/realms/demo/protocol/openid-connect/certs"
       TRUST_DOMAIN: "demo.local"
       SPIRE_OIDC_URL: "http://spire-oidc:8082"
       SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
@@ -274,11 +245,7 @@ services:
     ports:
       - "8090:8090"
     depends_on:
-      vault:
-        condition: service_healthy
       keycloak:
-        condition: service_healthy
-      opa:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8090/health"]
@@ -303,6 +270,7 @@ services:
       TOKEN_EXCHANGE_URL: "http://token-exchange:8090"
       KEYCLOAK_URL: "http://keycloak:8080"
       KEYCLOAK_REALM: "demo"
+      VAULT_ADDR: "http://vault:8200"
       TRUST_DOMAIN: "demo.local"
       AGENT_SPIFFE_ID: "spiffe://demo.local/agent/query-agent"
       SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"

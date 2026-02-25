@@ -32,6 +32,7 @@ DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))
 DB_NAME = os.environ.get("DB_NAME", "appdb")
 SPIRE_SOCKET = os.environ.get("SPIRE_SOCKET", "/tmp/spire-agent/public/api.sock")
+GATEWAY_VAULT_TOKEN = os.environ.get("GATEWAY_VAULT_TOKEN", "")
 
 KEYCLOAK_REALM = "demo"
 KEYCLOAK_CLIENT_ID = "demo-cli"
@@ -57,11 +58,34 @@ CONTENT_TYPES = {
 
 
 def decode_token_safe(token):
-    """Decode a JWT without verification for display purposes."""
+    """Decode a JWT without verification — for UI display only.
+
+    Security note: This function intentionally skips signature verification.
+    It is used exclusively by the demo UI to show token structure to the user.
+    All actual security validation happens in the Token Exchange Service, which
+    cryptographically verifies subject tokens (via Keycloak userinfo) and actor
+    tokens (via SPIRE OIDC JWKS with RS256).
+    """
     try:
         return jwt.decode(token, options={"verify_signature": False})
     except Exception:
         return None
+
+
+def resolve_username(decoded):
+    """Extract the Keycloak username from a decoded token.
+
+    Tokens may contain preferred_username, email, or only sub (UUID).
+    Returns the best available human-readable identifier. Used for display and
+    Keycloak admin API lookups (paired with _get_user_by_name's email fallback).
+    """
+    if not decoded:
+        return None
+    if decoded.get("preferred_username"):
+        return decoded["preferred_username"]
+    if decoded.get("email"):
+        return decoded["email"].split("@")[0]
+    return decoded.get("sub")
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +126,11 @@ class DemoHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
             return {}
-        return json.loads(self.rfile.read(length))
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Malformed JSON request body: {e}") from e
 
     # --- Keycloak Reverse Proxy ---
 
@@ -222,6 +250,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/api/spiffe/svid": self._handle_spiffe_svid,
             "/api/opa/evaluate": self._handle_opa_evaluate,
             "/api/token-exchange": self._handle_token_exchange,
+            "/api/vault/credentials": self._handle_vault_credentials,
             "/api/db/query": self._handle_db_query,
             "/api/revoke": self._handle_revoke,
             "/api/db/verify-revoked": self._handle_verify_revoked,
@@ -231,6 +260,9 @@ class DemoHandler(BaseHTTPRequestHandler):
         if handler:
             try:
                 handler()
+            except ValueError as e:
+                # Malformed request body or invalid input
+                self._send_error(400, "demo-ui", str(e))
             except Exception as e:
                 logger.exception("Error in %s", path)
                 self._send_error(500, "demo-ui", str(e))
@@ -343,6 +375,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "token_type": data.get("token_type"),
                 "expires_in": data.get("expires_in"),
                 "decoded": decoded,
+                "username": resolve_username(decoded) or username,
                 "elapsed_ms": elapsed,
             })
         except Exception as e:
@@ -379,6 +412,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                 "token_type": data.get("token_type"),
                 "expires_in": data.get("expires_in"),
                 "decoded": decoded,
+                "username": resolve_username(decoded),
                 "elapsed_ms": elapsed,
             })
         except Exception as e:
@@ -437,6 +471,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                     "status": "complete",
                     "access_token": access_token,
                     "decoded": decoded,
+                    "username": resolve_username(decoded),
                     "elapsed_ms": elapsed,
                 })
             else:
@@ -662,17 +697,30 @@ class DemoHandler(BaseHTTPRequestHandler):
         return r.json().get("access_token")
 
     def _get_user_by_name(self, admin_token, username):
-        """Look up a Keycloak user by username, return (user_id, user_obj) or (None, None)."""
+        """Look up a Keycloak user by username or email, return (user_id, user_obj) or (None, None)."""
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        # Try exact username match first
         r = requests.get(
             f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users",
             params={"username": username, "exact": "true"},
-            headers={"Authorization": f"Bearer {admin_token}"},
+            headers=headers,
             timeout=10,
         )
-        if r.status_code != 200 or not r.json():
-            return None, None
-        user = r.json()[0]
-        return user["id"], user
+        if r.status_code == 200 and r.json():
+            user = r.json()[0]
+            return user["id"], user
+        # Fall back to email search (handles state.user = "alice@acme.com")
+        if "@" in username:
+            r = requests.get(
+                f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users",
+                params={"email": username, "exact": "true"},
+                headers=headers,
+                timeout=10,
+            )
+            if r.status_code == 200 and r.json():
+                user = r.json()[0]
+                return user["id"], user
+        return None, None
 
     def _handle_consent_get(self):
         """Get the current agent_consent attribute for a user."""
@@ -695,7 +743,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                 self._send_error(404, "keycloak", f"User '{username}' not found")
                 return
 
-            attrs = user.get("attributes", {})
+            attrs = user.get("attributes") or {}
             consent_raw = attrs.get("agent_consent", [""])[0] if attrs.get("agent_consent") else ""
 
             consent = None
@@ -750,12 +798,23 @@ class DemoHandler(BaseHTTPRequestHandler):
                 consent_json = ""
 
             # Update user attributes via Keycloak Admin API
-            existing_attrs = user.get("attributes", {})
+            # Send essential identity fields alongside attributes to avoid
+            # Keycloak nulling them out on the PUT (partial representation).
+            existing_attrs = user.get("attributes") or {}
             existing_attrs["agent_consent"] = [consent_json] if consent_json else []
+
+            update_body = {
+                "email": user.get("email"),
+                "emailVerified": user.get("emailVerified", False),
+                "firstName": user.get("firstName"),
+                "lastName": user.get("lastName"),
+                "enabled": user.get("enabled", True),
+                "attributes": existing_attrs,
+            }
 
             r = requests.put(
                 f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users/{user_id}",
-                json={"attributes": existing_attrs},
+                json=update_body,
                 headers={
                     "Authorization": f"Bearer {admin_token}",
                     "Content-Type": "application/json",
@@ -975,7 +1034,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             "actor_token": body.get("actor_token", ""),
             "actor_token_type": "urn:ietf:params:oauth:token-type:jwt",
             "scope": body.get("scope", "readonly"),
-            "audience": "database",
+            "audience": "delegation",
         }
 
         start = time.time()
@@ -990,19 +1049,166 @@ class DemoHandler(BaseHTTPRequestHandler):
             if delegation_token:
                 data["delegation_token_decoded"] = decode_token_safe(delegation_token)
 
-            # Override DB host for host-network mode
-            db_cred = data.get("db_credential")
-            if db_cred and db_cred.get("host") == "postgresql":
-                db_cred["host"] = DB_HOST
-
             data["elapsed_ms"] = elapsed
+
+            # Decode input tokens so the UI can display them without prior state
+            subject_token = body.get("subject_token", "")
+            actor_token = body.get("actor_token", "")
+            if subject_token:
+                data["subject_token_decoded"] = decode_token_safe(subject_token)
+            if actor_token:
+                data["actor_token_decoded"] = decode_token_safe(actor_token)
+
             self._send_json(r.status_code, data)
         except Exception as e:
+            self._send_error(502, "token-exchange", str(e))
+
+    # --- Mediated Vault Credential Brokering (Step 6) ---
+
+    def _handle_vault_credentials(self):
+        """Broker dynamic database credentials via Token Exchange.
+
+        The agent presents the delegation token from Step 5. Token Exchange
+        validates the token (RS256 signature, expiry, revocation) and uses
+        its own privileged Vault token to broker credentials. The agent never
+        talks to Vault directly.
+        """
+        body = self._read_body()
+        delegation_token = body.get("delegation_token", "")
+
+        if not delegation_token:
+            self._send_error(400, "token-exchange", "delegation_token is required")
+            return
+
+        start = time.time()
+        steps = []
+
+        # Decode delegation token client-side (for UI display only)
+        delegation_decoded = decode_token_safe(delegation_token)
+        scope = delegation_decoded.get("scope", "readonly") if delegation_decoded else "readonly"
+        session_id = delegation_decoded.get("session_id", "") if delegation_decoded else ""
+        vault_role = f"ai-agent-{scope}"
+
+        steps.append({
+            "step": 1,
+            "action": "Present delegation token to Token Exchange",
+            "detail": (
+                "The agent sends the delegation token (from Step 5) to the "
+                "Token Exchange Service's /v1/token/credentials endpoint. "
+                "This token proves that a human authorized this agent to act."
+            ),
+            "result": f"Delegation token presented (session: {session_id}, scope: {scope})",
+            "status": "ok",
+        })
+
+        steps.append({
+            "step": 2,
+            "action": "Token Exchange validates delegation token",
+            "detail": (
+                "Token Exchange verifies the RS256 signature using its own signing key, "
+                "checks the token hasn't expired, and confirms it hasn't been revoked."
+            ),
+            "result": "Validating...",
+            "status": "pending",
+        })
+
+        # Call Token Exchange to broker credentials
+        try:
+            r = requests.post(
+                f"{TOKEN_EXCHANGE_URL}/v1/token/credentials",
+                json={"delegation_token": delegation_token},
+                timeout=15,
+            )
+            elapsed = int((time.time() - start) * 1000)
+            data = r.json()
+
+            if r.status_code == 200 and "error" not in data:
+                steps[1]["result"] = "Token validated: signature OK, not expired, not revoked"
+                steps[1]["status"] = "ok"
+
+                steps.append({
+                    "step": 3,
+                    "action": f"Map scope to Vault role ({scope} → {vault_role})",
+                    "detail": (
+                        f"The authorized scope '{scope}' maps to Vault database role "
+                        f"'{vault_role}', which controls the PostgreSQL permissions granted."
+                    ),
+                    "result": f"Vault role: {vault_role}",
+                    "status": "ok",
+                })
+
+                steps.append({
+                    "step": 4,
+                    "action": "Vault issues dynamic credentials",
+                    "detail": (
+                        "Token Exchange uses its own privileged Vault token (from bootstrap) "
+                        "to request credentials from Vault's database secrets engine. "
+                        "The agent never authenticates to Vault directly."
+                    ),
+                    "result": f"Dynamic user: {data.get('username', '?')}, TTL: {data.get('ttl_seconds', '?')}s",
+                    "status": "ok",
+                })
+
+                # Override host for host-network mode
+                host = data.get("host", DB_HOST)
+                if host == "postgresql":
+                    host = DB_HOST
+
+                self._send_json(200, {
+                    "username": data.get("username", ""),
+                    "password": data.get("password", ""),
+                    "host": host,
+                    "port": data.get("port", DB_PORT),
+                    "database": data.get("database", DB_NAME),
+                    "ttl_seconds": data.get("ttl_seconds", 0),
+                    "lease_id": data.get("lease_id", ""),
+                    "vault_role": data.get("vault_role", vault_role),
+                    "delegation_verified": data.get("delegation_verified", True),
+                    "scope": data.get("scope", scope),
+                    "subject": data.get("subject", ""),
+                    "actor": data.get("actor", ""),
+                    "session_id": data.get("session_id", session_id),
+                    "steps": steps,
+                    "cli_command": (
+                        f"curl -X POST {TOKEN_EXCHANGE_URL}/v1/token/credentials "
+                        f"-d '{{\"delegation_token\": \"$DELEGATION_TOKEN\"}}'"
+                    ),
+                    "http_equivalent": {
+                        "method": "POST",
+                        "url": f"{TOKEN_EXCHANGE_URL}/v1/token/credentials",
+                        "body": {"delegation_token": "<delegation-token-from-step-5>"},
+                    },
+                    "elapsed_ms": elapsed,
+                })
+            else:
+                error_desc = data.get("error_description", data.get("error", "Unknown error"))
+                steps[1]["result"] = f"Validation failed: {error_desc}"
+                steps[1]["status"] = "fail"
+
+                self._send_json(r.status_code if r.status_code >= 400 else 400, {
+                    "error": data.get("error", "credential_broker_failed"),
+                    "error_description": error_desc,
+                    "steps": steps,
+                    "elapsed_ms": elapsed,
+                })
+        except Exception as e:
+            elapsed = int((time.time() - start) * 1000)
+            steps[1]["result"] = f"Error: {e}"
+            steps[1]["status"] = "fail"
             self._send_error(502, "token-exchange", str(e))
 
     # --- Database Query ---
 
     def _handle_db_query(self):
+        """Execute a SQL query using Vault-issued dynamic credentials.
+
+        Security model: The SQL statement is intentionally passed through
+        without application-level filtering. Defense-in-depth is enforced by
+        Vault's dynamic credentials — the 'ai-agent-readonly' role grants only
+        SELECT on the 'app' schema, so INSERT/UPDATE/DELETE/DROP are rejected
+        by PostgreSQL itself. This design demonstrates that credential scoping
+        (not query filtering) is the correct security boundary.
+        """
         body = self._read_body()
 
         host = body.get("host", DB_HOST)
@@ -1060,6 +1266,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         session_id = body.get("session_id", "")
         delegation_token = body.get("delegation_token", "")
+        lease_id = body.get("lease_id", "")
 
         start = time.time()
         try:
@@ -1071,6 +1278,22 @@ class DemoHandler(BaseHTTPRequestHandler):
 
             data = r.json()
             data["elapsed_ms"] = elapsed
+
+            # Also revoke the Vault lease directly if we have one
+            if lease_id and GATEWAY_VAULT_TOKEN:
+                try:
+                    requests.put(
+                        f"{VAULT_ADDR}/v1/sys/leases/revoke",
+                        headers={"X-Vault-Token": GATEWAY_VAULT_TOKEN},
+                        json={"lease_id": lease_id},
+                        timeout=10,
+                    )
+                    data["vault_lease_revoked"] = True
+                    data["vault_lease_id"] = lease_id
+                except Exception as ve:
+                    logger.warning("Vault lease revocation failed: %s", ve)
+                    data["vault_lease_revoked"] = False
+
             self._send_json(r.status_code, data)
         except Exception as e:
             self._send_error(502, "token-exchange", str(e))
@@ -1128,7 +1351,69 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+def _ensure_user_profile_attribute():
+    """Ensure the 'agent_consent' attribute is registered in the Keycloak User Profile.
+
+    Keycloak 26+ silently drops unknown attributes on user PUT unless they
+    are declared in the realm's User Profile configuration.
+
+    NOTE: This duplicates the admin token acquisition from DemoHandler._get_admin_token
+    because it runs at startup before any handler instance exists.
+    """
+    try:
+        # Get admin token (standalone — no handler instance at startup)
+        r = requests.post(
+            f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token",
+            data={"grant_type": "password", "client_id": "admin-cli",
+                  "username": "admin", "password": "admin"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            logger.warning("Could not get admin token for user profile setup")
+            return
+
+        admin_token = r.json()["access_token"]
+        headers = {"Authorization": f"Bearer {admin_token}",
+                   "Content-Type": "application/json"}
+
+        # Get current profile
+        r = requests.get(
+            f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users/profile",
+            headers=headers, timeout=10,
+        )
+        if r.status_code != 200:
+            logger.warning("Could not read user profile config: %d", r.status_code)
+            return
+
+        profile = r.json()
+        attr_names = [a["name"] for a in profile.get("attributes", [])]
+
+        if "agent_consent" in attr_names:
+            logger.info("User profile already has 'agent_consent' attribute")
+            return
+
+        # Add agent_consent attribute
+        profile["attributes"].append({
+            "name": "agent_consent",
+            "displayName": "Agent Consent",
+            "permissions": {"view": ["admin"], "edit": ["admin"]},
+            "multivalued": False,
+        })
+
+        r = requests.put(
+            f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/users/profile",
+            json=profile, headers=headers, timeout=10,
+        )
+        if r.status_code == 200:
+            logger.info("Registered 'agent_consent' in Keycloak User Profile")
+        else:
+            logger.warning("Failed to update user profile: %d %s", r.status_code, r.text)
+    except Exception as e:
+        logger.warning("User profile setup failed (non-fatal): %s", e)
+
+
 def main():
+    _ensure_user_profile_attribute()
     server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), DemoHandler)
     logger.info("Demo UI server listening on http://0.0.0.0:%d", LISTEN_PORT)
     try:

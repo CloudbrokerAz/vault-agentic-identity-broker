@@ -28,42 +28,66 @@ class TestVaultPolicies(unittest.TestCase):
     # ─── File Existence ──────────────────────────────────────────────
 
     def test_required_policies_exist(self):
-        expected = {"ai-agent-db-read.hcl", "gateway-policy.hcl", "admin-policy.hcl"}
+        expected = {"ai-agent-db-read.hcl", "ai-agent-db-readwrite.hcl", "admin-policy.hcl"}
         actual = set(self.policies.keys())
         self.assertTrue(
             expected.issubset(actual),
             f"Missing policies: {expected - actual}",
         )
 
-    # ─── AI Agent Policy ─────────────────────────────────────────────
+    def test_gateway_policy_removed(self):
+        """gateway-policy.hcl must not exist — no broker token in new architecture."""
+        self.assertNotIn(
+            "gateway-policy.hcl",
+            self.policies,
+            "gateway-policy.hcl should be deleted (no broker token in new auth model)",
+        )
 
-    def test_agent_policy_grants_db_read(self):
+    # ─── AI Agent Read Policy ────────────────────────────────────────
+
+    def test_agent_read_policy_grants_db_read(self):
         policy = self.policies["ai-agent-db-read.hcl"]
         self.assertIn("database/creds/ai-agent-readonly", policy)
         self.assertIn('"read"', policy)
 
-    def test_agent_policy_allows_self_lookup(self):
+    def test_agent_read_policy_allows_self_lookup(self):
         policy = self.policies["ai-agent-db-read.hcl"]
         self.assertIn("auth/token/lookup-self", policy)
 
-    def test_agent_policy_allows_self_renew(self):
+    def test_agent_read_policy_allows_self_renew(self):
         policy = self.policies["ai-agent-db-read.hcl"]
         self.assertIn("auth/token/renew-self", policy)
 
-    def test_agent_policy_denies_sys(self):
+    def test_agent_read_policy_allows_lease_management(self):
         policy = self.policies["ai-agent-db-read.hcl"]
-        # Should have a sys/* deny rule
+        self.assertIn("sys/leases/renew", policy)
+        self.assertIn("sys/leases/revoke", policy)
+
+    def test_agent_read_policy_denies_sys(self):
+        policy = self.policies["ai-agent-db-read.hcl"]
         self.assertIn('path "sys/*"', policy)
         self.assertIn('"deny"', policy)
 
-    def test_agent_policy_denies_secret(self):
+    def test_agent_read_policy_denies_secret(self):
         policy = self.policies["ai-agent-db-read.hcl"]
         self.assertIn('path "secret/*"', policy)
 
-    def test_agent_policy_no_write_capabilities(self):
+    def test_agent_read_policy_denies_identity(self):
+        """Agents must not be able to self-attest delegation metadata."""
+        policy = self.policies["ai-agent-db-read.hcl"]
+        self.assertIn('path "identity/*"', policy)
+        # Verify it's a deny rule
+        block = self._extract_path_block(policy, "identity/*")
+        self.assertIn('"deny"', block, "identity/* must be denied for agents")
+
+    def test_agent_read_policy_no_templated_paths(self):
+        """Templated paths removed — Sentinel handles scope enforcement."""
+        policy = self.policies["ai-agent-db-read.hcl"]
+        self.assertNotIn("{{identity.entity.metadata", policy)
+
+    def test_agent_read_policy_no_write_capabilities(self):
         """Agent should not have write, create, update, delete on database paths."""
         policy = self.policies["ai-agent-db-read.hcl"]
-        # Find the database/creds path block
         db_section = self._extract_path_block(policy, "database/creds/ai-agent-readonly")
         if db_section:
             for cap in ["create", "update", "delete", "list"]:
@@ -73,44 +97,41 @@ class TestVaultPolicies(unittest.TestCase):
                     f"Agent policy should not have '{cap}' on database/creds path",
                 )
 
-    # ─── Gateway Policy ──────────────────────────────────────────────
+    # ─── AI Agent Readwrite Policy ───────────────────────────────────
 
-    def test_gateway_policy_creates_tokens(self):
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn("auth/token/create", policy)
-        self.assertIn('"create"', policy)
-
-    def test_gateway_policy_manages_entities(self):
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn("identity/entity", policy)
-
-    def test_gateway_policy_reads_db_creds(self):
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn("database/creds/ai-agent-readonly", policy)
+    def test_agent_readwrite_policy_grants_db_readwrite(self):
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
         self.assertIn("database/creds/ai-agent-readwrite", policy)
 
-    def test_gateway_policy_manages_leases(self):
-        policy = self.policies["gateway-policy.hcl"]
+    def test_agent_readwrite_policy_grants_db_readonly(self):
+        """Readwrite implies read access."""
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
+        self.assertIn("database/creds/ai-agent-readonly", policy)
+
+    def test_agent_readwrite_policy_denies_identity(self):
+        """Agents must not be able to self-attest delegation metadata."""
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
+        self.assertIn('path "identity/*"', policy)
+        block = self._extract_path_block(policy, "identity/*")
+        self.assertIn('"deny"', block, "identity/* must be denied for agents")
+
+    def test_agent_readwrite_policy_no_templated_paths(self):
+        """Templated paths removed — Sentinel handles scope enforcement."""
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
+        self.assertNotIn("{{identity.entity.metadata", policy)
+
+    def test_agent_readwrite_policy_allows_lease_management(self):
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
         self.assertIn("sys/leases/renew", policy)
         self.assertIn("sys/leases/revoke", policy)
 
-    def test_gateway_policy_allows_self_renewal(self):
-        """Gateway policy must allow token self-renewal for periodic rotation."""
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn("auth/token/renew-self", policy)
+    def test_agent_readwrite_policy_denies_sys(self):
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
+        self.assertIn('path "sys/*"', policy)
 
-    def test_gateway_policy_no_orphan_tokens(self):
-        """Gateway policy should not allow creating orphan tokens."""
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertNotIn("create-orphan", policy)
-
-    def test_gateway_policy_denies_seal(self):
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn('path "sys/seal"', policy)
-
-    def test_gateway_policy_denies_step_down(self):
-        policy = self.policies["gateway-policy.hcl"]
-        self.assertIn('path "sys/step-down"', policy)
+    def test_agent_readwrite_policy_denies_secret(self):
+        policy = self.policies["ai-agent-db-readwrite.hcl"]
+        self.assertIn('path "secret/*"', policy)
 
     # ─── Admin Policy ────────────────────────────────────────────────
 
@@ -121,13 +142,19 @@ class TestVaultPolicies(unittest.TestCase):
 
     # ─── General Security Checks ─────────────────────────────────────
 
-    def test_no_wildcard_in_agent_policy(self):
-        """Agent policy should not contain wildcard paths."""
-        policy = self.policies["ai-agent-db-read.hcl"]
-        # Remove the sys/* deny rule for this check
-        lines = [l for l in policy.split("\n") if "sys/*" not in l and "secret/*" not in l]
-        clean = "\n".join(lines)
-        self.assertNotIn('path "*"', clean, "Agent policy should not have wildcard path")
+    def test_no_wildcard_in_agent_policies(self):
+        """Agent policies should not contain wildcard paths (except deny rules)."""
+        for name in ("ai-agent-db-read.hcl", "ai-agent-db-readwrite.hcl"):
+            policy = self.policies[name]
+            # Remove deny-rule lines for this check (sys/*, secret/*, identity/*)
+            lines = [
+                l for l in policy.split("\n")
+                if "sys/*" not in l and "secret/*" not in l and "identity/*" not in l
+            ]
+            clean = "\n".join(lines)
+            self.assertNotIn(
+                'path "*"', clean, f"{name} should not have wildcard path"
+            )
 
     def test_all_policies_have_capabilities(self):
         """Every policy should define at least one capabilities block."""

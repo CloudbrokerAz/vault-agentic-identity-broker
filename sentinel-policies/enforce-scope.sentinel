@@ -1,0 +1,58 @@
+# enforce-scope.sentinel
+#
+# Endpoint Governing Policy: Enforce Delegation Scope
+#
+# Ensures that the delegation_scope in entity metadata matches the database
+# credential role being requested. A readonly credential request requires a
+# read-compatible scope; a readwrite request requires a write-compatible scope.
+#
+# Applied to: database/creds/*
+# Enforcement: hard-mandatory
+
+import "strings"
+
+# Allowed scopes per credential role suffix
+readonly_scopes = ["readonly", "db:read", "db:query"]
+readwrite_scopes = ["readwrite", "db:write"]
+
+validate_scope = func() {
+    meta = identity.entity.metadata
+
+    # If delegation_scope is missing, require-delegation will catch it.
+    # Guard here to avoid errors.
+    if "delegation_scope" not in keys(meta) {
+        print("DENIED: delegation_scope not present in entity metadata")
+        return false
+    }
+
+    scope = meta["delegation_scope"]
+    path = request.path
+
+    # Check if requesting readonly credentials
+    if strings.has_suffix(path, "readonly") {
+        if scope not in readonly_scopes {
+            print("DENIED: scope", scope, "not permitted for readonly credentials")
+            return false
+        }
+        return true
+    }
+
+    # Check if requesting readwrite credentials
+    if strings.has_suffix(path, "readwrite") {
+        if scope not in readwrite_scopes {
+            print("DENIED: scope", scope, "not permitted for readwrite credentials")
+            return false
+        }
+        return true
+    }
+
+    # Unknown role suffix - deny by default
+    print("DENIED: unrecognized credential role in path:", path)
+    return false
+}
+
+scope_valid = validate_scope()
+
+main = rule {
+    scope_valid
+}

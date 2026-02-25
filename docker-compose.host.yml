@@ -1,9 +1,8 @@
 ###############################################################################
-# Vault Agentic Identity Broker - Docker Compose (Host Network Mode)
+# Vault Agentic Identity Broker - Docker Compose (Host Network Mode, v3)
 #
-# This overlay file switches all services to host networking for environments
-# where Docker bridge networking is unavailable (e.g., sandboxed/CI).
-# Services communicate via localhost with different ports.
+# Vault Enterprise architecture. Services communicate via localhost.
+# For environments where Docker bridge networking is unavailable (sandboxed/CI).
 ###############################################################################
 
 services:
@@ -106,15 +105,16 @@ services:
       retries: 20
       start_period: 60s
 
-  # ─── HashiCorp Vault ───────────────────────────────────────────────────
+  # ─── HashiCorp Vault Enterprise ────────────────────────────────────────
   vault:
-    image: hashicorp/vault:1.17
+    image: hashicorp/vault-enterprise:1.19-ent
     command: server
     cap_add:
       - IPC_LOCK
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
       VAULT_API_ADDR: "http://127.0.0.1:8200"
+      VAULT_LICENSE: "${VAULT_LICENSE:-}"
     volumes:
       - ./vault/config/vault.hcl:/vault/config/vault.hcl:ro
       - ./vault/policies:/vault/policies:ro
@@ -127,27 +127,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
-
-  # ─── OPA Policy Engine ────────────────────────────────────────────────
-  opa:
-    image: openpolicyagent/opa:0.70.0
-    platform: linux/amd64
-    command:
-      - run
-      - --server
-      - --addr=0.0.0.0:8181
-      - --log-level=debug
-      - /policies/delegation.rego
-      - /policies/data.json
-    volumes:
-      - ./opa/policies:/policies:ro
-    network_mode: host
-    healthcheck:
-      test: ["CMD", "/opa", "version"]
-      interval: 10s
-      timeout: 30s
-      retries: 12
-      start_period: 15s
 
   # ─── PostgreSQL Database ──────────────────────────────────────────────
   postgresql:
@@ -191,8 +170,6 @@ services:
     depends_on:
       keycloak:
         condition: service_healthy
-      opa:
-        condition: service_healthy
       token-exchange:
         condition: service_healthy
     network_mode: host
@@ -208,9 +185,7 @@ services:
       LISTEN_PORT: "8090"
       KEYCLOAK_URL: "http://127.0.0.1:8080"
       KEYCLOAK_REALM: "demo"
-      OPA_ENDPOINT: "http://127.0.0.1:8181"
-      VAULT_ADDR: "http://127.0.0.1:8200"
-      VAULT_TOKEN: "${GATEWAY_VAULT_TOKEN:-}"
+      KEYCLOAK_JWKS_URL: "http://127.0.0.1:8080/realms/demo/protocol/openid-connect/certs"
       TRUST_DOMAIN: "demo.local"
       SPIRE_OIDC_URL: "http://127.0.0.1:8082"
       SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
@@ -222,11 +197,7 @@ services:
     volumes:
       - /tmp/spire-agent-public:/tmp/spire-agent/public:ro
     depends_on:
-      vault:
-        condition: service_healthy
       keycloak:
-        condition: service_healthy
-      opa:
         condition: service_healthy
     network_mode: host
     healthcheck:
@@ -248,6 +219,7 @@ services:
       TOKEN_EXCHANGE_URL: "http://127.0.0.1:8090"
       KEYCLOAK_URL: "http://127.0.0.1:8080"
       KEYCLOAK_REALM: "demo"
+      VAULT_ADDR: "http://127.0.0.1:8200"
       TRUST_DOMAIN: "demo.local"
       AGENT_SPIFFE_ID: "spiffe://demo.local/agent/query-agent"
       SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
@@ -295,7 +267,6 @@ services:
     environment:
       KEYCLOAK_URL: "http://127.0.0.1:8080"
       TOKEN_EXCHANGE_URL: "http://127.0.0.1:8090"
-      OPA_URL: "http://127.0.0.1:8181"
       VAULT_ADDR: "http://127.0.0.1:8200"
       DB_HOST: "127.0.0.1"
       DB_PORT: "5432"

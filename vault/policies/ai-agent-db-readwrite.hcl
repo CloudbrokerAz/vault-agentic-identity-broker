@@ -1,18 +1,20 @@
 # Policy: ai-agent-db-readwrite
-# Grants AI agents the ability to obtain dynamic database credentials
-# with read/write access. Only agents whose delegation scope (or JWT
-# role) permits readwrite will be assigned this policy.
+# Grants AI agents read/write dynamic database credentials.
+#
+# Only agents whose SPIFFE auth role (or JWT auth role) permits readwrite
+# will be assigned this policy. Readwrite implies read access, so both
+# credential paths are included.
+#
+# Security: agents are explicitly denied identity/* access to prevent
+# self-attestation of delegation metadata. Scope enforcement is handled
+# by Sentinel EGP policies, not templated ACL paths.
 
-# Templated path: resolves via entity metadata from the delegation chain
-path "database/creds/ai-agent-{{identity.entity.metadata.delegation_scope}}" {
-  capabilities = ["read"]
-}
-
-# Static paths for readwrite and readonly (readwrite implies read)
+# Read/write database credentials
 path "database/creds/ai-agent-readwrite" {
   capabilities = ["read"]
 }
 
+# Read-only database credentials (readwrite implies read access)
 path "database/creds/ai-agent-readonly" {
   capabilities = ["read"]
 }
@@ -27,7 +29,22 @@ path "auth/token/renew-self" {
   capabilities = ["update"]
 }
 
-# Deny all system paths
+# Allow managing database credential leases (renew/revoke own leases)
+path "sys/leases/renew" {
+  capabilities = ["update"]
+}
+
+path "sys/leases/revoke" {
+  capabilities = ["update"]
+}
+
+# Deny identity access — agents must not self-attest delegation metadata.
+# Entity metadata is set automatically from JWT claims during auth.
+path "identity/*" {
+  capabilities = ["deny"]
+}
+
+# Deny all other system paths
 path "sys/*" {
   capabilities = ["deny"]
 }

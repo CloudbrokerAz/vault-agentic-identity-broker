@@ -496,6 +496,183 @@ label {
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+/* --- Exchange Flow Diagram --- */
+.exchange-flow {
+  display: flex; align-items: stretch; justify-content: center;
+  gap: 0; padding: 16px 0; flex-wrap: nowrap; overflow-x: auto;
+}
+.exchange-col {
+  display: flex; flex-direction: column; gap: 12px; justify-content: center;
+  min-width: 180px; flex-shrink: 0;
+}
+.exchange-token-box {
+  padding: 12px 14px; border-radius: 8px;
+  background: var(--bg); border: 2px solid var(--border);
+  transition: border-color 0.5s ease, box-shadow 0.5s ease;
+}
+.exchange-token-box.subject { border-color: var(--accent); }
+.exchange-token-box.actor { border-color: var(--cyan); }
+.exchange-token-box.delegation { border-color: var(--green); }
+.exchange-token-box.vault { border-color: var(--purple); }
+.exchange-token-box.active { box-shadow: 0 0 12px color-mix(in srgb, var(--box-color, var(--accent)) 40%, transparent); }
+.exchange-token-box .etb-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 4px;
+}
+.exchange-token-box.subject .etb-title { color: var(--accent); }
+.exchange-token-box.actor .etb-title { color: var(--cyan); }
+.exchange-token-box.delegation .etb-title { color: var(--green); }
+.exchange-token-box.vault .etb-title { color: var(--purple); }
+.exchange-token-box .etb-sub {
+  font-size: 11px; color: var(--text-dim); line-height: 1.4;
+}
+.exchange-service-box {
+  padding: 16px; border-radius: 8px; min-width: 220px;
+  background: var(--bg-elevated); border: 2px solid var(--border-bright);
+  text-align: left;
+}
+.exchange-service-box .esb-title {
+  font-size: 13px; font-weight: 700; color: var(--text-bright);
+  margin-bottom: 10px; text-align: center;
+}
+.exchange-service-box .esb-step {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 12px; color: var(--text-dim); padding: 3px 0;
+  transition: color 0.3s ease;
+}
+.exchange-service-box .esb-step.done { color: var(--green); }
+.exchange-service-box .esb-num {
+  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700;
+  background: var(--border); color: var(--text-dim);
+  transition: background 0.3s ease, color 0.3s ease;
+}
+.exchange-service-box .esb-step.done .esb-num {
+  background: var(--green); color: var(--bg);
+}
+.exchange-arrow {
+  display: flex; align-items: center; justify-content: center;
+  min-width: 50px; flex-shrink: 0; opacity: 0.3;
+  transition: opacity 0.5s ease;
+}
+.exchange-arrow.active { opacity: 1; }
+.exchange-arrow svg { width: 40px; height: 24px; }
+.exchange-arrow svg line { stroke: var(--border); stroke-width: 2; }
+.exchange-arrow svg polygon { fill: var(--border); }
+.exchange-arrow.active svg line { stroke: var(--green); }
+.exchange-arrow.active svg polygon { fill: var(--green); }
+
+/* --- act{} Chain Visualization --- */
+.act-chain {
+  display: flex; flex-direction: column; gap: 0;
+  padding: 12px 0;
+}
+.act-level {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; position: relative;
+}
+.act-level:not(:last-child)::after {
+  content: ''; position: absolute; left: 23px; top: 100%;
+  width: 2px; height: 12px; background: var(--border);
+}
+.act-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 6px; font-size: 12px;
+  font-weight: 600; font-family: var(--mono);
+}
+.act-badge.human { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
+.act-badge.agent { background: color-mix(in srgb, var(--cyan) 15%, transparent); color: var(--cyan); border: 1px solid var(--cyan); }
+.act-connector {
+  font-size: 11px; color: var(--text-dim); font-weight: 500;
+  padding: 0 4px;
+}
+
+/* --- Audit Timeline --- */
+.audit-timeline {
+  display: flex; flex-direction: column; gap: 0;
+  padding: 8px 0;
+}
+.audit-event {
+  display: grid; grid-template-columns: 32px 1fr;
+  gap: 0 12px; position: relative;
+}
+.audit-event-line {
+  display: flex; flex-direction: column; align-items: center;
+}
+.audit-event-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--border); flex-shrink: 0; margin-top: 14px;
+  transition: background 0.3s ease;
+}
+.audit-event.exchange .audit-event-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.audit-event.revocation .audit-event-dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.audit-event.denied .audit-event-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+.audit-event-connector {
+  width: 2px; flex: 1; background: var(--border); min-height: 8px;
+}
+.audit-event:last-child .audit-event-connector { display: none; }
+.audit-event-body {
+  padding: 8px 12px 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.audit-event:last-child .audit-event-body { border-bottom: none; }
+.audit-event-header {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.audit-event-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.audit-event-badge.exchange { background: var(--accent-dim); color: var(--accent); }
+.audit-event-badge.revocation { background: var(--red-dim); color: var(--red); }
+.audit-event-badge.denied { background: var(--yellow-dim); color: var(--orange); }
+.audit-event-badge.success { background: var(--green-dim); color: var(--green); }
+.audit-event-badge.session {
+  background: var(--purple-dim); color: var(--purple); border: 1px solid var(--purple);
+}
+.audit-event-detail {
+  font-size: 12px; color: var(--text-dim); line-height: 1.6;
+}
+.audit-event-detail strong { color: var(--text); font-weight: 600; }
+.audit-event.current-session .audit-event-body {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-radius: 6px; padding-left: 12px;
+}
+
+/* --- Audit Summary --- */
+.audit-summary-flow {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 0;
+}
+.audit-summary-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 12px; border-radius: 6px;
+  font-size: 12px; font-weight: 600;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text);
+}
+.audit-summary-badge.exchange { border-color: var(--accent); color: var(--accent); }
+.audit-summary-badge.revocation { border-color: var(--red); color: var(--red); }
+.audit-summary-arrow { color: var(--text-dim); font-size: 16px; }
+
+/* --- Collapsible raw JSON --- */
+details.raw-json-details { margin-top: 12px; }
+details.raw-json-details summary {
+  cursor: pointer; font-size: 12px; font-weight: 600;
+  color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: 0.5px; padding: 8px 0;
+  user-select: none;
+}
+details.raw-json-details summary:hover { color: var(--text); }
+
+@media (max-width: 900px) {
+  .exchange-flow { flex-direction: column; align-items: center; }
+  .exchange-arrow { transform: rotate(90deg); min-width: auto; min-height: 40px; }
+}
 </style>
 </head>
 <body>
@@ -543,14 +720,18 @@ label {
     </button>
     <button class="step-btn" onclick="showStep(6)">
       <span class="step-num" id="stepNum6">6</span>
-      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
+      <div class="step-label"><div class="step-title">Vault Credentials</div><div class="step-subtitle">Delegation-gated credentials</div></div>
     </button>
     <button class="step-btn" onclick="showStep(7)">
       <span class="step-num" id="stepNum7">7</span>
-      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
     </button>
     <button class="step-btn" onclick="showStep(8)">
       <span class="step-num" id="stepNum8">8</span>
+      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(9)">
+      <span class="step-num" id="stepNum9">9</span>
       <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
     </button>
   </nav>
@@ -841,39 +1022,188 @@ label {
         <h2>Token Exchange (RFC 8693)</h2>
         <span class="timing-badge" id="exchangeTiming"></span>
       </div>
-      <p class="panel-desc">Exchange the human's OIDC token + agent's SPIFFE SVID for a delegation token with time-limited database credentials from Vault.</p>
+      <p class="panel-desc">Two tokens go in (human OIDC + agent SPIFFE), one delegation token comes out. This is the core of the identity broker — the Token Exchange Service validates both tokens, checks policy, and mints a delegation token with a nested act{} claim.</p>
       <div class="controls">
         <button class="btn btn-primary" onclick="doTokenExchange()" id="exchangeBtn" disabled>Exchange Tokens</button>
       </div>
-      <div class="two-col" id="exchangeResults" style="display:none;">
-        <div class="card">
-          <div class="card-header">RFC 8693 Request</div>
-          <div class="card-body"><pre class="json" id="exchangeRequest"></pre></div>
-        </div>
-        <div class="card" id="exchangeResponseCard">
-          <div class="card-header">Token Exchange Response</div>
-          <div class="card-body">
-            <pre class="json" id="exchangeResponse"></pre>
-            <div id="exchangeAnnotations"></div>
+
+      <!-- A) Exchange Flow Diagram -->
+      <div class="card" id="exchangeFlowCard" style="display:none;">
+        <div class="card-header">Exchange Flow</div>
+        <div class="card-body">
+          <div class="exchange-flow">
+            <div class="exchange-col">
+              <div class="exchange-token-box subject" id="exFlowSubject">
+                <div class="etb-title">Subject Token</div>
+                <div class="etb-sub">Human OIDC access token from Keycloak — proves who the human is</div>
+              </div>
+              <div class="exchange-token-box actor" id="exFlowActor">
+                <div class="etb-title">Actor Token</div>
+                <div class="etb-sub">Agent SPIFFE JWT-SVID — proves which agent is acting</div>
+              </div>
+            </div>
+            <div class="exchange-arrow" id="exArrowIn">
+              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
+            </div>
+            <div class="exchange-service-box" id="exServiceBox">
+              <div class="esb-title">Token Exchange Service</div>
+              <div class="esb-step" id="exSvc1"><span class="esb-num">1</span> Validate human token (Keycloak)</div>
+              <div class="esb-step" id="exSvc2"><span class="esb-num">2</span> Validate agent SVID (SPIFFE JWKS)</div>
+              <div class="esb-step" id="exSvc3"><span class="esb-num">3</span> Check OPA delegation policy</div>
+              <div class="esb-step" id="exSvc4"><span class="esb-num">4</span> Mint delegation token (RS256)</div>
+            </div>
+            <div class="exchange-arrow" id="exArrowOut">
+              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
+            </div>
+            <div class="exchange-col">
+              <div class="exchange-token-box delegation" id="exFlowDelegation">
+                <div class="etb-title">Delegation Token</div>
+                <div class="etb-sub">JWT with nested act{} claim — proves who authorized what</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      <!-- B) Input Tokens (decoded, two-col) -->
+      <div class="two-col" id="exchangeInputTokens" style="display:none;">
+        <div class="card">
+          <div class="card-header" style="color:var(--accent);">Subject Token (Human OIDC)</div>
+          <div class="card-body">
+            <pre class="json" id="exSubjectJson"></pre>
+            <div id="exSubjectAnnotations"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header" style="color:var(--cyan);">Actor Token (Agent SPIFFE SVID)</div>
+          <div class="card-body">
+            <pre class="json" id="exActorJson"></pre>
+            <div id="exActorAnnotations"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- C) Delegation Token Breakdown -->
       <div class="card" id="delegationTokenCard" style="display:none;">
-        <div class="card-header">Decoded Delegation Token</div>
+        <div class="card-header" style="color:var(--green);">Delegation Token (Minted)</div>
         <div class="card-body">
           <pre class="json" id="delegationDecoded"></pre>
           <div id="delegationAnnotations"></div>
+          <div id="actChainViz"></div>
         </div>
       </div>
+
+      <!-- D) Raw JSON (collapsible) -->
+      <details class="raw-json-details" id="exchangeRawDetails" style="display:none;">
+        <summary>Raw Request / Response JSON</summary>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-header">RFC 8693 Request</div>
+            <div class="card-body"><pre class="json" id="exchangeRequest"></pre></div>
+          </div>
+          <div class="card" id="exchangeResponseCard">
+            <div class="card-header">Token Exchange Response</div>
+            <div class="card-body">
+              <pre class="json" id="exchangeResponse"></pre>
+              <div id="exchangeAnnotations"></div>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
 
-    <!-- Step 6: DB Query -->
+    <!-- Step 6: Vault Credential Brokering (Mediated via Token Exchange) -->
     <div class="step-panel" id="panel6">
+      <div class="panel-header">
+        <h2>Vault Credential Brokering</h2>
+        <span class="timing-badge" id="vaultTiming"></span>
+      </div>
+      <p class="panel-desc">The agent presents the <strong>delegation token from Step 5</strong> to the Token Exchange Service. Token Exchange validates the token (RS256 signature, expiry, revocation status), extracts the authorized scope, and uses <strong>its own Vault credentials</strong> to broker dynamic database credentials. The agent <strong>never authenticates to Vault directly</strong> — the delegation token IS the proof of human authorization that gates credential access.</p>
+
+      <!-- A) Credential Flow Diagram -->
+      <div class="card" id="credFlowCard">
+        <div class="card-header">Mediated Credential Flow</div>
+        <div class="card-body">
+          <div class="exchange-flow">
+            <div class="exchange-col">
+              <div class="exchange-token-box delegation" id="credFlowToken">
+                <div class="etb-title">Delegation Token</div>
+                <div class="etb-sub">From Step 5 — proves human authorization</div>
+              </div>
+            </div>
+            <div class="exchange-arrow" id="credArrowIn">
+              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
+            </div>
+            <div class="exchange-service-box" id="credServiceBox">
+              <div class="esb-title">Token Exchange Service</div>
+              <div class="esb-step" id="credSvc1"><span class="esb-num">1</span> Validate token (RS256 signature)</div>
+              <div class="esb-step" id="credSvc2"><span class="esb-num">2</span> Check expiry &amp; revocation</div>
+              <div class="esb-step" id="credSvc3"><span class="esb-num">3</span> Map scope to Vault role</div>
+              <div class="esb-step" id="credSvc4"><span class="esb-num">4</span> Broker credentials via Vault</div>
+            </div>
+            <div class="exchange-arrow" id="credArrowOut">
+              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
+            </div>
+            <div class="exchange-col">
+              <div class="exchange-token-box vault" id="credFlowCreds">
+                <div class="etb-title">Dynamic Credentials</div>
+                <div class="etb-sub">PostgreSQL user + password, 5-min TTL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- B) Broker Credentials Card -->
+      <div class="card" id="credBrokerCard">
+        <div class="card-header" style="color:var(--green);">Broker Credentials via Delegation Token</div>
+        <div class="card-body">
+          <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">The agent makes a single call to Token Exchange, presenting the delegation token as proof of human authorization. Token Exchange validates the token, maps the scope to a Vault role, and uses its own privileged Vault token to broker dynamic database credentials. The agent never touches Vault directly.</p>
+          <div class="controls">
+            <button class="btn btn-primary" onclick="doBrokerCredentials()" id="brokerCredsBtn" disabled>Broker Credentials</button>
+          </div>
+          <div id="credBrokerSteps" style="display:none;margin-top:12px;"></div>
+          <div class="card" id="credBrokerResultCard" style="display:none;margin-top:12px;">
+            <div class="card-header">Dynamic Credentials</div>
+            <div class="card-body">
+              <div id="credBrokerDetails"></div>
+              <div id="credBrokerAnnotations" style="margin-top:8px;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- C) Raw JSON (collapsible) -->
+      <details class="raw-json-details" id="credRawDetails" style="display:none;">
+        <summary>Raw Token Exchange Credential Response</summary>
+        <div class="card">
+          <div class="card-header">Credential Broker Response</div>
+          <div class="card-body"><pre class="json" id="credBrokerRawJson"></pre></div>
+        </div>
+      </details>
+    </div>
+
+    <!-- Step 7: DB Query -->
+    <div class="step-panel" id="panel7">
       <div class="panel-header">
         <h2>Database Query</h2>
         <span class="timing-badge" id="queryTiming"></span>
       </div>
       <p class="panel-desc">Execute SQL against PostgreSQL using the dynamic credentials issued by Vault. These credentials are scoped and time-limited (5-minute TTL).</p>
+      <div class="form-row" id="queryCredFields" style="display:none;margin-bottom:12px;">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="queryUsername" readonly style="width:180px;background:var(--bg-elevated);cursor:default;">
+        </div>
+        <div class="form-group">
+          <label>Host:Port</label>
+          <input type="text" id="queryHostPort" readonly style="width:160px;background:var(--bg-elevated);cursor:default;">
+        </div>
+        <div class="form-group">
+          <label>Database</label>
+          <input type="text" id="queryDatabase" readonly style="width:100px;background:var(--bg-elevated);cursor:default;">
+        </div>
+      </div>
       <div class="form-row">
         <div class="form-group" style="flex:1;">
           <label>Query</label>
@@ -903,8 +1233,8 @@ label {
       </div>
     </div>
 
-    <!-- Step 7: Revocation -->
-    <div class="step-panel" id="panel7">
+    <!-- Step 8: Revocation -->
+    <div class="step-panel" id="panel8">
       <div class="panel-header">
         <h2>Credential Revocation</h2>
         <span class="timing-badge" id="revokeTiming"></span>
@@ -932,23 +1262,43 @@ label {
       </div>
     </div>
 
-    <!-- Step 8: Audit -->
-    <div class="step-panel" id="panel8">
+    <!-- Step 9: Audit -->
+    <div class="step-panel" id="panel9">
       <div class="panel-header">
         <h2>Audit Trail</h2>
         <span class="timing-badge" id="auditTiming"></span>
       </div>
-      <p class="panel-desc">Fetch the complete audit log from the Token Exchange Service. Every token exchange, delegation, and revocation is recorded.</p>
+      <p class="panel-desc">Every token exchange, delegation, and revocation is recorded. This timeline shows the full audit trail with your current session highlighted.</p>
       <div class="controls">
         <button class="btn btn-primary" onclick="fetchAudit()" id="auditBtn" disabled>Fetch Audit Log</button>
       </div>
-      <div class="card" id="auditCard" style="display:none;">
-        <div class="card-header">Audit Entries</div>
+
+      <!-- A) Session Summary -->
+      <div class="card" id="auditSummaryCard" style="display:none;">
+        <div class="card-header">Session Summary</div>
         <div class="card-body">
-          <pre class="json" id="auditResponse"></pre>
-          <div id="auditAnnotations"></div>
+          <div id="auditSummaryContent"></div>
         </div>
       </div>
+
+      <!-- B) Timeline View -->
+      <div class="card" id="auditTimelineCard" style="display:none;">
+        <div class="card-header">Event Timeline</div>
+        <div class="card-body">
+          <div id="auditTimelineContent"></div>
+        </div>
+      </div>
+
+      <!-- C) Raw JSON (collapsible) -->
+      <details class="raw-json-details" id="auditRawDetails" style="display:none;">
+        <summary>Raw Audit JSON</summary>
+        <div class="card">
+          <div class="card-header">All Audit Entries</div>
+          <div class="card-body">
+            <pre class="json" id="auditResponse"></pre>
+          </div>
+        </div>
+      </details>
     </div>
 
   </div><!-- /main -->
@@ -970,6 +1320,7 @@ const state = {
   scope: 'readonly',
   opaResult: null,
   delegationToken: null,
+  vaultLeaseId: null,
   dbCredential: null,
   sessionId: null,
   queryResults: null,
@@ -1031,10 +1382,27 @@ const ANNOTATIONS = {
     { key: 'scope', color: 'green', label: 'SCOPE', desc: 'The granted permission level' },
     { key: 'exp', color: 'yellow', label: 'EXPIRY', desc: 'Matches Vault credential TTL (~5 min)', format: 'time' },
   ],
+  exchangeSubject: [
+    { key: 'preferred_username', color: 'accent', label: 'IDENTITY', desc: 'The human who authenticated — this is the "subject" of the delegation' },
+    { key: 'groups', color: 'green', label: 'GROUPS', desc: 'Group memberships determine allowed scopes (e.g. data-analysts can do readonly)' },
+    { key: 'may_act', color: 'cyan', label: 'MAY_ACT', desc: 'RFC 8693 consent claim — which agents this human authorizes' },
+    { key: 'iss', color: 'purple', label: 'ISSUER', desc: 'Keycloak issued this token — Token Exchange validates against this issuer' },
+  ],
+  exchangeActor: [
+    { key: 'sub', color: 'accent', label: 'SPIFFE ID', desc: 'The agent\'s cryptographic identity — must be in may_act.aud to be authorized' },
+    { key: 'aud', color: 'orange', label: 'AUDIENCE', desc: 'Token is scoped to the token-exchange service' },
+    { key: 'client_type', color: 'pink', label: 'CLIENT TYPE', desc: 'Workload attestation metadata — identifies this as an AI agent' },
+  ],
   exchangeResponse: [
     { key: 'access_token', color: 'accent', label: 'DELEGATION TOKEN', desc: 'Proves who authorized what' },
-    { key: 'db_credential', color: 'green', label: 'DB CREDENTIALS', desc: 'Dynamic username/password from Vault' },
     { key: 'session_id', color: 'purple', label: 'SESSION ID', desc: 'Correlates audit entries and enables revocation' },
+  ],
+  credBroker: [
+    { key: 'username', color: 'accent', label: 'DYNAMIC USER', desc: 'Vault-generated PostgreSQL role (auto-expires)' },
+    { key: 'ttl_seconds', color: 'yellow', label: 'TTL', desc: 'Credentials expire after this many seconds' },
+    { key: 'lease_id', color: 'orange', label: 'LEASE ID', desc: 'Vault lease identifier — used to revoke these specific credentials' },
+    { key: 'vault_role', color: 'purple', label: 'VAULT ROLE', desc: 'Database secrets engine role that created these credentials' },
+    { key: 'delegation_verified', color: 'green', label: 'DELEGATION VERIFIED', desc: 'Token Exchange confirmed the delegation token before issuing credentials' },
   ],
   dbCreds: [
     { key: 'username', color: 'accent', label: 'DYNAMIC USER', desc: 'Vault-generated PostgreSQL role (auto-expires)' },
@@ -1141,8 +1509,10 @@ function failStep(n) {
 // JSON Syntax Highlighting
 // ---------------------------------------------------------------------------
 function syntaxHighlight(obj) {
+  if (obj === undefined) obj = null;
   let json;
   try { json = JSON.stringify(obj, null, 2); } catch(e) { json = String(obj); }
+  if (!json) json = 'null';
   return json.replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function(match) {
     let cls = 'number';
     if (/^"/.test(match)) {
@@ -1306,7 +1676,7 @@ async function doServerApprove() {
 
     if (result.data.error) {
       document.getElementById('devicePollStatus').style.display = '';
-      document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Approval failed: ' + (result.data.message || 'unknown error');
+      document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Approval failed: ' + escapeHtml(result.data.message || 'unknown error');
     } else {
       document.getElementById('devicePollStatus').style.display = '';
       document.getElementById('devicePollStatus').innerHTML = '<span class="spinner"></span> Approved! Polling for token...';
@@ -1317,7 +1687,7 @@ async function doServerApprove() {
     }
   } catch (e) {
     document.getElementById('devicePollStatus').style.display = '';
-    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + e.message;
+    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + escapeHtml(e.message);
   }
   btnRestore('deviceApproveBtn', 'Approve');
 }
@@ -1355,7 +1725,7 @@ async function startDeviceFlow() {
 
   } catch (e) {
     document.getElementById('devicePollStatus').style.display = '';
-    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + e.message;
+    document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> Error: ' + escapeHtml(e.message);
     showJson('authResponse', { error: e.message });
     btnRestore('deviceStartBtn', 'Start Device Flow');
   }
@@ -1372,7 +1742,7 @@ async function pollDevice() {
       if (data.status === 'complete' && data.access_token) {
         state.accessToken = data.access_token;
         state.decodedToken = data.decoded;
-        state.user = data.decoded?.preferred_username || data.decoded?.sub || data.decoded?.email || 'user';
+        state.user = data.username || data.decoded?.preferred_username || data.decoded?.sub || 'user';
         document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--green);">\u2713</span> Authorized as ' + escapeHtml(state.user) + '!';
         document.getElementById('deviceActions').style.display = 'none';
         document.getElementById('deviceServerApproveUI').style.display = 'none';
@@ -1392,7 +1762,7 @@ async function pollDevice() {
         return;
       }
       if (data.status === 'error') {
-        document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> ' + (data.error_description || data.error);
+        document.getElementById('devicePollStatus').innerHTML = '<span style="color:var(--red);">\u2717</span> ' + escapeHtml(data.error_description || data.error);
         state.devicePolling = false;
         return;
       }
@@ -1476,7 +1846,7 @@ async function handleAuthCodeCallback() {
     setTiming('authTiming', data.elapsed_ms || 0, status === 200);
 
     if (status === 200 && data.access_token) {
-      state.user = data.decoded?.preferred_username || data.decoded?.sub || 'user';
+      state.user = data.username || data.decoded?.preferred_username || data.decoded?.sub || 'user';
       state.accessToken = data.access_token;
       state.decodedToken = data.decoded;
       showJson('authResponse', data.decoded);
@@ -1551,16 +1921,20 @@ async function updateConsent() {
     agents.push('spiffe://demo.local/agent/write-agent');
 
   try {
-    const { data } = await api('POST', '/api/consent/update', {
+    const { status, data } = await api('POST', '/api/consent/update', {
       username: state.user,
       agents: agents,
     });
-    setTiming('consentTiming', data.elapsed_ms || 0, true);
+    setTiming('consentTiming', data.elapsed_ms || 0, status === 200);
 
     document.getElementById('consentResponseCard').style.display = '';
     showJson('consentResponse', data);
 
-    if (agents.length > 0) {
+    if (status !== 200 || data.error) {
+      document.getElementById('consentCurrentStatus').innerHTML =
+        '<span style="color:var(--red);">&#10007;</span> Failed to update consent: ' + escapeHtml(data.message || 'unknown error');
+      failStep(2);
+    } else if (agents.length > 0) {
       document.getElementById('consentCurrentStatus').innerHTML =
         '<span style="color:var(--green);">&#10003;</span> Consent updated for <strong>' + escapeHtml(state.user) + '</strong> — ' + agents.length + ' agent(s) authorized';
       document.getElementById('consentCurrentJson').style.display = '';
@@ -1760,6 +2134,116 @@ async function evaluateOPA() {
 }
 
 // ---------------------------------------------------------------------------
+// Step 5: Token Exchange — Helpers
+// ---------------------------------------------------------------------------
+function renderActChainViz(elementId, actClaim, topSubject) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  if (!actClaim && !topSubject) { el.innerHTML = ''; return; }
+
+  let html = '<div style="font-size:12px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Delegation Chain (act{} claim)</div>';
+  html += '<div class="act-chain">';
+
+  // Top level: the subject (human)
+  if (topSubject) {
+    html += '<div class="act-level">';
+    html += '<span class="act-badge human">SUBJECT</span>';
+    html += '<span style="font-family:var(--mono);font-size:12px;color:var(--text);">' + escapeHtml(String(topSubject)) + '</span>';
+    html += '</div>';
+  }
+
+  // Flatten nested act{} claims
+  let current = actClaim;
+  let depth = 0;
+  while (current && depth < 5) {
+    const actorSub = current.sub || current.client_id || 'unknown';
+    html += '<div class="act-level" style="padding-left:' + ((depth + 1) * 20) + 'px;">';
+    html += '<span class="act-connector">authorized</span>';
+    html += '<span class="act-badge agent">ACTOR' + (depth > 0 ? ' (depth ' + depth + ')' : '') + '</span>';
+    html += '<span style="font-family:var(--mono);font-size:12px;color:var(--text);word-break:break-all;">' + escapeHtml(String(actorSub)) + '</span>';
+    html += '</div>';
+    current = current.act;
+    depth++;
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderVaultCredentials(elementId, credential) {
+  const el = document.getElementById(elementId);
+  if (!el || !credential) { if (el) el.innerHTML = ''; return; }
+
+  const ttlMin = credential.ttl_seconds ? (credential.ttl_seconds / 60).toFixed(1) : '?';
+  const items = [
+    { name: 'Vault Role', val: credential.vault_role || ('ai-agent-' + (state.scope || 'readonly')), color: 'var(--purple)', why: 'Vault database role that generated these credentials — maps to PostgreSQL permission set' },
+    { name: 'Dynamic User', val: credential.username || 'N/A', color: 'var(--accent)', why: 'Vault-generated PostgreSQL role name — unique per session, auto-deleted on expiry or revocation' },
+    { name: 'TTL', val: (credential.ttl_seconds || '?') + 's (' + ttlMin + ' min)', color: 'var(--yellow)', why: 'Time-to-live — credentials are automatically revoked after this period even without explicit revocation' },
+    { name: 'Lease ID', val: credential.lease_id || 'N/A', color: 'var(--orange)', why: 'Vault lease identifier — used to revoke these specific credentials before TTL expiry' },
+  ];
+
+  let html = '<div class="claim-grid">';
+  for (const item of items) {
+    html += '<div class="claim-card" style="--claim-color:' + item.color + ';">';
+    html += '<div class="claim-name"><span class="claim-label" style="--claim-color:' + item.color + ';">' + escapeHtml(item.name) + '</span></div>';
+    html += '<div class="claim-val">' + escapeHtml(item.val) + '</div>';
+    html += '<div class="claim-why">' + escapeHtml(item.why) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function animateExchangeFlow(success) {
+  // Animate: inputs light up → arrows → service steps → output arrows → outputs
+  const subjectBox = document.getElementById('exFlowSubject');
+  const actorBox = document.getElementById('exFlowActor');
+  if (subjectBox) {
+    const who = state.decodedToken?.preferred_username || state.decodedToken?.email || state.user || '?';
+    subjectBox.querySelector('.etb-sub').innerHTML =
+      '<strong style="color:var(--accent);">' + escapeHtml(who) + '</strong> — proves the human\'s identity, groups, and may_act consent';
+    subjectBox.classList.add('active');
+  }
+  if (actorBox) {
+    const agentId = state.svidDecoded?.sub || ('spiffe://demo.local/' + state.agentType + '/' + state.agent);
+    actorBox.querySelector('.etb-sub').innerHTML =
+      '<strong style="color:var(--cyan);">' + escapeHtml(agentId) + '</strong> — proves which agent is acting';
+    actorBox.classList.add('active');
+  }
+
+  setTimeout(() => {
+    const arrow = document.getElementById('exArrowIn');
+    if (arrow) arrow.classList.add('active');
+  }, 500);
+
+  // Animate service steps one by one (4 steps now — no Vault brokering)
+  for (let i = 1; i <= 4; i++) {
+    setTimeout(() => {
+      const step = document.getElementById('exSvc' + i);
+      if (step && success) step.classList.add('done');
+    }, 500 + i * 350);
+  }
+
+  if (success) {
+    const outputDelay = 500 + 4 * 350 + 300; // after all steps + pause
+
+    setTimeout(() => {
+      const arrow = document.getElementById('exArrowOut');
+      if (arrow) arrow.classList.add('active');
+    }, outputDelay);
+
+    setTimeout(() => {
+      const delBox = document.getElementById('exFlowDelegation');
+      if (delBox) {
+        delBox.querySelector('.etb-sub').innerHTML =
+          'JWT with nested <strong style="color:var(--green);">act{}</strong> claim — cryptographic proof of who authorized what';
+        delBox.classList.add('active');
+      }
+    }, outputDelay + 200);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Step 5: Token Exchange
 // ---------------------------------------------------------------------------
 async function doTokenExchange() {
@@ -1771,7 +2255,24 @@ async function doTokenExchange() {
     scope: state.scope,
   };
 
-  document.getElementById('exchangeResults').style.display = '';
+  // Show flow diagram immediately
+  document.getElementById('exchangeFlowCard').style.display = '';
+  // Reset animation state
+  ['exFlowSubject','exFlowActor','exFlowDelegation'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+  });
+  ['exArrowIn','exArrowOut'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+  });
+  for (let i = 1; i <= 4; i++) {
+    const step = document.getElementById('exSvc' + i);
+    if (step) step.classList.remove('done');
+  }
+
+  // Show raw JSON section
+  document.getElementById('exchangeRawDetails').style.display = '';
   showJson('exchangeRequest', {
     grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
     subject_token: state.accessToken ? (state.accessToken.substring(0, 20) + '...') : '',
@@ -1779,50 +2280,60 @@ async function doTokenExchange() {
     actor_token: state.spiffeSvid ? (state.spiffeSvid.substring(0, 20) + '...') : '',
     actor_token_type: 'urn:ietf:params:oauth:token-type:jwt',
     scope: state.scope,
-    audience: 'database',
+    audience: 'delegation',
   });
 
   try {
     const { status, data } = await api('POST', '/api/token-exchange', reqBody);
     setTiming('exchangeTiming', data.elapsed_ms || 0, status === 200 && !data.error);
 
+    const success = status === 200 && data.access_token;
+    animateExchangeFlow(success);
+
+    // Raw response
     const displayData = { ...data };
     delete displayData.elapsed_ms;
     delete displayData.delegation_token_decoded;
+    delete displayData.subject_token_decoded;
+    delete displayData.actor_token_decoded;
     showJson('exchangeResponse', displayData);
     renderAnnotatedResponse('exchangeAnnotations', displayData, ANNOTATIONS.exchangeResponse);
 
-    if (status === 200 && data.access_token) {
+    if (success) {
       state.delegationToken = data.access_token;
-      state.dbCredential = data.db_credential;
       state.sessionId = data.session_id;
 
       document.getElementById('exchangeResponseCard').className = 'card success';
       completeStep(5);
 
+      // B) Show decoded input tokens
+      document.getElementById('exchangeInputTokens').style.display = '';
+      if (data.subject_token_decoded) {
+        showJson('exSubjectJson', data.subject_token_decoded);
+        renderAnnotatedResponse('exSubjectAnnotations', data.subject_token_decoded, ANNOTATIONS.exchangeSubject);
+      } else if (state.decodedToken) {
+        showJson('exSubjectJson', state.decodedToken);
+        renderAnnotatedResponse('exSubjectAnnotations', state.decodedToken, ANNOTATIONS.exchangeSubject);
+      }
+      if (data.actor_token_decoded) {
+        showJson('exActorJson', data.actor_token_decoded);
+        renderAnnotatedResponse('exActorAnnotations', data.actor_token_decoded, ANNOTATIONS.exchangeActor);
+      } else if (state.svidDecoded) {
+        showJson('exActorJson', state.svidDecoded);
+        renderAnnotatedResponse('exActorAnnotations', state.svidDecoded, ANNOTATIONS.exchangeActor);
+      }
+
+      // C) Delegation token + act{} chain
       if (data.delegation_token_decoded) {
         document.getElementById('delegationTokenCard').style.display = '';
         showJson('delegationDecoded', data.delegation_token_decoded);
         renderAnnotatedResponse('delegationAnnotations', data.delegation_token_decoded, ANNOTATIONS.delegationToken);
+        renderActChainViz('actChainViz', data.delegation_token_decoded.act, data.delegation_token_decoded.sub);
       }
 
+      // Enable Step 6 (Vault Credential Brokering)
+      document.getElementById('brokerCredsBtn').disabled = false;
       document.getElementById('auditBtn').disabled = false;
-      document.getElementById('revokeBtn').disabled = false;
-
-      if (state.dbCredential) {
-        document.getElementById('queryBtn').disabled = false;
-        document.getElementById('queryCredCard').style.display = '';
-        const credDisplay = {
-          username: state.dbCredential.username,
-          host: state.dbCredential.host,
-          port: state.dbCredential.port,
-          database: state.dbCredential.database,
-          ttl_seconds: state.dbCredential.ttl_seconds,
-          note: 'Password hidden \u2014 auto-used for queries',
-        };
-        showJson('queryCredInfo', credDisplay);
-        renderAnnotatedResponse('queryCredAnnotations', credDisplay, ANNOTATIONS.dbCreds);
-      }
     } else {
       document.getElementById('exchangeResponseCard').className = 'card error';
       showJson('exchangeResponse', data);
@@ -1838,7 +2349,123 @@ async function doTokenExchange() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: Database Query
+// Step 6: Vault Credential Brokering (Mediated via Token Exchange)
+// ---------------------------------------------------------------------------
+async function doBrokerCredentials() {
+  btnLoading('brokerCredsBtn', 'Brokering...');
+
+  try {
+    const { status, data } = await api('POST', '/api/vault/credentials', {
+      delegation_token: state.delegationToken,
+    });
+
+    const elapsed = data.elapsed_ms || 0;
+
+    // Show step trace
+    if (data.steps) {
+      renderProcessSteps('credBrokerSteps', data.steps);
+    }
+
+    // Show raw JSON
+    document.getElementById('credRawDetails').style.display = '';
+    showJson('credBrokerRawJson', data);
+
+    if (status === 200 && data.username) {
+      state.dbCredential = data;
+      state.vaultLeaseId = data.lease_id;
+
+      // Animate flow diagram
+      setTimeout(() => {
+        const tokenBox = document.getElementById('credFlowToken');
+        if (tokenBox) tokenBox.classList.add('active');
+      }, 200);
+      setTimeout(() => {
+        const arrow = document.getElementById('credArrowIn');
+        if (arrow) arrow.classList.add('active');
+      }, 500);
+      setTimeout(() => {
+        const svc1 = document.getElementById('credSvc1');
+        if (svc1) svc1.classList.add('done');
+      }, 800);
+      setTimeout(() => {
+        const svc2 = document.getElementById('credSvc2');
+        if (svc2) svc2.classList.add('done');
+      }, 1100);
+      setTimeout(() => {
+        const svc3 = document.getElementById('credSvc3');
+        if (svc3) svc3.classList.add('done');
+      }, 1400);
+      setTimeout(() => {
+        const svc4 = document.getElementById('credSvc4');
+        if (svc4) svc4.classList.add('done');
+      }, 1700);
+      setTimeout(() => {
+        const arrow = document.getElementById('credArrowOut');
+        if (arrow) arrow.classList.add('active');
+      }, 2000);
+      setTimeout(() => {
+        const credsBox = document.getElementById('credFlowCreds');
+        if (credsBox) {
+          credsBox.querySelector('.etb-sub').innerHTML =
+            '<strong style="color:var(--green);">' + escapeHtml(data.username) + '</strong> — ' +
+            escapeHtml(String(data.ttl_seconds)) + 's TTL';
+          credsBox.classList.add('active');
+        }
+      }, 2300);
+
+      // Show credential result
+      document.getElementById('credBrokerResultCard').style.display = '';
+      renderVaultCredentials('credBrokerDetails', data);
+      const annotationData = {
+        username: data.username,
+        ttl_seconds: data.ttl_seconds,
+        lease_id: data.lease_id,
+        vault_role: data.vault_role,
+        delegation_verified: data.delegation_verified,
+      };
+      renderAnnotatedResponse('credBrokerAnnotations', annotationData, ANNOTATIONS.credBroker);
+
+      // Populate DB Query step fields
+      document.getElementById('queryCredFields').style.display = '';
+      document.getElementById('queryUsername').value = data.username;
+      document.getElementById('queryHostPort').value = data.host + ':' + data.port;
+      document.getElementById('queryDatabase').value = data.database;
+
+      // Also show the credential card in the query panel
+      document.getElementById('queryCredCard').style.display = '';
+      const credDisplay = {
+        username: data.username,
+        host: data.host,
+        port: data.port,
+        database: data.database,
+        ttl_seconds: data.ttl_seconds,
+        note: 'Password hidden \u2014 auto-used for queries',
+      };
+      showJson('queryCredInfo', credDisplay);
+      renderAnnotatedResponse('queryCredAnnotations', credDisplay, ANNOTATIONS.dbCreds);
+
+      // Enable downstream steps
+      document.getElementById('queryBtn').disabled = false;
+      document.getElementById('revokeBtn').disabled = false;
+
+      completeStep(6);
+      setTiming('vaultTiming', elapsed, true);
+    } else {
+      document.getElementById('credBrokerResultCard').style.display = '';
+      document.getElementById('credBrokerResultCard').className = 'card error';
+      failStep(6);
+      setTiming('vaultTiming', elapsed, false);
+    }
+  } catch (e) {
+    document.getElementById('credBrokerResultCard').style.display = '';
+    showJson('credBrokerRawJson', { error: e.message });
+    failStep(6);
+  }
+  btnRestore('brokerCredsBtn', 'Broker Credentials');
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: Database Query
 // ---------------------------------------------------------------------------
 function updateQueryText() {
   const sel = document.getElementById('queryPreset');
@@ -1869,7 +2496,7 @@ async function executeQuery() {
     if (data.error) {
       document.getElementById('queryResultCard').className = 'card error';
       document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight(data) + '</pre>';
-      failStep(6);
+      failStep(7);
     } else if (data.columns && data.rows) {
       document.getElementById('queryResultCard').className = 'card success';
       let html = '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">' + data.row_count + ' row(s) returned</div>';
@@ -1884,21 +2511,22 @@ async function executeQuery() {
       html += '</tbody></table></div>';
       document.getElementById('queryResultBody').innerHTML = html;
       state.queryResults = data;
-      completeStep(6);
+      completeStep(7);
     }
   } catch (e) {
     document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight({ error: e.message }) + '</pre>';
-    failStep(6);
+    failStep(7);
   }
   btnRestore('queryBtn', 'Execute');
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  if (str === undefined || str === null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: Revocation
+// Step 8: Revocation
 // ---------------------------------------------------------------------------
 async function doRevoke() {
   btnLoading('revokeBtn', 'Revoking...');
@@ -1908,6 +2536,7 @@ async function doRevoke() {
     const { status, data } = await api('POST', '/api/revoke', {
       session_id: state.sessionId,
       delegation_token: state.delegationToken,
+      lease_id: state.vaultLeaseId,
     });
     setTiming('revokeTiming', data.elapsed_ms || 0, true);
 
@@ -1943,7 +2572,7 @@ async function verifyRevoked() {
 
     if (data.revoked) {
       document.getElementById('verifyResponseCard').className = 'card success';
-      completeStep(7);
+      completeStep(8);
     } else {
       document.getElementById('verifyResponseCard').className = 'card error';
     }
@@ -1955,7 +2584,145 @@ async function verifyRevoked() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 8: Audit
+// Step 9: Audit — Helpers
+// ---------------------------------------------------------------------------
+function formatTimestamp(ts) {
+  if (!ts) return 'N/A';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts);
+    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) +
+      '.' + String(d.getMilliseconds()).padStart(3, '0');
+  } catch (e) { return String(ts); }
+}
+
+function classifyAuditEvent(entry) {
+  const type = (entry.action || entry.event_type || entry.type || '').toLowerCase();
+  if (type.includes('revoc') || type.includes('revoke')) return 'revocation';
+  if (type.includes('denied') || type.includes('reject') || entry.result === 'denied') return 'denied';
+  return 'exchange';
+}
+
+function renderAuditSummary(elementId, entries, sessionId) {
+  const el = document.getElementById(elementId);
+  if (!el || !entries) return;
+
+  const sessionEntries = sessionId ? entries.filter(e => e.session_id === sessionId) : entries;
+  const exchanges = sessionEntries.filter(e => classifyAuditEvent(e) === 'exchange');
+  const revocations = sessionEntries.filter(e => classifyAuditEvent(e) === 'revocation');
+
+  let html = '';
+  if (sessionId) {
+    html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">Session: <span style="font-family:var(--mono);color:var(--purple);">' + escapeHtml(sessionId) + '</span></div>';
+  }
+
+  // Flow badges
+  html += '<div class="audit-summary-flow">';
+  if (exchanges.length > 0) {
+    const ex = exchanges[0];
+    const human = ex.human || ex.subject || '?';
+    const agent = ex.agent || ex.actor || '?';
+    const scope = ex.scope || '?';
+    html += '<span class="audit-summary-badge exchange">Token Exchange</span>';
+    html += '<span class="audit-summary-arrow">&rarr;</span>';
+    html += '<span class="audit-summary-badge" style="border-color:var(--green);color:var(--green);">' + escapeHtml(scope) + '</span>';
+  }
+  if (revocations.length > 0) {
+    html += '<span class="audit-summary-arrow">&rarr;</span>';
+    html += '<span class="audit-summary-badge revocation">Revoked</span>';
+  }
+  html += '</div>';
+
+  // Summary sentence
+  if (exchanges.length > 0) {
+    const ex = exchanges[0];
+    const human = ex.human || ex.subject || 'Unknown';
+    const agent = (ex.agent || ex.actor || 'unknown').split('/').pop();
+    const scope = ex.scope || 'unknown';
+    html += '<div style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.5;">';
+    html += '<strong style="color:var(--accent);">' + escapeHtml(human) + '</strong> delegated ';
+    html += '<strong style="color:var(--green);">' + escapeHtml(scope) + '</strong> access to ';
+    html += '<strong style="color:var(--cyan);">' + escapeHtml(agent) + '</strong>';
+    if (revocations.length > 0) {
+      html += ', then <strong style="color:var(--red);">revoked</strong> the credentials';
+    }
+    html += '.</div>';
+  }
+
+  html += '<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">' + entries.length + ' total audit event(s), ' + sessionEntries.length + ' in current session</div>';
+  el.innerHTML = html;
+}
+
+function renderAuditTimeline(containerId, entries, currentSessionId) {
+  const el = document.getElementById(containerId);
+  if (!el || !entries || entries.length === 0) {
+    if (el) el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">No audit entries found.</div>';
+    return;
+  }
+
+  // Sort chronologically (oldest first)
+  const sorted = [...entries].sort((a, b) => {
+    const ta = new Date(a.timestamp || 0).getTime();
+    const tb = new Date(b.timestamp || 0).getTime();
+    return ta - tb;
+  });
+
+  let html = '<div class="audit-timeline">';
+  for (const entry of sorted) {
+    const evtClass = classifyAuditEvent(entry);
+    const isCurrent = currentSessionId && entry.session_id === currentSessionId;
+    const resultOk = entry.result !== 'denied' && !entry.error;
+
+    html += '<div class="audit-event ' + evtClass + (isCurrent ? ' current-session' : '') + '">';
+    html += '<div class="audit-event-line"><div class="audit-event-dot"></div><div class="audit-event-connector"></div></div>';
+    html += '<div class="audit-event-body">';
+
+    // Header: type badge + result badge + timestamp + session tag
+    html += '<div class="audit-event-header">';
+    html += '<span class="audit-event-badge ' + evtClass + '">' + escapeHtml(entry.action || entry.event_type || entry.type || 'event') + '</span>';
+    if (resultOk) {
+      html += '<span class="audit-event-badge success">SUCCESS</span>';
+    } else if (entry.result === 'denied') {
+      html += '<span class="audit-event-badge denied">DENIED</span>';
+    }
+    if (isCurrent) {
+      html += '<span class="audit-event-badge session">This Session</span>';
+    }
+    html += '<span style="font-size:11px;color:var(--text-dim);font-family:var(--mono);">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>';
+    html += '</div>';
+
+    // Detail lines
+    html += '<div class="audit-event-detail">';
+    const human = entry.human || entry.subject;
+    const agent = entry.agent || entry.actor;
+    if (human || agent) {
+      html += '<div><strong>Who:</strong> ' + escapeHtml(human || '?') + ' via ' + escapeHtml(agent || '?') + '</div>';
+    }
+    if (entry.scope) {
+      html += '<div><strong>Scope:</strong> ' + escapeHtml(entry.scope) + '</div>';
+    }
+    if (entry.session_id) {
+      html += '<div><strong>Session:</strong> <span style="font-family:var(--mono);font-size:11px;">' + escapeHtml(entry.session_id) + '</span></div>';
+    }
+    if (entry.reason) {
+      html += '<div><strong>Reason:</strong> <span style="color:var(--orange);">' + escapeHtml(entry.reason) + '</span></div>';
+    }
+    if (entry.vault_lease_id) {
+      html += '<div><strong>Vault Lease:</strong> <span style="font-family:var(--mono);font-size:11px;">' + escapeHtml(entry.vault_lease_id) + '</span></div>';
+    }
+    if (entry.chain_depth !== undefined) {
+      html += '<div><strong>Chain Depth:</strong> ' + escapeHtml(String(entry.chain_depth)) + '</div>';
+    }
+    html += '</div>';
+
+    html += '</div></div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Step 9: Audit
 // ---------------------------------------------------------------------------
 async function fetchAudit() {
   btnLoading('auditBtn', 'Fetching...');
@@ -1965,17 +2732,25 @@ async function fetchAudit() {
     setTiming('auditTiming', data.elapsed_ms || 0, true);
 
     const entries = data.entries || data;
-    document.getElementById('auditCard').style.display = '';
-    showJson('auditResponse', entries);
-    // Annotate the first entry if it exists
-    if (Array.isArray(entries) && entries.length > 0) {
-      renderAnnotatedResponse('auditAnnotations', entries[0], ANNOTATIONS.audit);
-    }
     state.auditEntries = entries;
-    completeStep(8);
+
+    // A) Session summary
+    document.getElementById('auditSummaryCard').style.display = '';
+    renderAuditSummary('auditSummaryContent', entries, state.sessionId);
+
+    // B) Timeline
+    document.getElementById('auditTimelineCard').style.display = '';
+    renderAuditTimeline('auditTimelineContent', entries, state.sessionId);
+
+    // C) Raw JSON (collapsible)
+    document.getElementById('auditRawDetails').style.display = '';
+    showJson('auditResponse', entries);
+
+    completeStep(9);
   } catch (e) {
+    document.getElementById('auditRawDetails').style.display = '';
     showJson('auditResponse', { error: e.message });
-    failStep(8);
+    failStep(9);
   }
   btnRestore('auditBtn', 'Fetch Audit Log');
 }

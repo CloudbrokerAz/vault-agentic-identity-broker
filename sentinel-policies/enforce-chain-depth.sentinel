@@ -1,0 +1,38 @@
+# enforce-chain-depth.sentinel
+#
+# Endpoint Governing Policy: Enforce Delegation Chain Depth
+#
+# Prevents excessively deep delegation chains. The chain_depth metadata field
+# tracks how many times a delegation token has been extended (human -> agent
+# -> sub-agent -> ...). Maximum allowed depth is 3.
+#
+# Applied to: database/creds/*
+# Enforcement: hard-mandatory
+
+max_chain_depth = 3
+
+validate_chain_depth = func() {
+    meta = identity.entity.metadata
+
+    # chain_depth must be present
+    if "chain_depth" not in keys(meta) {
+        print("DENIED: missing 'chain_depth' in entity metadata")
+        return false
+    }
+
+    # Metadata values are strings; convert to integer for comparison
+    depth = int(meta["chain_depth"])
+
+    if depth > max_chain_depth {
+        print("DENIED: chain_depth", depth, "exceeds maximum of", max_chain_depth)
+        return false
+    }
+
+    return true
+}
+
+chain_depth_valid = validate_chain_depth()
+
+main = rule {
+    chain_depth_valid
+}
