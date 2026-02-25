@@ -70,23 +70,10 @@
                   |                    |
                   v                    v
           +----------------+  +=====================+
-          |  SPIRE Server  |  |   AgentGateway      |
-          | (Trust Root)   |  | (Rust MCP/A2A Proxy)|
-          |   :8081        |  |   :9080             |
+          |  SPIRE Server  |  | Token Exchange      |
+          | (Trust Root)   |  | (Python, RFC 8693)  |
+          |   :8081        |  |                     |
           +----------------+  |                     |
-                              | - OIDC auth         |
-                              | - RBAC policies     |
-                              | - Rate limiting     |
-                              | - Observability     |
-                              +==========+==========+
-                                         |
-                               routes to |
-                                         v
-                              +=====================+
-                              | Token Exchange Svc  |
-                              | (Python, RFC 8693)  |
-                              |   :8090             |
-                              |                     |
                               | - subject_token     |
                               | - actor_token       |
                               | - SPIFFE JWKS verify|
@@ -146,12 +133,17 @@
                                           |    AI Agent /   |
                                           |    Sub-Agent    |
                                           +-----------------+
+
+  Note: AgentGateway (:9080 MCP/HTTP, :9090 host mode) is a
+  Rust MCP/A2A proxy with OIDC auth + RBAC. It sits in front
+  of upstream tool servers, NOT in the Token Exchange path.
+  Agents call Token Exchange directly at :8090.
 ```
 
 ## Identity Delegation Flow (Vault Enterprise Model)
 
 ```
- Human      Keycloak    Agent     SPIRE    AgentGW    TokenExchange    Vault     PostgreSQL  SPIRE OIDC
+ Human      Keycloak    Agent     SPIRE    AgentGW    Token Exchange   Vault     PostgreSQL  SPIRE OIDC
    |            |          |        |         |             |            |           |          |
    |-(login)--->|          |        |         |             |            |           |          |
    |<--(JWT)----|          |        |         |             |            |           |          |
@@ -418,7 +410,8 @@
 |  | |   - Rate limiting (60 req/min per identity)                     || |
 |  | |   - Observability (JSON logging, metrics)                       || |
 |  | |                                                                  || |
-|  | |  Routes to: Token Exchange Service                              || |
+|  | |  Routes to: upstream MCP/A2A tool servers                        || |
+|  | |  Note: Agents call Token Exchange directly, not via AgentGateway || |
 |  | +----------------------------------------------------------------+| |
 |  +===================================================================+ |
 |                                                                         |
@@ -426,7 +419,7 @@
 |  | TOKEN EXCHANGE LAYER (Stateless JWT Minter, RFC 8693)            | |
 |  |                                                                    | |
 |  | +----------------------------------------------------------------+| |
-|  | | Token Exchange Service :8090 (Python)                           || |
+|  | | Token Exchange :8090 (Python)                                   || |
 |  | |                                                                  || |
 |  | |  POST /v1/token/exchange  -- RFC 8693 Token Exchange            || |
 |  | |  POST /v1/delegate        -- Legacy delegation API              || |
@@ -573,6 +566,57 @@
   +---------------------------------------------+-----------+
 ```
 
+## Sentinel Failure Modes
+
+When a Vault Sentinel EGP denies a credential request, Vault returns an HTTP 403 with a Sentinel policy violation error. The agent receives no database credentials and the request is logged in the Vault audit log.
+
+```
+  Sentinel Denial Response:
+
+  HTTP/1.1 403 Forbidden
+  Content-Type: application/json
+
+  {
+    "errors": [
+      "2 errors occurred:\n\t* egp standard policy \"enforce-scope\" evaluation
+       resulted in denial\n\t* egp standard policy \"enforce-may-act\" evaluation
+       resulted in denial\n\n"
+    ]
+  }
+
+  Each Sentinel policy that fails is listed individually.
+  Because all four policies use hard-mandatory enforcement,
+  a single failure is sufficient to deny the entire request.
+
+  Failure Scenarios:
+  +-----------------------------+----------------------------------------------+
+  | Policy                      | Failure Condition                            |
+  +-----------------------------+----------------------------------------------+
+  | require-delegation          | Entity metadata missing human_user,          |
+  |                             | agent_identity, or delegation_scope.         |
+  |                             | Occurs when agent uses a non-delegation      |
+  |                             | token to request DB credentials.             |
+  +-----------------------------+----------------------------------------------+
+  | enforce-scope               | Delegation scope does not match the          |
+  |                             | requested credential role. E.g., agent has   |
+  |                             | scope=readonly but requests readwrite creds. |
+  +-----------------------------+----------------------------------------------+
+  | enforce-chain-depth         | Delegation chain depth exceeds maximum (3).  |
+  |                             | Prevents unbounded sub-agent delegation.     |
+  +-----------------------------+----------------------------------------------+
+  | enforce-may-act             | Human's may_act claim does not authorize     |
+  |                             | the requesting agent's SPIFFE ID. Agent is   |
+  |                             | not in the user's consent list.              |
+  +-----------------------------+----------------------------------------------+
+
+  On Vault OSS (non-Enterprise):
+  Sentinel EGPs are not available. Scope enforcement falls back to
+  JWT auth role bound_claims: each role (delegated-agent-readonly,
+  delegated-agent-readwrite) requires a matching scope claim in the
+  fused delegation JWT. This provides scope enforcement but not
+  chain-depth or may_act validation at the Vault layer.
+```
+
 ## Vault Credential Lifecycle
 
 ```
@@ -644,7 +688,7 @@
   Login 2: Fused Delegation JWT Auth (human + agent identity)
   +-------------------------------------------------------------------+
   | POST /v1/auth/jwt/login                                           |
-  |   role: "agent-readonly" or "agent-readwrite"                     |
+  |   role: "delegated-agent-readonly" or "delegated-agent-readwrite" |
   |   jwt: <fused delegation JWT from Token Exchange>                 |
   |                                                                   |
   | Result: Vault delegation token with scoped policies               |
@@ -673,13 +717,13 @@
 ## mTLS Transport Security
 
 ```
-  The Token Exchange Service optionally supports mutual TLS using
+  Token Exchange optionally supports mutual TLS using
   SPIFFE X.509-SVIDs from the SPIRE Workload API. This provides
   transport-layer identity verification on the critical path where
   identity tokens are exchanged.
 
   +-------------------------------------------------------------------+
-  |  AI Agent                         Token Exchange Service          |
+  |  AI Agent                         Token Exchange                  |
   |                                                                   |
   |  Connects via HTTPS              MTLS_ENABLED=true                |
   |  with client X.509-SVID          Server X.509-SVID:              |
@@ -799,7 +843,7 @@
   +-------+-------------+                          |
           |                                        |
   +-------v-------------+                          |
-  | Token Exchange Svc  |   (stateless JWT minter)  |
+  | Token Exchange      |   (stateless JWT minter)  |
   |  :8090              |                          |
   |  (optional mTLS)    |                          |
   +---------+-----------+                          |

@@ -34,7 +34,7 @@ Before we walk through the story, here's who's involved:
 | **SQL Executor** | A sub-agent that specializes in running SQL | A specialist the assistant delegates to |
 | **Keycloak** | The company's identity provider | The corporate login page |
 | **SPIRE** | The workload identity system | A passport office, but for software |
-| **Token Exchange Service** | The delegation JWT minter | A notary who verifies both parties and stamps a delegation letter |
+| **Token Exchange** | The delegation JWT minter | A notary who verifies both parties and stamps a delegation letter |
 | **Vault** | The secrets manager + policy enforcer | A bank vault that issues temporary keys and enforces the rules |
 | **PostgreSQL** | The database | The filing cabinet with the actual data |
 
@@ -167,7 +167,7 @@ The agent now has two things:
 1. **Alice's OIDC token** — proving a human authorized this action
 2. **Its own SPIFFE identity** — proving which agent is performing it
 
-It bundles both together and sends them to the **Token Exchange Service**, following [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693) (OAuth 2.0 Token Exchange):
+It bundles both together and sends them to **Token Exchange**, following [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693) (OAuth 2.0 Token Exchange):
 
 ```
 POST /v1/token/exchange
@@ -185,7 +185,7 @@ POST /v1/token/exchange
 
 In plain English: *"I am agent `query-agent`, acting on behalf of Alice, and I need `readonly` access to the database."*
 
-The Token Exchange Service validates both identities and mints a **fused delegation JWT**. Then the agent authenticates directly to Vault to get database credentials.
+Token Exchange validates both identities and mints a **fused delegation JWT**. Then the agent authenticates directly to Vault to get database credentials.
 
 ```
   AI Agent          Token Exchange       Keycloak       Vault       PostgreSQL
@@ -234,7 +234,7 @@ Let's look at each step.
 
 ### Step 3a: Is Alice's Token Legitimate?
 
-The Token Exchange Service calls Keycloak's **userinfo endpoint** with Alice's token. Keycloak either confirms the token is valid and returns Alice's claims, or rejects it. This catches expired tokens, revoked tokens, and forgeries.
+Token Exchange calls Keycloak's **userinfo endpoint** with Alice's token. Keycloak either confirms the token is valid and returns Alice's claims, or rejects it. This catches expired tokens, revoked tokens, and forgeries.
 
 ### Step 3b: Is This Agent Who It Claims to Be?
 
@@ -244,7 +244,7 @@ The service cryptographically verifies the agent's JWT-SVID against the SPIRE OI
 
 ### Step 3c: The Fused Delegation JWT
 
-With both identities validated, the Token Exchange Service mints a **fused delegation JWT** — a signed token that binds Alice's identity to the agent's identity with a nested `act` claim per RFC 8693 Section 4.1. This JWT is stateless — the Token Exchange Service has no Vault dependency and does not broker credentials.
+With both identities validated, Token Exchange mints a **fused delegation JWT** — a signed token that binds Alice's identity to the agent's identity with a nested `act` claim per RFC 8693 Section 4.1. This JWT is stateless — Token Exchange has no Vault dependency and does not broker credentials.
 
 ### Step 3d: The Agent Authenticates to Vault (Two-Login Pattern)
 
@@ -252,7 +252,7 @@ The agent now authenticates directly to Vault using two separate JWT auth logins
 
 1. **SPIFFE JWT auth** — The agent presents its SPIFFE JWT-SVID. Vault verifies it against SPIRE's JWKS and issues a workload token that identifies the agent.
 
-2. **Fused delegation JWT auth** — The agent presents the fused delegation JWT from Token Exchange. Vault verifies it and populates entity metadata from the JWT claims (human user, agent identity, delegation scope, chain depth, may_act).
+2. **Fused delegation JWT auth** — The agent presents the fused delegation JWT from Token Exchange, using one of the scope-based JWT auth roles: `delegated-agent-readonly` (requires `scope=readonly`) or `delegated-agent-readwrite` (requires `scope=readwrite`). Vault verifies the JWT, checks the `bound_claims` match, and populates entity metadata from the JWT claims (human user, agent identity, delegation scope, chain depth, may_act).
 
 ### Step 3e: Vault Enforces Policy and Issues Credentials
 
@@ -272,6 +272,8 @@ Before issuing credentials, Vault's **Sentinel Endpoint Governing Policies (EGPs
 | `enforce-may-act` | Did Alice authorize this agent? | `may_act` pattern matches agent's SPIFFE ID |
 
 If *any* of these policies fail, Vault returns a hard denial and no credentials are issued. This enforcement happens inside Vault itself — there is no external policy engine to bypass.
+
+> **Vault Enterprise vs OSS**: Sentinel EGPs are a Vault Enterprise feature. On **Vault OSS**, Sentinel is not available. Instead, scope enforcement relies on JWT auth role `bound_claims`: the `delegated-agent-readonly` role requires `scope=readonly` in the fused delegation JWT, and `delegated-agent-readwrite` requires `scope=readwrite`. This prevents scope mismatches at the auth layer, but chain-depth and may_act validation are not enforced at the Vault layer on OSS. The bootstrap script detects the Vault edition and skips Sentinel policy loading on OSS with a warning.
 
 Vault then creates a **brand new PostgreSQL user** specifically for this session:
 
@@ -304,7 +306,7 @@ Vault natively records **entity metadata** linking this credential to the delega
 
 ### Step 3f: The Delegation Token
 
-The fused delegation JWT minted by the Token Exchange Service is a JWT with a nested `act` (actor) claim defined by RFC 8693 Section 4.1:
+The fused delegation JWT minted by Token Exchange is a JWT with a nested `act` (actor) claim defined by RFC 8693 Section 4.1:
 
 ```json
 {
@@ -541,22 +543,24 @@ Here's the full architecture at a glance — four trust boundaries, each with it
 │   └──────────┘     └───────────────┘                                   │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  TRUST BOUNDARY 2: Proxy + Identity Broker                              │
+│  TRUST BOUNDARY 2: Identity Broker + Secrets + Proxy                    │
 │                                                                         │
 │   ┌──────────────────────────────────────────────────────────┐         │
-│   │  AgentGateway                                             │         │
-│   │  "Front door — authenticate, rate-limit, route"           │         │
-│   └─────────────────────────┬────────────────────────────────┘         │
-│                              │                                          │
-│   ┌─────────────────────────┴────────────────────────────────┐         │
-│   │  Token Exchange Service                                   │         │
+│   │  Token Exchange                                           │         │
 │   │  "Validate both identities, mint fused delegation JWT"    │         │
+│   │  (Agents call Token Exchange directly, not via gateway)   │         │
 │   └──────────────────────────────────────────────────────────┘         │
 │                                                                         │
 │   ┌──────────────────────────────────────────────────────────┐         │
-│   │  HashiCorp Vault (Enterprise)                             │         │
-│   │  "Authenticate agents, enforce Sentinel policy,           │         │
-│   │   mint unique, time-limited database credentials"         │         │
+│   │  HashiCorp Vault (Enterprise or OSS)                      │         │
+│   │  "Authenticate agents, enforce Sentinel policy (Ent.) or  │         │
+│   │   JWT role bound_claims (OSS), issue dynamic credentials" │         │
+│   └──────────────────────────────────────────────────────────┘         │
+│                                                                         │
+│   ┌──────────────────────────────────────────────────────────┐         │
+│   │  AgentGateway (Rust MCP/A2A proxy)                        │         │
+│   │  "OIDC auth, RBAC, rate limiting for MCP/A2A tool access" │         │
+│   │  (Routes to upstream tool servers, not Token Exchange)     │         │
 │   └──────────────────────────────────────────────────────────┘         │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -590,7 +594,7 @@ Here's the full architecture at a glance — four trust boundaries, each with it
 | Credentials live forever until rotated | Credentials auto-expire in 5 minutes |
 | Agent has a service account with broad access | Agent gets exactly the permissions Alice's groups allow |
 | "Who ran this query?" — Nobody knows | Every query traces back to a specific human through a cryptographic chain |
-| Agent can do anything once authenticated | Vault Sentinel EGPs evaluate every credential request in real time |
+| Agent can do anything once authenticated | Vault Sentinel EGPs (Enterprise) or JWT role bound_claims (OSS) enforce scope on every credential request |
 | Sub-agent gets parent's full credentials | Sub-agent can only narrow scope, never widen it |
 | Audit = application logs (maybe) | 6-layer correlated audit trail across every component |
 | Agent stores human's password | Agent never sees human's password (Device Flow) |
