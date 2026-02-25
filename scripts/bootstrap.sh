@@ -89,6 +89,19 @@ for i in $(seq 1 20); do
     sleep 2
 done
 
+# ─── Generate persistent Token Exchange signing key (if not present) ────
+# The Token Exchange signs fused delegation JWTs with RS256. A persistent
+# key ensures tokens remain verifiable across container restarts.
+SIGNING_KEY_PATH="${PROJECT_DIR}/.token-exchange-signing-key.pem"
+if [ ! -f "${SIGNING_KEY_PATH}" ]; then
+    log_info "Generating persistent RSA signing key for Token Exchange..."
+    openssl genrsa -out "${SIGNING_KEY_PATH}" 2048 2>/dev/null
+    chmod 600 "${SIGNING_KEY_PATH}"
+    log_ok "Signing key generated: ${SIGNING_KEY_PATH}"
+else
+    log_ok "Token Exchange signing key already exists (reusing)"
+fi
+
 # ─── Step 2: Initialize and Unseal Vault ────────────────────────────────
 
 log_step 2 "Initializing and unsealing Vault"

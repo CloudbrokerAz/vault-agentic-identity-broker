@@ -19,8 +19,9 @@ COMPOSE="docker compose -f ${COMPOSE_FILE} --profile spire"
 echo "Stopping and removing all containers..."
 ${COMPOSE} down -v --remove-orphans 2>/dev/null || true
 
-echo "Removing generated credential files..."
+echo "Removing generated credential and key files..."
 rm -f "${PROJECT_DIR}/.vault-unseal-key"
 rm -f "${PROJECT_DIR}/.vault-root-token"
+rm -f "${PROJECT_DIR}/.token-exchange-signing-key.pem"
 
 echo "Cleanup complete."

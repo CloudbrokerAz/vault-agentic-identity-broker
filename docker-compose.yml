@@ -234,6 +234,7 @@ services:
       KEYCLOAK_JWKS_URL: "http://keycloak:8080/realms/demo/protocol/openid-connect/certs"
       TRUST_DOMAIN: "demo.local"
       SPIRE_OIDC_URL: "http://spire-oidc:8082"
+      SIGNING_KEY_PATH: "/run/secrets/signing-key.pem"
       MAX_DELEGATION_DEPTH: "3"
       DEFAULT_TTL: "300"
       MAX_TTL: "1800"
@@ -241,6 +242,7 @@ services:
       SPIRE_AGENT_SOCKET: "/tmp/spire-agent/public/api.sock"
     volumes:
       - spire-agent-socket:/tmp/spire-agent/public:ro
+      - ./.token-exchange-signing-key.pem:/run/secrets/signing-key.pem:ro
     ports:
       - "8090:8090"
     depends_on:
