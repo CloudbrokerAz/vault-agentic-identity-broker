@@ -34,9 +34,8 @@ Before we walk through the story, here's who's involved:
 | **SQL Executor** | A sub-agent that specializes in running SQL | A specialist the assistant delegates to |
 | **Keycloak** | The company's identity provider | The corporate login page |
 | **SPIRE** | The workload identity system | A passport office, but for software |
-| **Token Exchange Service** | The delegation broker | A notary who verifies both parties and issues a delegation letter |
-| **OPA** | The policy engine | The company's rule book |
-| **Vault** | The secrets manager | A bank vault that issues temporary keys |
+| **Token Exchange Service** | The delegation JWT minter | A notary who verifies both parties and stamps a delegation letter |
+| **Vault** | The secrets manager + policy enforcer | A bank vault that issues temporary keys and enforces the rules |
 | **PostgreSQL** | The database | The filing cabinet with the actual data |
 
 ---
@@ -186,42 +185,52 @@ POST /v1/token/exchange
 
 In plain English: *"I am agent `query-agent`, acting on behalf of Alice, and I need `readonly` access to the database."*
 
-This is where the system does its heaviest lifting. The Token Exchange Service orchestrates a multi-step validation before anything is granted.
+The Token Exchange Service validates both identities and mints a **fused delegation JWT**. Then the agent authenticates directly to Vault to get database credentials.
 
 ```
-  AI Agent          Token Exchange       Keycloak       OPA        Vault       PostgreSQL
-     │                    │                  │           │           │              │
-     │  RFC 8693 request  │                  │           │           │              │
-     │───────────────────>│                  │           │           │              │
-     │                    │                  │           │           │              │
-     │                    │  Validate Alice  │           │           │              │
-     │                    │─────────────────>│           │           │              │
-     │                    │  claims verified │           │           │              │
-     │                    │<─────────────────│           │           │              │
-     │                    │                  │           │           │              │
-     │                    │  Validate agent  │           │           │              │
-     │                    │  SPIFFE trust    │           │           │              │
-     │                    │  domain check    │           │           │              │
-     │                    │                  │           │           │              │
-     │                    │  Check policy    │           │           │              │
-     │                    │─────────────────────────────>│           │              │
-     │                    │  allow + reason  │           │           │              │
-     │                    │<─────────────────────────────│           │              │
-     │                    │                  │           │           │              │
-     │                    │  Get credentials │           │           │              │
-     │                    │─────────────────────────────────────────>│              │
-     │                    │  dynamic creds   │           │           │              │
-     │                    │  (5-min TTL)     │           │           │              │
-     │                    │<─────────────────────────────────────────│              │
-     │                    │                  │           │           │  CREATE ROLE  │
-     │                    │                  │           │           │─────────────>│
-     │                    │                  │           │           │              │
-     │  delegation token  │                  │           │           │              │
-     │  + DB credentials  │                  │           │           │              │
-     │<───────────────────│                  │           │           │              │
+  AI Agent          Token Exchange       Keycloak       Vault       PostgreSQL
+     │                    │                  │           │              │
+     │  RFC 8693 request  │                  │           │              │
+     │───────────────────>│                  │           │              │
+     │                    │                  │           │              │
+     │                    │  Validate Alice  │           │              │
+     │                    │─────────────────>│           │              │
+     │                    │  claims verified │           │              │
+     │                    │<─────────────────│           │              │
+     │                    │                  │           │              │
+     │                    │  Validate agent  │           │              │
+     │                    │  SPIFFE trust    │           │              │
+     │                    │  domain check    │           │              │
+     │                    │  (SPIRE OIDC     │           │              │
+     │                    │   JWKS verify)   │           │              │
+     │                    │                  │           │              │
+     │                    │  Mint fused JWT  │           │              │
+     │                    │  with act{} claim│           │              │
+     │                    │                  │           │              │
+     │  fused deleg. JWT  │                  │           │              │
+     │<───────────────────│                  │           │              │
+     │                    │                  │           │              │
+     │  Two-login Vault auth:               │           │              │
+     │  1) SPIFFE JWT auth → workload token │           │              │
+     │──────────────────────────────────────────────────>│              │
+     │<──────────────────────────────────────────────────│              │
+     │  2) Fused JWT auth → delegation token│           │              │
+     │──────────────────────────────────────────────────>│              │
+     │<──────────────────────────────────────────────────│              │
+     │                    │                  │           │              │
+     │  Request DB credentials              │           │              │
+     │  GET /v1/database/creds/readonly     │           │              │
+     │──────────────────────────────────────────────────>│              │
+     │                    │                  │  Sentinel │              │
+     │                    │                  │  EGPs     │              │
+     │                    │                  │  enforce  │              │
+     │                    │                  │  policy   │              │
+     │  dynamic creds (5-min TTL)           │           │              │
+     │<──────────────────────────────────────────────────│  CREATE ROLE │
+     │                    │                  │           │─────────────>│
 ```
 
-Let's look at each validation step.
+Let's look at each step.
 
 ### Step 3a: Is Alice's Token Legitimate?
 
@@ -229,67 +238,42 @@ The Token Exchange Service calls Keycloak's **userinfo endpoint** with Alice's t
 
 ### Step 3b: Is This Agent Who It Claims to Be?
 
-The service verifies the agent's JWT-SVID:
-- Is it signed by a trusted SPIRE authority?
+The service cryptographically verifies the agent's JWT-SVID against the SPIRE OIDC JWKS endpoint:
+- Is the signature valid (RS256, verified against SPIRE's published keys)?
 - Does the SPIFFE ID (`spiffe://demo.local/agent/query-agent`) belong to the `demo.local` trust domain?
-- Is this agent registered in the system's allow-list?
 
-### Step 3c: Does Policy Allow This Delegation?
+### Step 3c: The Fused Delegation JWT
 
-This is the question that goes to **OPA** (Open Policy Agent). The Token Exchange Service sends OPA a structured request:
+With both identities validated, the Token Exchange Service mints a **fused delegation JWT** — a signed token that binds Alice's identity to the agent's identity with a nested `act` claim per RFC 8693 Section 4.1. This JWT is stateless — the Token Exchange Service has no Vault dependency and does not broker credentials.
 
-```json
-{
-  "input": {
-    "human_token": {
-      "sub": "alice@acme.com",
-      "groups": ["data-analysts", "trading-team"],
-      "may_act": { "sub": "agent:query-agent-v2" },
-      "exp": 1740268800,
-      "iss": "https://login.acme.com/realms/demo"
-    },
-    "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-    "requested_scope": "readonly",
-    "current_time": 1740265200
-  }
-}
-```
+### Step 3d: The Agent Authenticates to Vault (Two-Login Pattern)
 
-OPA evaluates this against the company's policy rules, written in a language called Rego. The rules answer four questions:
+The agent now authenticates directly to Vault using two separate JWT auth logins:
 
-| Question | Rule | Result |
-|---|---|---|
-| Is Alice's token valid and unexpired? | `valid_human_token` | Her issuer is trusted, token isn't expired |
-| Is this a known, registered agent? | `valid_agent_identity` | `query-agent` is in the registered agents list |
-| Did Alice authorize delegation? | `authorized_delegation` | Her `may_act` claim permits it |
-| Can Alice's groups grant `readonly`? | `scope_permitted` | `data-analysts` group has `readonly` permission |
+1. **SPIFFE JWT auth** — The agent presents its SPIFFE JWT-SVID. Vault verifies it against SPIRE's JWKS and issues a workload token that identifies the agent.
 
-OPA responds:
+2. **Fused delegation JWT auth** — The agent presents the fused delegation JWT from Token Exchange. Vault verifies it and populates entity metadata from the JWT claims (human user, agent identity, delegation scope, chain depth, may_act).
 
-```json
-{
-  "allow": true,
-  "decision": {
-    "allowed": true,
-    "human": "alice@acme.com",
-    "agent": "spiffe://demo.local/agent/query-agent",
-    "scope": "readonly",
-    "reason": "allowed"
-  }
-}
-```
+### Step 3e: Vault Enforces Policy and Issues Credentials
 
-If *any* of these checks fail — unknown agent, insufficient group permissions, missing `may_act` claim, expired token — OPA returns `deny` and the entire flow stops. No credentials are issued.
-
-### Step 3d: Vault Issues Temporary Credentials
-
-With policy approval in hand, the Token Exchange Service requests **dynamic database credentials** from HashiCorp Vault:
+The agent requests database credentials using its Vault delegation token:
 
 ```
 GET /v1/database/creds/ai-agent-readonly
 ```
 
-Vault does something remarkable here. It doesn't hand out a shared password. Instead, it creates a **brand new PostgreSQL user** specifically for this session:
+Before issuing credentials, Vault's **Sentinel Endpoint Governing Policies (EGPs)** evaluate four hard-mandatory rules:
+
+| Policy | Question | Result |
+|---|---|---|
+| `require-delegation` | Does delegation metadata exist? | human_user, agent_identity, delegation_scope all present |
+| `enforce-scope` | Does the scope match the requested role? | `readonly` scope matches `readonly` credential role |
+| `enforce-chain-depth` | Is the chain within limits? | depth 0 (human -> agent) is within max of 3 |
+| `enforce-may-act` | Did Alice authorize this agent? | `may_act` pattern matches agent's SPIFFE ID |
+
+If *any* of these policies fail, Vault returns a hard denial and no credentials are issued. This enforcement happens inside Vault itself — there is no external policy engine to bypass.
+
+Vault then creates a **brand new PostgreSQL user** specifically for this session:
 
 ```sql
 CREATE ROLE "v-token-readonly-3ee8b521"
@@ -307,20 +291,20 @@ Notice what this achieves:
 - **Time-limited** — the role expires in 5 minutes, even if nobody revokes it
 - **Traceable** — any query from `v-token-readonly-3ee8b521` can be tied back to this specific delegation by Alice to this specific agent
 
-Vault also records **entity metadata** linking this credential to the delegation:
+Vault natively records **entity metadata** linking this credential to the delegation — both the human and the agent identity are visible in a single audit log entry:
 
 ```json
 {
-  "delegating_human": "alice@acme.com",
+  "human_user": "alice@acme.com",
   "agent_identity": "spiffe://demo.local/agent/query-agent",
-  "scope": "readonly",
-  "session_id": "sess-3ee8b521a1b2c3d4"
+  "delegation_scope": "readonly",
+  "chain_depth": "0"
 }
 ```
 
-### Step 3e: The Delegation Token
+### Step 3f: The Delegation Token
 
-Finally, the Token Exchange Service mints a **delegation token** — a JWT with a nested `act` (actor) claim defined by RFC 8693 Section 4.1:
+The fused delegation JWT minted by the Token Exchange Service is a JWT with a nested `act` (actor) claim defined by RFC 8693 Section 4.1:
 
 ```json
 {
@@ -350,7 +334,7 @@ This token is the **receipt** for the delegation. Anyone who inspects it can ans
 
 ## Phase 4: The Agent Queries the Database
 
-The agent receives the delegation token and the temporary database credentials. It connects to PostgreSQL using the Vault-generated username and password, and executes Alice's query:
+The agent now has Vault-issued dynamic database credentials. It connects to PostgreSQL using the Vault-generated username and password, and executes Alice's query:
 
 ```sql
 SELECT customer_name, product, quantity, unit_price,
@@ -373,7 +357,7 @@ Alice sees the results:
 (3 rows)
 ```
 
-From Alice's perspective, she asked a question and got an answer. She didn't know — and didn't need to know — about SPIFFE, token exchange, OPA policies, or Vault leases. That's the point.
+From Alice's perspective, she asked a question and got an answer. She didn't know — and didn't need to know — about SPIFFE, token exchange, Vault Sentinel policies, or lease management. That's the point.
 
 ---
 
@@ -384,42 +368,41 @@ Sometimes an agent needs help. The query agent might delegate the actual SQL exe
 This is where delegation chains come in. The query agent doesn't hand the sub-agent Alice's original token. Instead, it performs *another* RFC 8693 token exchange, using its own delegation token as the `subject_token`:
 
 ```
-  Query Agent           SQL Executor          Token Exchange        OPA         Vault
-      │                      │                      │                │            │
-      │  "Run this SQL"      │                      │                │            │
-      │─────────────────────>│                      │                │            │
-      │                      │                      │                │            │
-      │                      │  RFC 8693 Exchange    │                │            │
-      │                      │  subject = parent's   │                │            │
-      │                      │    delegation token   │                │            │
-      │                      │  actor = sub-agent's  │                │            │
-      │                      │    SPIFFE SVID        │                │            │
-      │                      │─────────────────────>│                │            │
-      │                      │                      │                │            │
-      │                      │                      │  Check depth   │            │
-      │                      │                      │  (1 < max 3)   │            │
-      │                      │                      │                │            │
-      │                      │                      │  Check scope   │            │
-      │                      │                      │  narrowing     │            │
-      │                      │                      │────────────────>│            │
-      │                      │                      │  allow          │            │
-      │                      │                      │<────────────────│            │
-      │                      │                      │                │            │
-      │                      │                      │  New creds     │            │
-      │                      │                      │───────────────────────────>│
-      │                      │                      │<───────────────────────────│
-      │                      │                      │                │            │
-      │                      │  sub-delegation token │                │            │
-      │                      │  + own DB credentials │                │            │
-      │                      │<─────────────────────│                │            │
-      │                      │                      │                │            │
-      │  query results       │                      │                │            │
-      │<─────────────────────│                      │                │            │
+  Query Agent           SQL Executor          Token Exchange        Vault
+      │                      │                      │                │
+      │  "Run this SQL"      │                      │                │
+      │─────────────────────>│                      │                │
+      │                      │                      │                │
+      │                      │  RFC 8693 Exchange    │                │
+      │                      │  subject = parent's   │                │
+      │                      │    delegation token   │                │
+      │                      │  actor = sub-agent's  │                │
+      │                      │    SPIFFE SVID        │                │
+      │                      │─────────────────────>│                │
+      │                      │                      │                │
+      │                      │                      │  Validate &    │
+      │                      │                      │  mint fused    │
+      │                      │                      │  sub-delegation│
+      │                      │                      │  JWT           │
+      │                      │                      │                │
+      │                      │  sub-delegation JWT   │                │
+      │                      │<─────────────────────│                │
+      │                      │                      │                │
+      │                      │  Two-login Vault auth │                │
+      │                      │  + request DB creds   │                │
+      │                      │  (Sentinel EGPs       │                │
+      │                      │   enforce policy)     │                │
+      │                      │──────────────────────────────────────>│
+      │                      │  DB credentials       │                │
+      │                      │<──────────────────────────────────────│
+      │                      │                      │                │
+      │  query results       │                      │                │
+      │<─────────────────────│                      │                │
 ```
 
 ### How Policy Prevents Abuse
 
-OPA enforces two critical rules during chain extension:
+Vault Sentinel EGPs enforce two critical rules during chain extension:
 
 **1. Scope Narrowing** — A sub-agent can never gain *more* access than its parent. If the query agent has `readonly`, the sub-agent can request `readonly` or something narrower (like `db:read`), but never `readwrite`. The scope hierarchy is explicit:
 
@@ -472,11 +455,11 @@ FATAL: role "v-token-readonly-3ee8b521" does not exist
 
 If the agent (or anyone who intercepted the credentials) tries to use them after expiry, they get nothing. There's no password to rotate, no key to revoke manually, no "forgot to clean up" scenario. The credentials simply cease to exist.
 
-For sensitive operations, the system also supports **immediate revocation** — the agent (or an administrator) can call:
+For sensitive operations, the system also supports **immediate revocation** — the agent (or an administrator) can revoke the Vault lease directly:
 
 ```
-POST /v1/token/revoke
-{ "token": "<delegation_token>" }
+PUT /v1/sys/leases/revoke
+{ "lease_id": "<vault_lease_id>" }
 ```
 
 This revokes the Vault lease instantly, dropping the database role before the TTL expires.
@@ -485,7 +468,7 @@ This revokes the Vault lease instantly, dropping the database role before the TT
 
 ## Phase 7: The Audit Trail
 
-After the interaction is complete, every layer has logged what happened — independently, with correlated identifiers. An auditor can trace the full story across seven layers:
+After the interaction is complete, every layer has logged what happened — independently, with correlated identifiers. An auditor can trace the full story across six layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -507,21 +490,16 @@ After the interaction is complete, every layer has logged what happened — inde
 │  Exchange    │  Human: alice@acme.com                            │
 │              │  Agent: spiffe://demo.local/agent/query-agent    │
 │              │  Scope: readonly                                  │
-│              │  Decision: allowed                                │
-│              │                                                  │
-├──────────────┼──────────────────────────────────────────────────┤
-│              │                                                  │
-│  OPA         │  Policy: delegation.rego                          │
-│              │  Input: human=alice, agent=query-agent,           │
-│              │         scope=readonly                            │
-│              │  Result: allow=true, reason="allowed"            │
+│              │  Fused delegation JWT minted                      │
 │              │                                                  │
 ├──────────────┼──────────────────────────────────────────────────┤
 │              │                                                  │
 │  Vault       │  Lease: database/creds/ai-agent-readonly/hvs...  │
-│              │  Entity metadata:                                 │
-│              │    delegating_human = alice@acme.com              │
-│              │    session_id = sess-3ee8b521a1b2c3d4             │
+│  (audit +    │  Entity metadata:                                 │
+│   Sentinel)  │    human_user = alice@acme.com                    │
+│              │    agent_identity = spiffe://.../query-agent      │
+│              │    delegation_scope = readonly                    │
+│              │  Sentinel EGP results: all 4 policies passed     │
 │              │  TTL: 300s                                        │
 │              │                                                  │
 ├──────────────┼──────────────────────────────────────────────────┤
@@ -540,6 +518,8 @@ After the interaction is complete, every layer has logged what happened — inde
 └──────────────┴──────────────────────────────────────────────────┘
 ```
 
+Vault's audit log natively records both the human and agent identity on every credential request, plus Sentinel policy decisions. This eliminates the need for a separate policy engine log — the enforcement and audit happen in a single system.
+
 An auditor can start at any layer and trace forward or backward. The **session ID** (`sess-3ee8b521a1b2c3d4`) and the **Vault-generated username** (`v-token-readonly-3ee8b521`) serve as correlation keys across all systems.
 
 ---
@@ -552,16 +532,16 @@ Here's the full architecture at a glance — four trust boundaries, each with it
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  TRUST BOUNDARY 1: Identity Infrastructure                              │
 │                                                                         │
-│   ┌──────────┐     ┌───────────────┐     ┌──────────────────┐          │
-│   │ Keycloak │     │ SPIRE Server  │     │ OPA Policy Store │          │
-│   │          │     │               │     │                  │          │
-│   │ "Who is  │     │ "Who is this  │     │ "Is this         │          │
-│   │  the     │     │  software     │     │  delegation      │          │
-│   │  human?" │     │  workload?"   │     │  allowed?"       │          │
-│   └──────────┘     └───────────────┘     └──────────────────┘          │
+│   ┌──────────┐     ┌───────────────┐                                   │
+│   │ Keycloak │     │ SPIRE Server  │                                   │
+│   │          │     │               │                                   │
+│   │ "Who is  │     │ "Who is this  │                                   │
+│   │  the     │     │  software     │                                   │
+│   │  human?" │     │  workload?"   │                                   │
+│   └──────────┘     └───────────────┘                                   │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  TRUST BOUNDARY 2: Proxy + Credential Broker                            │
+│  TRUST BOUNDARY 2: Proxy + Identity Broker                              │
 │                                                                         │
 │   ┌──────────────────────────────────────────────────────────┐         │
 │   │  AgentGateway                                             │         │
@@ -570,13 +550,13 @@ Here's the full architecture at a glance — four trust boundaries, each with it
 │                              │                                          │
 │   ┌─────────────────────────┴────────────────────────────────┐         │
 │   │  Token Exchange Service                                   │         │
-│   │  "Validate both identities, check policy,                │         │
-│   │   build the delegation chain, broker credentials"         │         │
-│   └─────────────────────────┬────────────────────────────────┘         │
-│                              │                                          │
-│   ┌─────────────────────────┴────────────────────────────────┐         │
-│   │  HashiCorp Vault                                          │         │
-│   │  "Mint unique, time-limited database credentials"         │         │
+│   │  "Validate both identities, mint fused delegation JWT"    │         │
+│   └──────────────────────────────────────────────────────────┘         │
+│                                                                         │
+│   ┌──────────────────────────────────────────────────────────┐         │
+│   │  HashiCorp Vault (Enterprise)                             │         │
+│   │  "Authenticate agents, enforce Sentinel policy,           │         │
+│   │   mint unique, time-limited database credentials"         │         │
 │   └──────────────────────────────────────────────────────────┘         │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -610,9 +590,9 @@ Here's the full architecture at a glance — four trust boundaries, each with it
 | Credentials live forever until rotated | Credentials auto-expire in 5 minutes |
 | Agent has a service account with broad access | Agent gets exactly the permissions Alice's groups allow |
 | "Who ran this query?" — Nobody knows | Every query traces back to a specific human through a cryptographic chain |
-| Agent can do anything once authenticated | Policy engine evaluates every delegation request in real time |
+| Agent can do anything once authenticated | Vault Sentinel EGPs evaluate every credential request in real time |
 | Sub-agent gets parent's full credentials | Sub-agent can only narrow scope, never widen it |
-| Audit = application logs (maybe) | 7-layer correlated audit trail across every component |
+| Audit = application logs (maybe) | 6-layer correlated audit trail across every component |
 | Agent stores human's password | Agent never sees human's password (Device Flow) |
 
 ---
@@ -630,7 +610,7 @@ docker compose up -d
 ./scripts/demo.sh
 ```
 
-The demo walks through every phase described above with a real Keycloak login, real SPIRE identities, real OPA policy evaluation, real Vault dynamic credentials, and a real PostgreSQL query — all running locally in containers.
+The demo walks through every phase described above with a real Keycloak login, real SPIRE identities, real Vault Sentinel policy enforcement, real Vault dynamic credentials, and a real PostgreSQL query — all running locally in containers.
 
 ---
 

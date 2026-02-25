@@ -8,9 +8,9 @@ The repo genuinely implements the core flow described in the original idea:
 - SPIFFE/SPIRE — Full server, agent, and OIDC discovery provider with trust domain demo.local
 - Keycloak as IdP — OIDC, Device Auth Flow (RFC 8628), may_act claim, groups
 - Vault dynamic credentials — 5-minute TTL PostgreSQL roles, auto-revocation, entity metadata
-- OPA policy engine — 208-line Rego policy with delegation chain validation, scope narrowing, depth limits
+- Vault Sentinel EGPs — four hard-mandatory policies for delegation enforcement (replacing the previous OPA Rego policies)
 - Sub-agent delegation chains — Working scope narrowing with configurable max depth
-- 7-layer audit trail — Correlation from Keycloak through to PostgreSQL pgaudit
+- 6-layer audit trail — Correlation from Keycloak through to PostgreSQL pgaudit (OPA layer removed; Vault Sentinel EGPs consolidate policy+audit)
 
 So at the demo/PoC level described in Phase 1 of the original idea, the repo delivers. The question is whether the architecture holds up under scrutiny.
 
@@ -67,11 +67,11 @@ The original idea states:
 
 "Implicit trust based on network — eliminated by mandatory SPIFFE mTLS"
 
-The implementation uses plain HTTP everywhere within the Docker network. Keycloak, Vault, OPA, Token Exchange, PostgreSQL — all communicate unencrypted. The SPIFFE
+The implementation uses plain HTTP everywhere within the Docker network. Keycloak, Vault, Token Exchange, PostgreSQL — all communicate unencrypted. The SPIFFE
 X.509-SVIDs that enable mTLS are never used for service-to-service communication.
 
 In a real zero-trust architecture, every hop (Agent → Token Exchange → Vault → PostgreSQL) would use mTLS with SPIFFE X.509-SVIDs, so that network position grants zero
-implicit trust. Without this, any container on the Docker network can call Vault, OPA, or the Token Exchange service directly.
+implicit trust. Without this, any container on the Docker network can call Vault or the Token Exchange service directly.
 
 4. The may_act claim is hardcoded — no real delegation consent
 
@@ -105,11 +105,9 @@ short-lived nor scoped. A compromise of this single token (or the Token Exchange
 
 Two critical services fail open in demo mode:
 
-- OPA unavailable → {"allowed": True} (bypass all policy)
 - Keycloak unavailable → parse token unverified (bypass authentication)
 
-These are documented as "demo mode" but the defaults are dangerous — a transient OPA or Keycloak outage silently disables the entire security model. In a zero-trust
-architecture, unavailability of the policy engine or identity provider must be a hard deny.
+Note: OPA has been replaced by Vault Sentinel EGPs, which are hard-mandatory and cannot be bypassed. However, the Token Exchange Service's Keycloak validation failure mode still needs attention. In a zero-trust architecture, unavailability of the identity provider must be a hard deny.
 
 ---
 
@@ -130,14 +128,14 @@ The NIST NCCoE concept paper specifically names six standards for their planned 
 ├───────────────────────────────────────┼─────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
 │ MCP (Model Context Protocol) │ AgentGateway configured but not wired into demo │ Dead code in the architecture │
 ├───────────────────────────────────────┼─────────────────────────────────────────────────────┼────────────────────────────────────────────────┤
-│ NGAC (Next Generation Access Control) │ Absent — OPA/Rego used instead │ Different access control model │
+│ NGAC (Next Generation Access Control) │ Absent — Vault Sentinel EGPs used instead │ Different access control model │
 └───────────────────────────────────────┴─────────────────────────────────────────────────────┴────────────────────────────────────────────────┘
 
 The biggest gap is SCIM. NIST explicitly identifies the need to manage AI agents as identity objects with lifecycle operations (create, update, deprovision). This repo
-hardcodes agents in OPA's data.json. There's no way to:
+hardcodes agents in SPIRE registration entries. There's no way to:
 
 - Register a new agent at runtime
-- Deprovision a compromised agent without redeploying OPA
+- Deprovision a compromised agent without updating SPIRE entries
 - Manage agent metadata (capabilities, trust level, owner)
 - Distinguish agent autonomy levels (human-in-the-loop vs autonomous)
 
@@ -146,7 +144,7 @@ NIST's four focus areas vs this repo:
 1. Identification (distinguishing agents from humans, managing metadata) — Partially. SPIFFE IDs distinguish, but no metadata management or autonomy classification.
 2. Authorization (OAuth + policy-based access control) — Present but with the STS architecture issues above.
 3. Access Delegation (linking user identities to agents for accountability) — The act{} claim chain is good. The hardcoded may_act and lack of dynamic consent is not.
-4. Logging and Transparency (linking agent actions to NHI) — The 7-layer audit trail is genuinely the strongest part of this implementation.
+4. Logging and Transparency (linking agent actions to NHI) — The 6-layer audit trail (consolidated from 7 after OPA removal) is genuinely the strongest part of this implementation.
 
 ---
 
@@ -170,9 +168,9 @@ To be fair about what works:
 
 1. The delegation chain model with nested act{} claims is sound and aligns with RFC 8693 Section 4.1 correctly
 2. Vault dynamic credentials with 5-min TTL is the right pattern — this genuinely solves the static credential problem
-3. OPA policy with scope narrowing and depth limits is well-designed Rego
+3. Policy enforcement with scope narrowing and depth limits is well-designed (now via Vault Sentinel EGPs)
 4. Device Authorization Flow means the agent never sees the human's password — this is correct
-5. The 7-layer audit trail with session ID correlation is the implementation's strongest feature
+5. The audit trail with session ID correlation is the implementation's strongest feature (now 6 layers after OPA removal)
 6. Sub-agent delegation with scope narrowing is architecturally sound
 7. The Docker Compose demo successfully demonstrates the concept end-to-end
 
@@ -197,7 +195,7 @@ Missing capabilities (additive work):
 
 Demo shortcuts (acceptable for PoC, must not ship):
 
-- Fail-open on OPA/Keycloak unavailability
+- Fail-open on Keycloak unavailability (Sentinel EGPs are now hard-mandatory, fixing the OPA fail-open issue)
 - Single Vault unseal key
 - Long-lived Vault token for Token Exchange service
 - Plain HTTP everywhere

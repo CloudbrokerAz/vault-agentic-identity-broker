@@ -4,7 +4,7 @@
 
 A reference implementation for secure AI agent identity and delegated database access. The system ensures that when an AI agent queries a database on behalf of a human, there is cryptographic proof of **which human authorized the action**, **which agent performed it**, and **what permissions were granted** — with a full audit trail.
 
-The core flow: Human (Alice) logs in via Keycloak -> Agent gets SPIFFE identity from SPIRE -> RFC 8693 Token Exchange validates both, checks OPA policy, brokers Vault dynamic credentials -> Agent queries PostgreSQL with time-limited, scoped credentials that auto-expire.
+The core flow: Human (Alice) logs in via Keycloak -> Agent gets SPIFFE identity from SPIRE -> Token Exchange validates both and mints fused delegation JWT -> Agent authenticates to Vault via SPIFFE + fused JWT (two-login pattern) -> Vault Sentinel EGPs enforce policy -> Vault issues dynamic PostgreSQL credentials -> Agent queries database with time-limited, scoped credentials that auto-expire.
 
 See `ARCHITECTURE.md` for detailed component diagrams and `DEMO-STORY.md` for a narrative walkthrough.
 
@@ -51,15 +51,13 @@ AUTH_MODE=password ./scripts/demo.sh   # Password grant (demo only)
 
 After bootstrap, the agent can be invoked directly:
 ```bash
-source .gateway.env
 docker compose -f docker-compose.host.yml exec \
-  -e VAULT_TOKEN=$GATEWAY_VAULT_TOKEN \
   -e AGENT_MODE=demo ai-agent python agent.py
 ```
 
 ## Architecture at a Glance
 
-10 services across 4 trust boundaries:
+9 services across 4 trust boundaries:
 
 | Service | Port | Role |
 |---|---|---|
@@ -67,9 +65,8 @@ docker compose -f docker-compose.host.yml exec \
 | **SPIRE Server** | :8081 | SPIFFE trust domain root (`demo.local`) |
 | **SPIRE Agent** | (socket) | Workload attestation, SVID distribution |
 | **SPIRE OIDC** | :8082 | JWKS endpoint for JWT-SVID verification |
-| **OPA** | :8181 | Policy engine (delegation.rego) |
-| **Vault** | :8200 | Dynamic secrets, JWT auth, audit logging |
-| **Token Exchange** | :8090 | RFC 8693 delegation broker (Python) |
+| **Vault** | :8200 | Dynamic secrets, JWT auth, Sentinel EGPs, audit logging |
+| **Token Exchange** | :8090 | Stateless fused JWT minter (Python, RFC 8693) |
 | **AgentGateway** | :9080 (API), :9090 (MCP, host mode) | Rust MCP/A2A proxy with RBAC |
 | **PostgreSQL** | :5432 | Target database (appdb, schema: app) |
 | **AI Agent** | (no port) | Python agent with sub-agent delegation |
@@ -81,10 +78,13 @@ In host mode, AgentGateway MCP listens on **:9090** (not :8080) to avoid conflic
 ```
 Human (Alice) --[OIDC token]--> Agent --[SPIFFE SVID]--> Token Exchange
   Token Exchange: validate human token (Keycloak userinfo)
-                  validate agent identity (SPIFFE trust domain)
-                  evaluate OPA policy (groups, scope, may_act)
-                  broker Vault dynamic credentials (5-min TTL)
-                  mint delegation token with nested act{} claim
+                  validate agent identity (SPIFFE JWKS verification)
+                  mint fused delegation JWT with nested act{} claim
+                  (stateless — no Vault dependency, no credential brokering)
+Agent --[SPIFFE JWT]--> Vault (JWT auth login 1: workload identity)
+Agent --[fused delegation JWT]--> Vault (JWT auth login 2: delegation token)
+  Vault Sentinel EGPs: require-delegation, enforce-scope,
+                       enforce-chain-depth, enforce-may-act
 Agent --[Vault-issued credentials]--> PostgreSQL (SELECT only, auto-expires)
 ```
 
@@ -121,9 +121,11 @@ keycloak/realm/demo-realm.json  # Realm: demo, users: alice/bob, clients, mapper
 vault/
   config/vault.hcl              # Vault server config (file storage, no TLS)
   policies/*.hcl                # ACL policies (gateway, ai-agent-db-read, ai-agent-db-readwrite)
-opa/policies/
-  delegation.rego               # OPA delegation policy (Rego)
-  data.json                     # Policy data (agents, groups, scopes, max depth)
+sentinel-policies/
+  require-delegation.sentinel   # Vault Sentinel EGP: delegation metadata must exist
+  enforce-scope.sentinel        # Vault Sentinel EGP: scope matches requested role
+  enforce-chain-depth.sentinel  # Vault Sentinel EGP: chain depth <= 3
+  enforce-may-act.sentinel      # Vault Sentinel EGP: human authorized this agent
 postgres/init/
   00-vault-user.sql             # Vault admin user for dynamic credential management
   01-init.sql                   # Sample schema (orders, customers, products)
@@ -149,37 +151,36 @@ tests/
 ### Bootstrap Script (`scripts/bootstrap.sh`)
 
 The bootstrap runs 10 steps in order:
-1. Wait for infrastructure services (Vault, OPA, PostgreSQL, Keycloak)
+1. Wait for infrastructure services (Vault, PostgreSQL, Keycloak)
 2. Initialize and unseal Vault (1 key share, threshold 1 for demo)
 3. Write Vault ACL policies
 4. Enable Vault audit logging (file device)
 5. Configure Vault database secrets engine (PostgreSQL connection, rotate root creds, create readonly/readwrite roles with 5-min TTL)
-6. Create a scoped Vault token for the Token Exchange Service
-7. Enable Vault JWT auth method and create JWT auth roles (gateway, agent-readonly, agent-readwrite)
-8. Register SPIRE entries (generate join token, start agent, register workloads including OIDC provider, start OIDC, configure Vault JWT JWKS URL)
-9. Restart Token Exchange Service with the Vault token
-10. Verify setup (test Keycloak auth, OPA policy, Vault dynamic credentials)
+6. (Skipped — Token Exchange is now stateless, no Vault token needed)
+7. Enable Vault JWT auth method and create JWT auth roles (spiffe-agent, agent-readonly, agent-readwrite)
+8. Register SPIRE entries (generate join token, start agent, register workloads including OIDC provider, start OIDC, configure Vault JWT JWKS URL). On Vault Enterprise, load Sentinel EGP policies (Step 8d).
+9. Health check (verify Token Exchange, SPIRE OIDC are reachable)
+10. Verify setup (test Keycloak auth, Vault dynamic credentials)
 
 **Important ordering**: JWT auth roles (Step 7) are created before SPIRE OIDC starts. The JWKS URL configuration happens in Step 8b after the OIDC provider is running and serving keys.
 
 Credentials saved by bootstrap:
 - `.vault-unseal-key` — Vault unseal key (chmod 600)
 - `.vault-root-token` — Vault root token (chmod 600)
-- `.gateway.env` — Token Exchange Service's Vault token
+- `.gateway.env` — Legacy file (may be empty; Token Exchange no longer needs a Vault token)
 
 ### Token Exchange Service
 
-- Python service on port 8090
-- Key endpoints: `POST /v1/token/exchange` (RFC 8693), `POST /v1/delegate` (legacy), `POST /v1/token/revoke`, `GET /v1/delegation/chain`, `GET /v1/audit`, `GET /health`
+- Python service on port 8090 — **stateless fused JWT minter** (no Vault dependency)
+- Key endpoints: `POST /v1/token/exchange` (RFC 8693), `POST /v1/delegate` (legacy), `GET /v1/delegation/chain`, `GET /v1/audit`, `GET /health`
 - Validates human tokens via Keycloak userinfo endpoint
 - Validates agent identity via cryptographic SPIFFE JWT-SVID verification against SPIRE OIDC JWKS
-- Evaluates OPA policy at `http://opa:8181/v1/data/delegation/allow`
-- Brokers Vault credentials at `GET /v1/database/creds/ai-agent-{scope}`
-- Signs delegation tokens with RS256 (in-memory RSA keypair or loaded from `SIGNING_KEY_PATH`)
+- Signs fused delegation tokens with RS256 (in-memory RSA keypair or loaded from `SIGNING_KEY_PATH`)
 - Serves delegation token JWKS at `GET /.well-known/jwks.json`
 - Builds delegation tokens with nested `act{}` claims per RFC 8693 Section 4.1
 - Supports sub-agent chain extension with scope narrowing and depth limits
-- Fail-closed: rejects requests when Keycloak, OPA, or SPIRE OIDC are unavailable
+- Does NOT broker Vault credentials — agents authenticate to Vault directly
+- Fail-closed: rejects requests when Keycloak or SPIRE OIDC are unavailable
 
 ### AgentGateway
 
@@ -188,11 +189,17 @@ Credentials saved by bootstrap:
 - In host mode, MCP listener is on port **9090** (not 8080, which conflicts with Keycloak)
 - OIDC auth via Keycloak, rate limiting (60 req/min), CORS, routes to Token Exchange
 
-### OPA Policy
+### Vault Sentinel EGPs (Enterprise)
 
-- `delegation.rego` evaluates: valid human token, valid agent identity (registered agents + sub-agents), authorized delegation (may_act claim), scope permitted (group-to-scope mapping), chain depth limit (max 3), scope narrowing
-- `data.json` contains: trusted issuers, registered agents, registered sub-agents, group permissions, scope hierarchy, max delegation depth
-- Default deny — all rules must pass for `allow = true`
+- Sentinel Endpoint Governing Policies replace OPA as the policy engine
+- Policies are applied to `database/creds/*` with `hard-mandatory` enforcement
+- `require-delegation.sentinel` — delegation metadata must exist on requesting entity
+- `enforce-scope.sentinel` — delegation scope must match requested credential role
+- `enforce-chain-depth.sentinel` — chain depth must be <= 3
+- `enforce-may-act.sentinel` — human must have authorized this specific agent
+- Entity metadata populated via JWT/SPIFFE auth `claim_mappings` (human_user, agent_identity, delegation_scope, chain_depth, may_act)
+- On Vault OSS, Sentinel step is skipped with a warning
+- Policies live in `sentinel-policies/` directory
 
 ### Vault
 
@@ -249,7 +256,7 @@ Exit code 0 means all suites passed.
 cd /workspace && python -m pytest tests/config-validation/ -v
 ```
 
-These validate configuration files without running services: Keycloak realm JSON, OPA policy data, SPIRE configs, Vault policies, Docker Compose structure, PostgreSQL schema.
+These validate configuration files without running services: Keycloak realm JSON, Sentinel policies, SPIRE configs, Vault policies, Docker Compose structure, PostgreSQL schema.
 
 #### End-to-End Tests (Require Running Services)
 
@@ -295,7 +302,7 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | `HUMAN_ACCESS_TOKEN` | (none) | ai-agent | Pre-supplied OIDC token (for `AUTH_MODE=token`) |
 | `DEMO_USERNAME` | `alice` | ai-agent | Demo user for password grant mode |
 | `DEMO_PASSWORD` | (none) | ai-agent | Demo password for password grant mode |
-| `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | token-exchange | Vault token for credential brokering |
+| `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | (legacy) | No longer used — Token Exchange is stateless |
 | `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
 | `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh, test-runner, E2E tests | Set to `true` as alternative to `--host` flag |
 | `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | Deprecated: HMAC secret (RS256 keypair used by default) |

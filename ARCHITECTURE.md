@@ -16,7 +16,7 @@
 |   - Optional mTLS via SPIFFE X.509-SVIDs on critical path             |
 |   - Cryptographic SPIFFE SVID verification (SPIRE OIDC JWKS)          |
 |   - RS256 delegation token signing with JWKS endpoint                  |
-|   - Fail-closed defaults (OPA, Keycloak, SPIRE unavailable → deny)    |
+|   - Fail-closed defaults (Keycloak, SPIRE unavailable → deny)         |
 |   - No synthetic/demo identities — real SPIRE SVIDs required           |
 +=========================================================================+
 
@@ -98,20 +98,35 @@
                               | - scope narrowing   |
                               | - fail-closed       |
                               | - mTLS (optional)   |
-                              | - Vault token       |
-                              |   auto-renewal      |
+                              | - stateless (no     |
+                              |   Vault dependency) |
                               +==========+==========+
                                          |
                               +----------+----------+
-                              |          |          |
-                     (5) Validate  (6) Evaluate  (7) Broker
-                     Tokens        OPA Policy    Vault Creds
-                              |          |          |
-                              v          v          v
-                    +-----------+ +---------+ +----------+
-                    | Keycloak  | |   OPA   | |  Vault   |
-                    | userinfo  | | :8181   | |  :8200   |
-                    +-----------+ +---------+ +----+-----+
+                              |                     |
+                     (5) Validate              (6) Mint fused
+                     Tokens (Keycloak          delegation JWT
+                     userinfo + SPIFFE         (RS256, act{} claim)
+                     JWKS verification)              |
+                              |                      |
+                              v                      v
+                    +-----------+            +----------+
+                    | Keycloak  |            |  Agent   |
+                    | userinfo  |            | receives |
+                    +-----------+            | fused JWT|
+                                             +----+-----+
+                                                  |
+                                    (7) Agent authenticates
+                                    to Vault directly:
+                                    a) SPIFFE JWT auth → workload token
+                                    b) Fused JWT auth → delegation token
+                                    (Vault Sentinel EGPs enforce policy)
+                                                  |
+                                                  v
+                                             +----------+
+                                             |  Vault   |
+                                             |  :8200   |
+                                             +----+-----+
                                                    |
                                           (8) CREATE ROLE
                                           v-token-readonly-xxx
@@ -133,61 +148,70 @@
                                           +-----------------+
 ```
 
-## RFC 8693 Token Exchange Flow
+## Identity Delegation Flow (Vault Enterprise Model)
 
 ```
- Human      Keycloak    Agent     SPIRE    AgentGW    TokenExchange    OPA       Vault     PostgreSQL  SPIRE OIDC
-   |            |          |        |         |             |            |          |           |          |
-   |-(login)--->|          |        |         |             |            |          |           |          |
-   |<--(JWT)----|          |        |         |             |            |          |           |          |
-   |  {sub, email,         |        |         |             |            |          |           |          |
-   |   groups, may_act}    |        |         |             |            |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |---(token)->| (task)   |        |         |             |            |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |-(SVID)->|        |             |            |          |           |          |
-   |            |          |<(SVID)--|        |             |            |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |  RFC 8693 Token Exchange    |             |            |          |           |          |
-   |            |          |----(POST /v1/token/exchange)-->|            |          |           |          |
-   |            |          |  grant_type: token-exchange    |            |          |           |          |
-   |            |          |  subject_token: human_jwt      |            |          |           |          |
-   |            |          |  actor_token: agent_svid       |            |          |           |          |
-   |            |          |  scope: readonly               |            |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |        |         |   [Validate subject_token]          |           |          |
-   |            |<----------------------------------(userinfo)          |          |           |          |
-   |            |-----------------------------------(claims)>|          |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |        |         |   [Validate actor_token (SPIFFE JWT-SVID)]     |          |
-   |            |          |        |         |             |------(GET /keys)-----|---------->|          |
-   |            |          |        |         |             |<-----(JWKS)----------|-----------|          |
-   |            |          |        |         |   Signature verified (RS256) via SPIRE JWKS    |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |        |         |   [OPA Policy]          |          |           |          |
-   |            |          |        |         |             |-(evaluate)->|         |           |          |
-   |            |          |        |         |             |<-(allow)---|         |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |        |         |   [Build delegation chain]          |           |          |
-   |            |          |        |         |   act: {sub: agent,     |          |           |          |
-   |            |          |        |         |     act: {sub: alice}}  |          |           |          |
-   |            |          |        |         |   Sign delegation token (RS256, in-memory RSA keypair)    |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |        |         |   [Broker Vault creds]  |          |           |          |
-   |            |          |        |         |             |----------(GET creds)->|           |          |
-   |            |          |        |         |             |<-(username,password)--|           |          |
-   |            |          |        |         |             |            |   (CREATE ROLE)----->|          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |<-----(Token Exchange Response)-|            |          |           |          |
-   |            |          |  {access_token: delegation_jwt,|            |          |           |          |
-   |            |          |   issued_token_type: delegation|            |          |           |          |
-   |            |          |   expires_in: 300,             |            |          |           |          |
-   |            |          |   db_credential: {user,pass},  |            |          |           |          |
-   |            |          |   delegation_chain: [...]}     |            |          |           |          |
-   |            |          |        |         |             |            |          |           |          |
-   |            |          |--------(SQL query with dynamic creds)------|--------->|           |          |
-   |            |          |<-------(results)-----------------------------------------------|          |
-   |            |          |        |         |             |            |          |           |          |
+ Human      Keycloak    Agent     SPIRE    AgentGW    TokenExchange    Vault     PostgreSQL  SPIRE OIDC
+   |            |          |        |         |             |            |           |          |
+   |-(login)--->|          |        |         |             |            |           |          |
+   |<--(JWT)----|          |        |         |             |            |           |          |
+   |  {sub, email,         |        |         |             |            |           |          |
+   |   groups, may_act}    |        |         |             |            |           |          |
+   |            |          |        |         |             |            |           |          |
+   |---(token)->| (task)   |        |         |             |            |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |-(SVID)->|        |             |            |           |          |
+   |            |          |<(SVID)--|        |             |            |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |  RFC 8693 Token Exchange    |             |            |           |          |
+   |            |          |----(POST /v1/token/exchange)-->|            |           |          |
+   |            |          |  grant_type: token-exchange    |            |           |          |
+   |            |          |  subject_token: human_jwt      |            |           |          |
+   |            |          |  actor_token: agent_svid       |            |           |          |
+   |            |          |  scope: readonly               |            |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |        |         |   [Validate subject_token]           |          |
+   |            |<----------------------------------(userinfo)          |           |          |
+   |            |-----------------------------------(claims)>|          |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |        |         |   [Validate actor_token (SPIFFE JWT-SVID)]     |
+   |            |          |        |         |             |------(GET /keys)------|--------->|
+   |            |          |        |         |             |<-----(JWKS)-----------|----------|
+   |            |          |        |         |   Signature verified (RS256) via SPIRE JWKS    |
+   |            |          |        |         |             |            |           |          |
+   |            |          |        |         |   [Mint fused delegation JWT]        |          |
+   |            |          |        |         |   act: {sub: agent,     |           |          |
+   |            |          |        |         |     act: {sub: alice}}  |           |          |
+   |            |          |        |         |   Sign delegation token (RS256, in-memory RSA keypair)
+   |            |          |        |         |             |            |           |          |
+   |            |          |<-----(fused delegation JWT)----|            |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |  [Two-login Vault auth]        |            |           |          |
+   |            |          |  a) SPIFFE JWT auth → workload token        |           |          |
+   |            |          |----(POST /v1/auth/jwt/login, role=spiffe)-->|           |          |
+   |            |          |<---(Vault workload token)------|------------|           |          |
+   |            |          |  b) Fused JWT auth → delegation token       |           |          |
+   |            |          |----(POST /v1/auth/jwt/login, role=deleg)--->|           |          |
+   |            |          |<---(Vault delegation token, scoped policy)--|           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |  [Request DB credentials from Vault]        |           |          |
+   |            |          |----(GET /v1/database/creds/ai-agent-readonly)---------->|          |
+   |            |          |<---(username, password, lease_id)-----------|           |          |
+   |            |          |        |         |             |  (CREATE ROLE)-------->|          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |  [Vault Sentinel EGPs enforce delegation policy]        |          |
+   |            |          |  - require-delegation: metadata must exist  |           |          |
+   |            |          |  - enforce-scope: scope matches role        |           |          |
+   |            |          |  - enforce-chain-depth: depth <= 3          |           |          |
+   |            |          |  - enforce-may-act: human authorized agent  |           |          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |--------(SQL query with dynamic creds)-------|---------->|          |
+   |            |          |<-------(results)----------------------------------------|          |
+   |            |          |        |         |             |            |           |          |
+   |            |          |  [Revoke credentials]          |            |           |          |
+   |            |          |----(PUT /v1/sys/leases/revoke)------------->|           |          |
+   |            |          |        |         |             |            |  (DROP ROLE)-------->|
+   |            |          |        |         |             |            |           |          |
 ```
 
 ## Sub-Agent Delegation Chain Extension
@@ -326,7 +350,7 @@
   4. Demo UI updates consent via Keycloak Admin API
      PUT /admin/realms/demo/users/{id} {attributes: {agent_consent: ...}}
   5. Next token issuance includes updated may_act claim
-  6. OPA validates may_act.sub is a SPIFFE ID and agent is in aud[]
+  6. Vault Sentinel enforce-may-act validates agent is authorized
 
   Pre-seeded Defaults:
   +--------+-----------------------------------------------------------+
@@ -344,38 +368,37 @@
 |                        Docker Network: identity-net                      |
 |                                                                         |
 |  +========================+    +=========================+              |
-|  | IDENTITY LAYER         |    | POLICY LAYER            |              |
+|  | IDENTITY LAYER         |    | VERIFICATION LAYER      |              |
 |  |                        |    |                         |              |
 |  | +--------------------+ |    | +---------------------+ |              |
-|  | | SPIRE Server :8081 | |    | |   OPA :8181         | |              |
-|  | | Trust Domain Root  | |    | |   Policy Engine     | |              |
-|  | | - CA certificates  | |    | |                     | |              |
-|  | | - SVID issuer      | |    | | delegation.rego:    | |              |
-|  | +--------+-----------+ |    | | - valid_human_token | |              |
-|  |          |              |    | | - valid_agent_id    | |              |
-|  |    (attestation)        |    | | - authorized_deleg  | |              |
-|  |          |              |    | | - scope_permitted   | |              |
-|  | +--------v-----------+ |    | | - delegation_chain  | |  <-- NEW    |
-|  | | SPIRE Agent        | |    | | - chain_depth_limit | |  <-- NEW    |
-|  | | Workload Attestor  | |    | | - scope_narrowing   | |  <-- NEW    |
+|  | | SPIRE Server :8081 | |    | | SPIRE OIDC :8082    | |              |
+|  | | Trust Domain Root  | |    | | JWKS for JWT-SVID   | |              |
+|  | | - CA certificates  | |    | | verification        | |              |
+|  | | - SVID issuer      | |    | +---------------------+ |              |
+|  | +--------+-----------+ |    |                         |              |
+|  |          |              |    | +---------------------+ |              |
+|  |    (attestation)        |    | | Vault Sentinel EGPs | |              |
+|  |          |              |    | | (Enterprise)        | |              |
+|  | +--------v-----------+ |    | |                     | |              |
+|  | | SPIRE Agent        | |    | | require-delegation  | |              |
+|  | | Workload Attestor  | |    | | enforce-scope       | |              |
+|  | +--------------------+ |    | | enforce-chain-depth | |              |
+|  |                        |    | | enforce-may-act     | |              |
 |  | +--------------------+ |    | |                     | |              |
-|  |                        |    | | data.json:          | |              |
-|  | +--------------------+ |    | | - trusted_issuers   | |              |
-|  | | Keycloak :8080     | |    | | - registered_agents | |              |
-|  | | OIDC Identity Prov | |    | | - registered_sub-   | |  <-- NEW    |
-|  | |                    | |    | |   agents             | |              |
-|  | | Realm: demo        | |    | | - group_permissions | |              |
-|  | | Users:             | |    | | - max_delegation_   | |  <-- NEW    |
-|  | |  alice (analyst)   | |    | |   depth              | |              |
-|  | |  bob   (engineer)  | |    | | - scope_hierarchy   | |  <-- NEW    |
-|  | |                    | |    | +---------------------+ |              |
-|  | | may_act mapper:    | |    |                         |              |
-|  | |  usermodel-attrib  | |    | +---------------------+ |              |
-|  | |  reads per-user    | |    | | SPIRE OIDC :8082    | |              |
-|  | |  agent_consent     | |    | | JWKS for JWT-SVID   | |              |
-|  | +--------------------+ |    | | verification        | |              |
-|  +========================+    | +---------------------+ |              |
-|                                +=========================+              |
+|  | | Keycloak :8080     | |    | | Applied to:         | |              |
+|  | | OIDC Identity Prov | |    | |  database/creds/*   | |              |
+|  | |                    | |    | |  hard-mandatory      | |              |
+|  | | Realm: demo        | |    | +---------------------+ |              |
+|  | | Users:             | |    |                         |              |
+|  | |  alice (analyst)   | |    +=========================+              |
+|  | |  bob   (engineer)  | |                                             |
+|  | |                    | |                                             |
+|  | | may_act mapper:    | |                                             |
+|  | |  usermodel-attrib  | |                                             |
+|  | |  reads per-user    | |                                             |
+|  | |  agent_consent     | |                                             |
+|  | +--------------------+ |                                             |
+|  +========================+                                             |
 |                                                                         |
 |  +===================================================================+ |
 |  | PROXY LAYER                                                       | |
@@ -400,14 +423,14 @@
 |  +===================================================================+ |
 |                                                                         |
 |  +===================================================================+ |
-|  | TOKEN EXCHANGE LAYER (NEW - RFC 8693)                             | |
+|  | TOKEN EXCHANGE LAYER (Stateless JWT Minter, RFC 8693)            | |
 |  |                                                                    | |
 |  | +----------------------------------------------------------------+| |
 |  | | Token Exchange Service :8090 (Python)                           || |
 |  | |                                                                  || |
 |  | |  POST /v1/token/exchange  -- RFC 8693 Token Exchange            || |
 |  | |  POST /v1/delegate        -- Legacy delegation API              || |
-|  | |  POST /v1/token/revoke    -- Revoke delegation token            || |
+|  | |  POST /v1/token/revoke    -- (Legacy) delegation audit           || |
 |  | |  GET  /v1/delegation/chain -- Query delegation chain            || |
 |  | |  GET  /health             -- Service health                     || |
 |  | |  GET  /v1/audit           -- Audit trail                        || |
@@ -422,7 +445,6 @@
 |  | |    Validates JWT-SVID signature (RS256)                         || |
 |  | |                                                                  || |
 |  | |  Fail-Closed Behavior:                                           || |
-|  | |    OPA unavailable --------> deny (not allow)                   || |
 |  | |    Keycloak unavailable ---> reject token (not accept)          || |
 |  | |    SPIRE OIDC unavailable -> reject actor (not accept)          || |
 |  | |                                                                  || |
@@ -432,16 +454,12 @@
 |  | |    TLSv1.2+ with mutual certificate verification                || |
 |  | |    Graceful fallback to HTTP if SPIRE unavailable               || |
 |  | |                                                                  || |
-|  | |  Vault Token Management:                                         || |
-|  | |    Periodic token (1h period, 24h max TTL)                      || |
-|  | |    Background daemon auto-renews every 45 minutes               || |
-|  | |    Child tokens restricted to DB credential policies            || |
+|  | |  Stateless — no Vault dependency, no credential brokering        || |
+|  | |  Mints fused delegation JWTs only                               || |
 |  | |                                                                  || |
 |  | |  Connects to:                                                    || |
 |  | |   Keycloak ----> validate subject_token (human OIDC)            || |
 |  | |   SPIRE OIDC --> fetch JWKS for JWT-SVID verification           || |
-|  | |   OPA ---------> evaluate delegation policy                     || |
-|  | |   Vault -------> broker dynamic DB credentials                  || |
 |  | |                                                                  || |
 |  | |  Token Exchange Parameters (RFC 8693):                          || |
 |  | |   grant_type:        urn:ietf:params:oauth:grant-type:          || |
@@ -477,74 +495,72 @@
 +-------------------------------------------------------------------------+
 ```
 
-## OPA Policy Decision Tree (v3)
+## Vault Sentinel EGP Policy Enforcement
 
 ```
-                     Delegation Request
-                            |
-               +------------+------------+
-               |                         |
-      Initial Delegation          Chain Extension
-      (depth == 0)               (depth > 0)
-               |                         |
-               v                         v
-     +-------------------+     +--------------------+
-     | valid_human_token |     | valid_deleg_chain  |
-     | - sub != ""       |     | - depth > 0        |
-     | - exp > now       |     | - sub != ""        |
-     | - iss trusted     |     | - exp > now        |
-     +--------+----------+     +--------+-----------+
-              |                         |
-       yes    |    no            yes    |    no
-      +-------+--------+       +-------+--------+
-      |                |       |                |
-      v                v       v                v
-+------------------+ DENY  +------------------+ DENY
-| valid_agent_id   |       | valid_agent_id   |
-| - spiffe://      |       | - spiffe://      |
-|   demo.local/*   |       |   demo.local/*   |
-| - registered     |       | - registered     |
-|   agent OR       |       |   agent OR       |
-|   subagent       |       |   subagent       |
-+--------+---------+       +--------+---------+
-         |                          |
-  yes    |    no             yes    |    no
- +-------+--------+        +-------+--------+
- |                |        |                |
- v                v        v                v
-+-----------+   DENY   +------------------+ DENY
-| authorized|          | chain_depth_ok   |
-| delegation|          | depth < max (3)  |
-| may_act{} |          +--------+---------+
-| - sub must|                  |
-|   be SPIFFE ID        yes    |    no
-|   (exact match)      +-------+--------+
-| - OR aud[] list      |                |
-|   contains agent     v                v
-|   SPIFFE ID    +------------------+ DENY: "max_depth_exceeded"
-| (no legacy     | scope_narrowing  |
-|  bypass)       | - parent_scope   |
-+-----+-----+   |   passed to OPA  |
-      |          |   for enforcement |
-yes   |  no      | - scope <=       |
-+-----+-----+   |   parent scope   |
-|           |    +--------+---------+
-v           v            |
-+---------+ DENY   yes   |    no
-| scope   |       +------+--------+
-| permitted       |               |
-| group   |       v               v
-| check   |    ALLOW           DENY: "scope_narrowing_violation"
-+----+----+    "allowed"
-     |
-yes  | no
-+----+----+
-|        |
-v        v
-ALLOW   DENY
-"ok"    "scope_not_permitted"
+  Vault Sentinel Endpoint Governing Policies (EGPs) replace OPA as the
+  policy engine. Policies are applied to database/creds/* with
+  hard-mandatory enforcement. They execute inside Vault at credential
+  request time, using entity metadata populated by JWT/SPIFFE auth.
 
-  Registered Identities:
+                    Agent requests DB credentials
+                    GET /v1/database/creds/ai-agent-readonly
+                                |
+                    +-----------v-----------+
+                    | require-delegation    |
+                    | - human_user present  |
+                    | - agent_identity set  |
+                    | - delegation_scope set|
+                    | - agent in trust      |
+                    |   domain (spiffe://   |
+                    |   demo.local/*)       |
+                    +-----------+-----------+
+                         pass   |   fail
+                        +-------+--------+
+                        |                |
+                        v                v
+              +-----------------+   DENY: "missing
+              | enforce-scope   |    delegation metadata"
+              | - readonly path |
+              |   requires      |
+              |   readonly scope|
+              | - readwrite path|
+              |   requires      |
+              |   readwrite     |
+              |   scope         |
+              +--------+--------+
+                  pass |   fail
+                 +-----+------+
+                 |            |
+                 v            v
+        +----------------+ DENY: "scope
+        | enforce-chain- |  mismatch"
+        | depth          |
+        | - chain_depth  |
+        |   <= 3         |
+        +-------+--------+
+           pass |   fail
+          +-----+------+
+          |            |
+          v            v
+  +---------------+ DENY: "max depth
+  | enforce-may-  |  exceeded"
+  | act           |
+  | - may_act     |
+  |   matches     |
+  |   agent_id    |
+  | - exact or    |
+  |   wildcard    |
+  +------+--------+
+    pass |   fail
+   +-----+------+
+   |            |
+   v            v
+ ALLOW       DENY: "agent not
+ (issue       authorized by
+  creds)      human"
+
+  Registered Identities (SPIRE entries):
   +---------------------------------------------+-----------+
   | SPIFFE ID                                   | Type      |
   +---------------------------------------------+-----------+
@@ -562,9 +578,9 @@ ALLOW   DENY
 ```
   Time
    |
-   |  T=0  Token Exchange approves delegation
+   |  T=0  Agent authenticates to Vault (two-login pattern)
    |   |
-   |   |   Token Exchange Service requests:
+   |   |   Agent requests credentials directly:
    |   |   GET /v1/database/creds/ai-agent-readonly
    |   |
    |   v
@@ -601,72 +617,57 @@ ALLOW   DENY
    |
    v
 
-  Manual revocation via Token Exchange Service:
-    POST /v1/token/revoke {"token": "<delegation_jwt>"}
+  Manual revocation via Vault API:
+    PUT /v1/sys/leases/revoke {"lease_id": "<vault_lease_id>"}
     --> Revokes Vault lease
     --> Immediately drops the PostgreSQL role
-    --> Marks session as revoked
 ```
 
-## Vault Token Lifecycle (Token Exchange Service)
+## Agent Two-Login Vault Authentication
 
 ```
-  Token Exchange Service's own Vault token is a periodic token with
-  restricted child token policies. This prevents privilege escalation
-  and ensures the service token stays alive through automatic renewal.
+  Agents authenticate directly to Vault using a two-login pattern.
+  This replaces the previous model where Token Exchange brokered
+  Vault credentials on behalf of agents.
 
-  Bootstrap creates the token:
+  Login 1: SPIFFE JWT Auth (workload identity)
   +-------------------------------------------------------------------+
-  | vault token create                                                |
-  |   -policy=gateway-policy                                          |
-  |   -period=1h            <-- renewable every hour                  |
-  |   -explicit-max-ttl=24h <-- hard ceiling, must re-bootstrap after |
-  |   -allowed-policies=ai-agent-db-read,ai-agent-db-readwrite       |
-  +-------------------------------------------------------------------+
-
-  Token Renewal (background daemon thread):
-  +-------------------------------------------------------------------+
+  | POST /v1/auth/jwt/login                                           |
+  |   role: "spiffe-agent"                                            |
+  |   jwt: <agent's SPIFFE JWT-SVID>                                  |
   |                                                                   |
-  |  T=0       Service starts, token is valid (period=1h)             |
-  |  T=45m     Renewal thread: POST /v1/auth/token/renew-self         |
-  |            {increment: "2700s"} --> new TTL = 1h                  |
-  |  T=90m     Renewal thread fires again --> new TTL = 1h            |
-  |  ...       Repeats every 45 minutes                               |
-  |  T=24h     explicit_max_ttl reached: renewal fails                |
-  |            Service must be re-bootstrapped                        |
-  |                                                                   |
+  | Result: Vault workload token                                      |
+  |   - Proves which agent is making the request                      |
+  |   - Entity metadata: agent_identity, trust_domain                 |
   +-------------------------------------------------------------------+
 
-  Child Token Restrictions (allowed_policies):
+  Login 2: Fused Delegation JWT Auth (human + agent identity)
   +-------------------------------------------------------------------+
-  |  The gateway token can ONLY create child tokens with these         |
-  |  policies (prevents privilege escalation):                         |
+  | POST /v1/auth/jwt/login                                           |
+  |   role: "agent-readonly" or "agent-readwrite"                     |
+  |   jwt: <fused delegation JWT from Token Exchange>                 |
   |                                                                   |
-  |  - ai-agent-db-read      (SELECT on schema app)                   |
-  |  - ai-agent-db-readwrite (CRUD on schema app)                     |
-  |                                                                   |
-  |  Cannot create tokens with gateway-policy or any other policy.    |
-  |  Cannot create orphan tokens (path removed from policy).          |
+  | Result: Vault delegation token with scoped policies               |
+  |   - Entity metadata populated from JWT claims:                    |
+  |     human_user, agent_identity, delegation_scope,                 |
+  |     chain_depth, may_act                                          |
+  |   - Policies: ai-agent-db-read or ai-agent-db-readwrite          |
+  |   - Sentinel EGPs enforce delegation constraints                  |
   +-------------------------------------------------------------------+
 
-  Vault Policy (gateway-policy.hcl):
-  +-------------------------------+------------------------------------+
-  | Path                          | Capability                         |
-  +-------------------------------+------------------------------------+
-  | auth/token/create             | create, update (child tokens)      |
-  | auth/token/lookup             | update                             |
-  | auth/token/lookup-self        | read                               |
-  | auth/token/renew-self         | update (periodic renewal)          |
-  | identity/entity/id/*          | read, update                       |
-  | identity/entity/name/*        | read, update, create               |
-  | identity/lookup/entity        | update                             |
-  | identity/entity-alias/id/*    | read, update                       |
-  | database/creds/ai-agent-*     | read (broker DB creds)             |
-  | sys/leases/renew              | update                             |
-  | sys/leases/revoke             | update                             |
-  | sys/seal                      | DENY                               |
-  | sys/step-down                 | DENY                               |
-  +-------------------------------+------------------------------------+
+  Credential Request (with delegation token):
+  +-------------------------------------------------------------------+
+  | GET /v1/database/creds/ai-agent-readonly                          |
+  |   Authorization: Bearer <Vault delegation token>                  |
+  |                                                                   |
+  | Sentinel EGPs evaluate at request time:                           |
+  |   require-delegation  --> metadata exists?                        |
+  |   enforce-scope       --> scope matches role?                     |
+  |   enforce-chain-depth --> depth <= 3?                             |
+  |   enforce-may-act     --> human authorized this agent?            |
+  |                                                                   |
+  | Result: Dynamic PostgreSQL credentials (5-min TTL)                |
+  +-------------------------------------------------------------------+
 ```
 
 ## mTLS Transport Security
@@ -675,7 +676,7 @@ ALLOW   DENY
   The Token Exchange Service optionally supports mutual TLS using
   SPIFFE X.509-SVIDs from the SPIRE Workload API. This provides
   transport-layer identity verification on the critical path where
-  identity tokens are exchanged and credentials are brokered.
+  identity tokens are exchanged.
 
   +-------------------------------------------------------------------+
   |  AI Agent                         Token Exchange Service          |
@@ -716,37 +717,41 @@ ALLOW   DENY
   - No X.509-SVIDs received        --> HTTP (warning logged)
   - MTLS_ENABLED not set to "true" --> HTTP (default)
 
-  Note: Third-party services (Keycloak, Vault, OPA, PostgreSQL) don't
+  Note: Third-party services (Keycloak, Vault, PostgreSQL) don't
   natively consume SPIRE Workload API SVIDs. Full mTLS coverage would
   require sidecar cert injection (spiffe-helper) or an Envoy service
   mesh. The current implementation covers the critical path where
-  identity tokens are exchanged and credentials are brokered.
+  identity tokens are exchanged.
 ```
 
-## 7-Layer Audit Correlation Chain (v3)
+## 6-Layer Audit Correlation Chain
 
 ```
-  +--------+   +----------+   +----------+   +-------+   +---------+   +---------+   +----------+
-  |   1    |   |    2     |   |    3     |   |   4   |   |    5    |   |    6    |   |    7     |
-  |Keycloak|-->|AgentGW   |-->|  Token   |-->|  OPA  |-->|  Vault  |-->|  Lease  |-->|PostgreSQL|
-  | Token  |   | Access   |   |Exchange  |   |Decision|  |Metadata |   | Record  |   | pgaudit  |
-  | (OIDC) |   |  Log     |   | Audit    |   |        |  |         |   |         |   |          |
-  +--------+   +----------+   +----------+   +-------+   +---------+   +---------+   +----------+
-       |            |              |              |            |             |              |
-       v            v              v              v            v             v              v
-  +---------+  +---------+   +-----------+  +----------+ +----------+ +-----------+ +----------+
-  | JWT     |  |identity |   |session_id |  | allow/   | | entity   | | lease_id  | | user:    |
-  | sub:    |  |OIDC auth|   |request_id |  | deny     | | metadata:| | lease_ttl | | v-token- |
-  |  alice  |  |SPIFFE id|   |human:     |  | reason:  | |  human   | | renewable | |  readonly|
-  | email:  |  |RBAC role|   | alice@    |  |  allowed/| |  scope   | |           | |  -xxx    |
-  |  alice@ |  |rate     |   |actor:     |  |  chain_  | |  agent   | |           | |          |
-  | groups: |  | limit   |   | agent/    |  |  depth   | |  chain   | |           | | query:   |
-  | may_act:|  |scope    |   | subagent  |  |          | |  session | |           | |  SELECT  |
-  |  {sub}  |  |         |   |chain:     |  |          | |  depth   | |           | |  FROM    |
-  | exp:    |  |         |   | [links]   |  |          | |          | |           | |  app.*   |
-  +---------+  +---------+   |act: {...} |  +----------+ +----------+ +-----------+ +----------+
-                              +-----------+
-  NEW: delegation chain fully traceable through `act` claim nesting
+  +--------+   +----------+   +----------+   +---------+   +---------+   +----------+
+  |   1    |   |    2     |   |    3     |   |    4    |   |    5    |   |    6     |
+  |Keycloak|-->|AgentGW   |-->|  Token   |-->|  Vault  |-->|  Lease  |-->|PostgreSQL|
+  | Token  |   | Access   |   |Exchange  |   |Metadata |   | Record  |   | pgaudit  |
+  | (OIDC) |   |  Log     |   | Audit    |   |+ Sentinel   |         |   |          |
+  +--------+   +----------+   +----------+   +---------+   +---------+   +----------+
+       |            |              |              |             |              |
+       v            v              v              v             v              v
+  +---------+  +---------+   +-----------+  +----------+ +-----------+ +----------+
+  | JWT     |  |identity |   |session_id |  | entity   | | lease_id  | | user:    |
+  | sub:    |  |OIDC auth|   |request_id |  | metadata:| | lease_ttl | | v-token- |
+  |  alice  |  |SPIFFE id|   |human:     |  |  human   | | renewable | |  readonly|
+  | email:  |  |RBAC role|   | alice@    |  |  scope   | |           | |  -xxx    |
+  |  alice@ |  |rate     |   |actor:     |  |  agent   | |           | |          |
+  | groups: |  | limit   |   | agent/    |  |  chain   | |           | | query:   |
+  | may_act:|  |scope    |   | subagent  |  |  session | |           | |  SELECT  |
+  |  {sub}  |  |         |   |chain:     |  |  depth   | |           | |  FROM    |
+  | exp:    |  |         |   | [links]   |  | Sentinel | |           | |  app.*   |
+  +---------+  +---------+   |act: {...} |  | EGP logs | +-----------+ +----------+
+                              +-----------+  +----------+
+
+  Vault audit log natively records both human and agent identity via
+  entity metadata, plus Sentinel EGP policy decisions. This replaces
+  the separate OPA decision log, consolidating policy enforcement
+  and audit into a single system.
 ```
 
 ## Port Map & Network Topology (v3)
@@ -761,7 +766,7 @@ ALLOW   DENY
   |  :8081   SPIRE          (internal trust infrastructure)              |
   |  :8082   SPIRE OIDC     (JWKS endpoint for JWT-SVID verification)   |
   |  :8090   Token Exchange (RFC 8693 API)                 <-- NEW       |
-  |  :8181   OPA            (policy API)                                 |
+  |                         (Vault Sentinel EGPs replace OPA)            |
   |  :8200   Vault          (secrets API & UI)                           |
   |  :8500   Demo UI        (interactive educational walkthrough)        |
   |  :5432   PostgreSQL     (database connections)                       |
@@ -780,28 +785,26 @@ ALLOW   DENY
   |    :8081     |   |    :8080     |   |    :8200     |
   +-------+------+   +--------------+   +------+-------+
           |                                     |
-  +-------v------+   +--------------+           |
-  | spire-agent  |   |     opa      |   +-------v------+
-  | (socket API) |   |    :8181     |   |  postgresql  |
-  +-------+------+   +------+-------+   |    :5432     |
-          |                  |           +---------+----+
-          |    +-------------+                     ^
-          |    |                                   |
-  +-------v----v--------+                          |
+  +-------v------+                         |
+  | spire-agent  |                 +-------v------+
+  | (socket API) |                 |  postgresql  |
+  +-------+------+                 |    :5432     |
+          |                        +---------+----+
+          |                                  ^
+          |                                  |
+  +-------v-------------+                          |
   |   AgentGateway      |                          |
   |  :9080 (MCP/HTTP)   |                          |
   |  :19000 (Admin)     |                          |
   +-------+-------------+                          |
           |                                        |
   +-------v-------------+                          |
-  | Token Exchange Svc  |   <-- NEW (RFC 8693)     |
+  | Token Exchange Svc  |   (stateless JWT minter)  |
   |  :8090              |                          |
   |  (optional mTLS)    |                          |
   +---------+-----------+                          |
             |                                      |
-            +----(Vault creds: CREATE ROLE)--------+
-            |
-  +---------v-----------+
+  +---------v-----------+                          |
   |    ai-agent         |
   |  + sub-agents       |   <-- NEW
   | (no listen port)    |
@@ -817,12 +820,11 @@ ALLOW   DENY
   1. spire-server    (no deps)
   2. postgresql      (no deps)
   3. vault           (no deps)
-  4. opa             (no deps)
-  5. keycloak        (no deps)
-  6. spire-agent     (depends: spire-server healthy)
-  7. token-exchange  (depends: vault, keycloak, opa healthy)       <-- NEW
-  8. agentgateway    (depends: keycloak, opa, token-exchange)      <-- NEW
-  9. ai-agent        (depends: token-exchange healthy, postgresql)  <-- CHANGED
+  4. keycloak        (no deps)
+  5. spire-agent     (depends: spire-server healthy)
+  6. token-exchange  (depends: keycloak healthy)
+  7. agentgateway    (depends: keycloak, token-exchange)
+  8. ai-agent        (depends: vault, token-exchange healthy, postgresql)
 ```
 
 ## Key Security Properties (v3)
@@ -847,10 +849,10 @@ ALLOW   DENY
   | Delegation chains           | Nested `act` claims per RFC 8693 Sec 4.1 |   <-- NEW
   |                             | Human -> Agent -> Sub-Agent traceable    |
   +-----------------------------+------------------------------------------+
-  | Scope narrowing             | Each delegation level can only narrow    |   <-- NEW
+  | Scope narrowing             | Each delegation level can only narrow    |
   |                             | scope, never widen it                    |
-  |                             | parent_scope passed to OPA for enforce-  |
-  |                             | ment (not just general scope check)      |
+  |                             | Vault Sentinel enforce-scope policy      |
+  |                             | validates at credential request time     |
   +-----------------------------+------------------------------------------+
   | Max chain depth             | Configurable limit (default: 3)          |   <-- NEW
   |                             | Prevents infinite delegation             |
@@ -858,14 +860,14 @@ ALLOW   DENY
   | AgentGateway proxy          | RBAC, rate limiting, observability       |   <-- NEW
   |                             | MCP/A2A protocol support                 |
   +-----------------------------+------------------------------------------+
-  | Least privilege             | OPA enforces group-to-scope mapping      |
-  |                             | data-analysts: readonly only             |
-  |                             | engineering: readonly + readwrite        |
+  | Least privilege             | Vault policies + Sentinel EGPs enforce   |
+  |                             | group-to-scope mapping via entity        |
+  |                             | metadata from JWT auth claims            |
   +-----------------------------+------------------------------------------+
-  | Deny by default             | OPA default allow := false               |
-  |                             | All rules must pass                      |
+  | Deny by default             | Vault Sentinel EGPs are hard-mandatory   |
+  |                             | All policies must pass for cred issuance |
   +-----------------------------+------------------------------------------+
-  | Complete audit trail        | 7-layer correlation from human to query  |
+  | Complete audit trail        | 6-layer correlation from human to query  |
   |                             | Every decision logged with chain context |
   +-----------------------------+------------------------------------------+
   | Zero trust                  | Every request validated end-to-end       |
@@ -873,14 +875,14 @@ ALLOW   DENY
   |                             | Fail-closed when dependencies unavailable|
   +-----------------------------+------------------------------------------+
   | Credential lifecycle        | Auto-revocation after TTL                |
-  |                             | Manual revocation via token revoke API   |
+  |                             | Manual revocation via Vault lease API    |
   |                             | PostgreSQL role dropped on expiry        |
   +-----------------------------+------------------------------------------+
   | Asymmetric token signing    | Delegation tokens signed with RS256      |
   |                             | In-memory RSA-2048 keypair (or from env) |
   |                             | Public key at /.well-known/jwks.json     |
   +-----------------------------+------------------------------------------+
-  | Fail-closed defaults        | OPA unavailable -> deny (not allow)      |
+  | Fail-closed defaults        | Vault Sentinel -> hard-mandatory deny    |
   |                             | Keycloak unavailable -> reject token     |
   |                             | SPIRE OIDC unavailable -> reject actor   |
   +-----------------------------+------------------------------------------+
@@ -899,12 +901,11 @@ ALLOW   DENY
   |                             | API. Emitted as may_act via usermodel-   |
   |                             | attribute-mapper (not hardcoded)         |
   +-----------------------------+------------------------------------------+
-  | Vault token least privilege | Token Exchange Service uses periodic     |
-  |                             | Vault token (1h period, 24h max TTL)     |
-  |                             | with allowed_policies restricting child  |
-  |                             | tokens to DB credential policies only.   |
-  |                             | Background thread auto-renews every 45m. |
-  |                             | No orphan token creation capability.     |
+  | Direct Vault auth           | Agents authenticate directly to Vault    |
+  |                             | via two-login pattern (SPIFFE + fused    |
+  |                             | JWT). No intermediate credential broker. |
+  |                             | Token Exchange is stateless — no Vault   |
+  |                             | token, no credential brokering.          |
   +-----------------------------+------------------------------------------+
   | Transport security (mTLS)   | Token Exchange optionally serves over    |
   |                             | mTLS using SPIFFE X.509-SVIDs from      |

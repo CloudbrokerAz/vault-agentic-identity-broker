@@ -12,7 +12,7 @@ Tracking consistency fixes between demo-ui, README, DEMO-STORY, and ARCHITECTURE
 
 ## To Discuss
 
-- [ ] **3. AgentGateway role** — The demo-ui bypasses AgentGateway entirely (talks directly to Token Exchange, Keycloak, OPA, Vault). Need to discuss:
+- [ ] **3. AgentGateway role** — The demo-ui bypasses AgentGateway entirely (talks directly to Token Exchange, Keycloak, Vault). Need to discuss:
   - Why was it missed? The demo-ui was built as a browser-based educational tool that proxies directly to backend services, not as an agent client going through the gateway.
   - What is AgentGateway's purpose? It's the production front-door for AI agents: OIDC auth, RBAC, rate limiting, MCP/A2A protocol support, observability. It sits between agents and the Token Exchange.
   - Is it needed in the demo-ui? The demo-ui is a human-facing educational tool, not an agent. AgentGateway is designed for machine-to-machine (agent) traffic. Options:
