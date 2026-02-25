@@ -150,24 +150,22 @@ tests/
 
 ### Bootstrap Script (`scripts/bootstrap.sh`)
 
-The bootstrap runs 10 steps in order:
+The bootstrap runs 9 steps in order:
 1. Wait for infrastructure services (Vault, PostgreSQL, Keycloak)
 2. Initialize and unseal Vault (1 key share, threshold 1 for demo)
 3. Write Vault ACL policies
 4. Enable Vault audit logging (file device)
 5. Configure Vault database secrets engine (PostgreSQL connection, rotate root creds, create readonly/readwrite roles with 5-min TTL)
-6. (Skipped — Token Exchange is now stateless, no Vault token needed)
-7. Enable Vault JWT auth method and create JWT auth roles (spiffe-agent, agent-readonly, agent-readwrite)
-8. Register SPIRE entries (generate join token, start agent, register workloads including OIDC provider, start OIDC, configure Vault JWT JWKS URL). On Vault Enterprise, load Sentinel EGP policies (Step 8d).
-9. Health check (verify Token Exchange, SPIRE OIDC are reachable)
-10. Verify setup (test Keycloak auth, Vault dynamic credentials)
+6. Enable Vault JWT auth method and create JWT auth roles (spiffe-agent, agent-readonly, agent-readwrite)
+7. Register SPIRE entries (generate join token, start agent, register workloads including OIDC provider, start OIDC, configure Vault JWT JWKS URL). On Vault Enterprise, load Sentinel EGP policies (Step 7e).
+8. Health check (verify Token Exchange, SPIRE OIDC are reachable)
+9. Verify setup (test Keycloak auth, Vault dynamic credentials)
 
-**Important ordering**: JWT auth roles (Step 7) are created before SPIRE OIDC starts. The JWKS URL configuration happens in Step 8b after the OIDC provider is running and serving keys.
+**Important ordering**: JWT auth roles (Step 6) are created before SPIRE OIDC starts. The JWKS URL configuration happens in Step 7a after the OIDC provider is running and serving keys.
 
 Credentials saved by bootstrap:
 - `.vault-unseal-key` — Vault unseal key (chmod 600)
 - `.vault-root-token` — Vault root token (chmod 600)
-- `.gateway.env` — Legacy file (may be empty; Token Exchange no longer needs a Vault token)
 
 ### Token Exchange Service
 
@@ -291,7 +289,7 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | AgentGateway crashes with "failed to load JWKS: fetch keycloak:8080" | Host mode uses Docker DNS names that don't resolve | Use `gateway-host.yaml` with `127.0.0.1` addresses |
 | AgentGateway port conflict with Keycloak on 8080 | Both bind port 8080 in host mode | Host-mode gateway uses port 9090 for MCP listener |
 | SPIRE OIDC healthcheck always unhealthy | Distroless image has no wget/curl/shell | Healthcheck is disabled; bootstrap verifies externally |
-| Vault JWT auth config fails | SPIRE OIDC not running yet when JWT config runs | Bootstrap configures JWKS URL after OIDC is started (Step 8b) |
+| Vault JWT auth config fails | SPIRE OIDC not running yet when JWT config runs | Bootstrap configures JWKS URL after OIDC is started (Step 7a) |
 | "PostgreSQL failed to start" during bootstrap | HTTP probe against PostgreSQL (doesn't speak HTTP) | Expected — bootstrap falls through to `pg_isready` check via docker exec |
 
 ## Environment Variables
@@ -302,7 +300,6 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | `HUMAN_ACCESS_TOKEN` | (none) | ai-agent | Pre-supplied OIDC token (for `AUTH_MODE=token`) |
 | `DEMO_USERNAME` | `alice` | ai-agent | Demo user for password grant mode |
 | `DEMO_PASSWORD` | (none) | ai-agent | Demo password for password grant mode |
-| `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | (legacy) | No longer used — Token Exchange is stateless |
 | `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
 | `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh, test-runner, E2E tests | Set to `true` as alternative to `--host` flag |
 | `SIGNING_KEY_PATH` | (none) | token-exchange | Path to PEM private key for RS256 signing (generates in-memory if empty) |

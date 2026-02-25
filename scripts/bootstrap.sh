@@ -7,7 +7,7 @@
 #   2. Initializes and unseals Vault
 #   3. Configures Vault auth methods, secrets engines, and policies
 #   4. Registers SPIRE workload entries
-#   5. Configures the Token Exchange Service with Vault credentials
+#   5. Configures Vault JWT auth for fused delegation tokens
 #   6. Runs a connectivity test
 ###############################################################################
 
@@ -288,21 +288,12 @@ curl -sf "${VAULT_ADDR}/v1/sys/leases/revoke" \
     -d "{\"lease_id\": \"${TEST_LEASE}\"}" > /dev/null
 log_ok "Test credential revoked"
 
-# ─── Step 6: (Removed — Token Exchange no longer needs a Vault token) ────
-# The Token Exchange Service is now a stateless JWT minter that validates
-# human tokens (Keycloak JWKS) and agent SVIDs (SPIRE OIDC JWKS), then
-# mints fused delegation JWTs. It has no Vault dependency.
-# Agents authenticate to Vault directly via SPIFFE + JWT auth.
-
-log_step 6 "Skipping gateway token creation (Token Exchange is stateless)"
-log_ok "Token Exchange no longer needs a Vault token — agents auth to Vault directly"
-
-# ─── Step 7: Configure Vault JWT Auth for fused delegation tokens ─────
+# ─── Step 6: Configure Vault JWT Auth for fused delegation tokens ─────
 # The JWT auth method validates fused tokens minted by Token Exchange.
-# JWKS URL is configured later in Step 8b once Token Exchange is reachable.
+# JWKS URL is configured later in Step 7a once Token Exchange is reachable.
 # Old SPIRE-based JWT roles are removed — SPIFFE auth handles agent authn.
 
-log_step 7 "Enabling Vault JWT auth method and creating delegated-agent role"
+log_step 6 "Enabling Vault JWT auth method and creating delegated-agent role"
 
 # Enable JWT auth method
 curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
@@ -358,9 +349,9 @@ curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
     }' > /dev/null
 log_ok "JWT auth role 'delegated-agent' created (bound_claims: act.sub must be SPIFFE, TTL=5m)"
 
-# ─── Step 8: Register SPIRE Entries ─────────────────────────────────────
+# ─── Step 7: Register SPIRE Entries ─────────────────────────────────────
 
-log_step 8 "Registering SPIRE workload entries and starting SPIRE agent"
+log_step 7 "Registering SPIRE workload entries and starting SPIRE agent"
 
 # Generate join token and register entries
 log_info "Generating SPIRE join token..."
@@ -463,7 +454,7 @@ if [ -n "${JOIN_TOKEN}" ]; then
     SPIRE_JOIN_TOKEN="${JOIN_TOKEN}" ${COMPOSE} --profile spire up -d spire-oidc 2>/dev/null
     log_ok "SPIRE OIDC Discovery Provider started"
 
-    # ─── Step 8b: Configure Vault JWT auth JWKS URL ──────────────────────
+    # ─── Step 7a: Configure Vault JWT auth JWKS URL ──────────────────────
     # Point JWT auth at Token Exchange JWKS (fused delegation tokens).
     # SPIRE OIDC is still started for agent SVID verification by Token Exchange,
     # but Vault no longer reads SPIRE JWKS directly — it validates fused tokens.
@@ -498,7 +489,7 @@ else
     log_warn "Could not generate SPIRE join token (SPIRE may not be available)"
 fi
 
-# ─── Step 8c: Configure Vault SPIFFE Auth Method (Enterprise Only) ────────
+# ─── Step 7b: Configure Vault SPIFFE Auth Method (Enterprise Only) ────────
 # Vault Enterprise supports native SPIFFE workload identity authentication.
 # Agents authenticate directly to Vault using their X.509 SVIDs issued by
 # SPIRE, eliminating the need for JWT-SVID intermediation for Vault access.
@@ -506,7 +497,7 @@ fi
 # This step is conditional: if `vault auth enable spiffe` fails (e.g. running
 # OSS Vault), it logs a warning and skips the configuration entirely.
 
-log_step "8c" "Configuring Vault SPIFFE auth method (Enterprise)"
+log_step "7b" "Configuring Vault SPIFFE auth method (Enterprise)"
 
 SPIFFE_AUTH_ENABLED="false"
 
@@ -637,7 +628,7 @@ print(json.dumps({
     log_ok "Vault Enterprise SPIFFE auth configuration complete"
 fi
 
-# ─── Step 8d: Pre-provision Vault Identity Entities ──────────────────────
+# ─── Step 7c: Pre-provision Vault Identity Entities ──────────────────────
 # Pre-provision Identity entities for known agents as their baseline identity.
 # These entities are the agent's "self" -- the workload identity established
 # via SPIFFE auth (Enterprise) before any human delegation occurs.
@@ -668,7 +659,7 @@ fi
 #     from_entity_ids=<jwt-entity-id> to_entity_id=<spiffe-entity-id>
 # This would need to run after the first JWT login per human-agent pair.
 
-log_step "8d" "Pre-provisioning Vault Identity entities for agent unification"
+log_step "7c" "Pre-provisioning Vault Identity entities for agent unification"
 
 # Retrieve SPIFFE auth mount accessor (Enterprise only).
 # JWT mount accessor is not needed here — JWT aliases are created dynamically.
@@ -798,7 +789,7 @@ done
 
 log_ok "Identity entity pre-provisioning complete"
 
-# ─── Step 8e: Create external identity groups for Keycloak groups ────────
+# ─── Step 7d: Create external identity groups for Keycloak groups ────────
 # External identity groups map Keycloak group names (from the fused JWT
 # "groups" claim) to Vault policies. When a fused token with groups_claim
 # is used for JWT auth login, Vault looks up group aliases matching the
@@ -811,7 +802,7 @@ log_ok "Identity entity pre-provisioning complete"
 #   trading-team   -> ai-agent-db-read
 #   engineering    -> ai-agent-db-read + ai-agent-db-readwrite
 
-log_step "8e" "Creating external identity groups for Keycloak group-to-policy mapping"
+log_step "7d" "Creating external identity groups for Keycloak group-to-policy mapping"
 
 if [ -n "${JWT_ACCESSOR:-}" ]; then
     # Group definitions: "group_name|policies" (comma-separated policies)
@@ -910,12 +901,12 @@ else
     log_warn "Skipping external identity groups (JWT auth mount accessor not available)"
 fi
 
-# ─── Step 8f: Load Sentinel EGP Policies (Enterprise Only) ─────────────────
+# ─── Step 7e: Load Sentinel EGP Policies (Enterprise Only) ─────────────────
 # Sentinel Endpoint Governing Policies enforce delegation constraints directly
 # inside Vault. These are the policy engine for credential requests.
 # On Vault OSS, this step is skipped.
 
-log_step "8f" "Loading Sentinel EGP policies (Enterprise)"
+log_step "7e" "Loading Sentinel EGP policies (Enterprise)"
 
 # Check if Sentinel is available by attempting to list EGP policies.
 # This API endpoint only exists on Vault Enterprise.
@@ -984,11 +975,11 @@ else
     log_warn "Delegation enforcement will rely on ACL policies only."
 fi
 
-# ─── Step 9: Verify Token Exchange Service ───────────────────────────────
+# ─── Step 8: Verify Token Exchange Service ───────────────────────────────
 # Token Exchange is a stateless JWT minter — no Vault token needed.
 # It should already be running from docker compose up.
 
-log_step 9 "Verifying Token Exchange Service"
+log_step 8 "Verifying Token Exchange Service"
 
 log_info "Waiting for Token Exchange Service..."
 for i in $(seq 1 15); do
@@ -999,9 +990,9 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
-# ─── Step 10: Verify Setup ─────────────────────────────────────────────
+# ─── Step 9: Verify Setup ──────────────────────────────────────────────
 
-log_step 10 "Verifying setup"
+log_step 9 "Verifying setup"
 
 echo ""
 log_info "Service endpoints:"

@@ -22,9 +22,9 @@ class TestBootstrapScript(unittest.TestCase):
         with open(BOOTSTRAP_PATH) as f:
             cls.script = f.read()
 
-    def test_all_ten_steps_present(self):
-        """All 10 bootstrap steps must be present in order."""
-        for step_num in range(1, 11):
+    def test_all_nine_steps_present(self):
+        """All 9 bootstrap steps must be present in order."""
+        for step_num in range(1, 10):
             self.assertIn(
                 f"log_step {step_num}",
                 self.script,
@@ -100,10 +100,9 @@ class TestCleanupScript(unittest.TestCase):
         self.assertIn("docker-compose.host.yml", self.script)
 
     def test_removes_credential_files(self):
-        """Cleanup must remove all three generated credential files."""
+        """Cleanup must remove generated credential files."""
         self.assertIn(".vault-unseal-key", self.script)
         self.assertIn(".vault-root-token", self.script)
-        self.assertIn(".gateway.env", self.script)
 
     def test_uses_volume_removal_flag(self):
         """Cleanup must use 'down -v' to remove Docker volumes."""

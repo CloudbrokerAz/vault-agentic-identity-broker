@@ -66,7 +66,7 @@ even if the human's token did not include a `may_act` claim for that agent.
 
 ## How Policies Are Loaded
 
-The bootstrap script (`scripts/bootstrap.sh`, Step 8d) loads these policies
+The bootstrap script (`scripts/bootstrap.sh`, Step 7e) loads these policies
 automatically on Vault Enterprise. Each policy file is base64-encoded and
 written to `sys/policies/egp/<name>` via the Vault API.
 

@@ -8,7 +8,6 @@
 secrets/
 .vault-root-token
 .vault-unseal-key
-.gateway.env
 DEMO-CREDENTIALS.md
 
 # Vault data
