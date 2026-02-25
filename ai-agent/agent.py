@@ -623,7 +623,7 @@ class VaultClient:
         except requests.RequestException as e:
             raise RuntimeError(f"Vault SPIFFE auth request failed: {e}") from e
 
-    def login_jwt(self, fused_jwt: str, role: str = "agent-readonly") -> dict:
+    def login_jwt(self, fused_jwt: str, role: str = "delegated-agent-readonly") -> dict:
         """
         Authenticate to Vault via JWT auth with the fused delegation token.
 
@@ -958,7 +958,7 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
     print_step(5, "Vault JWT auth (delegation identity via fused token)")
 
     scope = exchange_result["scope"]
-    vault_jwt_role = f"agent-{scope}" if scope else "agent-readonly"
+    vault_jwt_role = f"delegated-agent-{scope}" if scope else "delegated-agent-readonly"
     try:
         jwt_auth = vault_client.login_jwt(delegation_token, role=vault_jwt_role)
         vault_delegation_token = jwt_auth["client_token"]
@@ -1099,7 +1099,7 @@ def run_interactive():
             # Vault auth + DB creds
             spiffe_auth = vault_client.login_spiffe(agent_svid, role="gateway")
             jwt_auth = vault_client.login_jwt(
-                exchange_result["delegation_token"], role="agent-readonly"
+                exchange_result["delegation_token"], role="delegated-agent-readonly"
             )
             db_creds = vault_client.get_database_credentials(
                 jwt_auth["client_token"], role="ai-agent-readonly"

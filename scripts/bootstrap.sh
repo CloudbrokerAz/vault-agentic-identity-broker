@@ -293,7 +293,7 @@ log_ok "Test credential revoked"
 # JWKS URL is configured later in Step 7a once Token Exchange is reachable.
 # Old SPIRE-based JWT roles are removed — SPIFFE auth handles agent authn.
 
-log_step 6 "Enabling Vault JWT auth method and creating delegated-agent role"
+log_step 6 "Enabling Vault JWT auth method and creating scope-based delegation roles"
 
 # Enable JWT auth method
 curl -sf "${VAULT_ADDR}/v1/sys/auth/jwt" \
@@ -314,7 +314,7 @@ for old_role in spire-gateway spire-agent-readonly spire-agent-readwrite; do
 done
 log_ok "Legacy SPIRE JWT roles removed (spire-gateway, spire-agent-readonly, spire-agent-readwrite)"
 
-# Create JWT auth role for fused delegation tokens
+# Create scope-specific JWT auth roles for fused delegation tokens.
 # The fused JWT from Token Exchange contains:
 #   sub = human identity (e.g. alice@acme.com)
 #   act.sub = agent SPIFFE ID (e.g. spiffe://demo.local/agent/query-agent)
@@ -322,8 +322,18 @@ log_ok "Legacy SPIRE JWT roles removed (spire-gateway, spire-agent-readonly, spi
 #   scope = delegation scope (readonly, readwrite, etc.)
 #   delegation_depth = chain depth (1 = direct, 2+ = sub-agent)
 #   may_act.sub = authorized agent SPIFFE pattern (e.g. spiffe://demo.local/agent/*)
-log_info "Creating JWT auth role 'delegated-agent'..."
+#
+# Two roles enforce scope at the Vault auth layer (defense-in-depth):
+#   delegated-agent-readonly  — bound_claims scope=readonly → ai-agent-db-read
+#   delegated-agent-readwrite — bound_claims scope=readwrite → ai-agent-db-readwrite
+
+# Remove legacy single-scope role (idempotent — 404 is fine)
 curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
+    -X DELETE \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" > /dev/null 2>&1 || true
+
+log_info "Creating JWT auth role 'delegated-agent-readonly'..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent-readonly" \
     -X POST \
     -H "X-Vault-Token: ${VAULT_TOKEN}" \
     -H "Content-Type: application/json" \
@@ -333,7 +343,8 @@ curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
         "groups_claim": "groups",
         "bound_audiences": ["vault"],
         "bound_claims": {
-            "/act/sub": "spiffe://demo.local/*"
+            "/act/sub": "spiffe://demo.local/*",
+            "scope": "readonly"
         },
         "bound_claims_type": "glob",
         "claim_mappings": {
@@ -347,7 +358,35 @@ curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent" \
         "token_ttl": "5m",
         "token_max_ttl": "30m"
     }' > /dev/null
-log_ok "JWT auth role 'delegated-agent' created (bound_claims: act.sub must be SPIFFE, TTL=5m)"
+log_ok "JWT auth role 'delegated-agent-readonly' created (scope=readonly → ai-agent-db-read)"
+
+log_info "Creating JWT auth role 'delegated-agent-readwrite'..."
+curl -sf "${VAULT_ADDR}/v1/auth/jwt/role/delegated-agent-readwrite" \
+    -X POST \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "role_type": "jwt",
+        "user_claim": "sub",
+        "groups_claim": "groups",
+        "bound_audiences": ["vault"],
+        "bound_claims": {
+            "/act/sub": "spiffe://demo.local/*",
+            "scope": "readwrite"
+        },
+        "bound_claims_type": "glob",
+        "claim_mappings": {
+            "sub": "human_user",
+            "/act/sub": "agent_identity",
+            "scope": "delegation_scope",
+            "delegation_depth": "chain_depth",
+            "/may_act/sub": "may_act"
+        },
+        "token_policies": ["ai-agent-db-readwrite"],
+        "token_ttl": "5m",
+        "token_max_ttl": "30m"
+    }' > /dev/null
+log_ok "JWT auth role 'delegated-agent-readwrite' created (scope=readwrite → ai-agent-db-readwrite)"
 
 # ─── Step 7: Register SPIRE Entries ─────────────────────────────────────
 
@@ -482,7 +521,7 @@ if [ -n "${JOIN_TOKEN}" ]; then
         -d '{
             "jwks_url": "'"${TOKEN_EXCHANGE_JWKS_URL}"'",
             "bound_issuer": "token-exchange.demo.local",
-            "default_role": "delegated-agent"
+            "default_role": "delegated-agent-readonly"
         }' > /dev/null
     log_ok "Vault JWT auth configured with Token Exchange JWKS: ${TOKEN_EXCHANGE_JWKS_URL}"
 else

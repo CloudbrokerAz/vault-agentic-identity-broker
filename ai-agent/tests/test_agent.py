@@ -1120,7 +1120,7 @@ class TestVaultClient(unittest.TestCase):
                 "client_token": "s.vault-delegation-token-abc",
                 "policies": ["default", "ai-agent-db-read"],
                 "lease_duration": 300,
-                "metadata": {"role": "agent-readonly"},
+                "metadata": {"role": "delegated-agent-readonly"},
             }
         }
         mock_post.return_value = mock_response

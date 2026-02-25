@@ -78,6 +78,13 @@ class TestBootstrapScript(unittest.TestCase):
         self.assertIn("/may_act/sub", self.script)
         self.assertIn('"may_act"', self.script)
 
+    def test_scope_based_jwt_auth_roles(self):
+        """Bootstrap must create scope-specific JWT auth roles for defense-in-depth."""
+        self.assertIn("delegated-agent-readonly", self.script)
+        self.assertIn("delegated-agent-readwrite", self.script)
+        self.assertIn('"scope": "readonly"', self.script)
+        self.assertIn('"scope": "readwrite"', self.script)
+
     def test_saves_credentials_with_chmod_600(self):
         """Bootstrap must set chmod 600 on saved credential files."""
         self.assertIn("chmod 600", self.script)
