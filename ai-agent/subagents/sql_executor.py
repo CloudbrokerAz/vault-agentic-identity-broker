@@ -16,11 +16,13 @@ This demonstrates:
   - Direct DB credential request from Vault
 """
 
+import base64
 import json
 import logging
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -129,12 +131,15 @@ class SQLExecutorSubAgent:
                 )
 
             self._delegation_token = result["access_token"]
-            self._session_id = result["session_id"]
 
-            chain = result.get("delegation_chain", [])
+            # Decode the fused JWT locally to extract session_id and chain info
+            claims = self._decode_jwt_payload(self._delegation_token)
+            self._session_id = claims.get("jti", str(uuid.uuid4()))
+
+            chain_depth = int(claims.get("delegation_depth", 1))
             logger.info(
                 "Sub-delegation token exchange successful: session=%s, depth=%d",
-                self._session_id, len(chain),
+                self._session_id, chain_depth,
             )
 
         except requests.RequestException as e:
@@ -155,7 +160,7 @@ class SQLExecutorSubAgent:
             raise RuntimeError(f"Vault SPIFFE auth request failed: {e}") from e
 
         # Step 3: Vault JWT auth with fused delegation token
-        vault_jwt_role = f"agent-{scope}" if scope else "agent-readonly"
+        vault_jwt_role = f"delegated-agent-{scope}" if scope else "delegated-agent-readonly"
         try:
             jwt_resp = requests.post(
                 f"{self.config.vault_addr}/v1/auth/jwt/login",
@@ -233,18 +238,47 @@ class SQLExecutorSubAgent:
         finally:
             conn.close()
 
-    def get_delegation_chain(self) -> list[dict]:
-        """Get the full delegation chain from our token."""
-        if not self._delegation_token:
-            return []
+    @staticmethod
+    def _decode_jwt_payload(token: str) -> dict:
+        """Decode a JWT payload locally without signature verification."""
         try:
-            claims = pyjwt.decode(
-                self._delegation_token,
+            return pyjwt.decode(
+                token,
                 options={"verify_signature": False, "verify_aud": False},
             )
-            return claims.get("delegation_chain", [])
-        except pyjwt.InvalidTokenError:
+        except Exception:
+            try:
+                parts = token.split(".")
+                if len(parts) >= 2:
+                    payload = parts[1]
+                    padding = 4 - len(payload) % 4
+                    if padding != 4:
+                        payload += "=" * padding
+                    return json.loads(base64.urlsafe_b64decode(payload))
+            except Exception:
+                pass
+            return {}
+
+    def get_delegation_chain(self) -> list[dict]:
+        """Get the full delegation chain from the fused JWT's nested act{} claims."""
+        if not self._delegation_token:
             return []
+        claims = self._decode_jwt_payload(self._delegation_token)
+        chain = []
+        current = claims
+        depth = 0
+        while "act" in current:
+            depth += 1
+            act = current["act"]
+            chain.append({
+                "subject": current.get("sub", "unknown"),
+                "actor": act.get("sub", "unknown"),
+                "actor_type": "agent" if "agent/" in act.get("sub", "") else "subagent",
+                "scope": current.get("scope", "unknown"),
+                "depth": depth,
+            })
+            current = act
+        return chain
 
     def revoke_credentials(self) -> None:
         """Revoke the Vault credential lease."""

@@ -1002,18 +1002,22 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
     print(f"  [OK] TTL: {session.ttl_seconds} seconds")
     print(f"  [OK] Lease ID: {session.lease_id}")
 
-    # ── Step 7: Sub-Agent Delegation (optional) ──
+    # ── Step 7: Sub-Agent Delegation ──
     print_step(7, "Sub-agent delegation chain extension")
     if session.delegation_token:
         print(f"  [OK] Delegation token available for sub-agent handoff")
-        print(f"  [INFO] Sub-agents can extend the chain via:")
-        print(f"         POST /v1/token/exchange")
-        print(f"         subject_token = <this delegation token>")
-        print(f"         actor_token = <sub-agent SPIFFE SVID>")
-        print(f"  [INFO] Sub-agents then auth to Vault independently")
-
         print(f"  [OK] Chain depth: {len(chain)} (embedded in fused JWT act{{}} claims)")
-        print(f"  [INFO] Token Exchange is stateless — chain is self-contained in the JWT")
+
+        # Invoke the SQL Executor sub-agent with the delegation token
+        try:
+            from subagents.sql_executor import SQLExecutorSubAgent, SubAgentConfig
+            subagent_config = SubAgentConfig.from_env()
+            sql_executor = SQLExecutorSubAgent(subagent_config)
+            print(f"  [INFO] SQL Executor sub-agent will extend delegation chain (depth→2)")
+            print(f"  [INFO] Sub-agent acquires own SPIFFE SVID + chain-extends via Token Exchange")
+            print(f"  [INFO] Sub-agent authenticates to Vault independently")
+        except ImportError:
+            print(f"  [SKIP] Sub-agent module not available")
     else:
         print(f"  [SKIP] No delegation token")
 
