@@ -42,13 +42,12 @@
       }
     }
   },
-  "forwardPorts": [8080, 8082, 8090, 8181, 8200, 8500, 9080, 9090, 5432],
+  "forwardPorts": [8080, 8082, 8090, 8200, 8500, 9080, 9090, 5432],
   "portsAttributes": {
     "8500": { "label": "Demo UI" },
     "8080": { "label": "Keycloak" },
     "8200": { "label": "Vault" },
     "8090": { "label": "Token Exchange" },
-    "8181": { "label": "OPA" },
     "8082": { "label": "SPIRE OIDC" },
     "9080": { "label": "AgentGateway API" },
     "9090": { "label": "AgentGateway MCP" },

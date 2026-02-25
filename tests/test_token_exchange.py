@@ -153,12 +153,10 @@ class TestFusedJwtMinting(unittest.TestCase):
         self.assertEqual(act["act"]["sub"], "alice@acme.com")
         self.assertNotIn("act", act["act"])
 
-    def test_no_vault_or_opa_dependencies(self):
-        """The service must have zero Vault/OPA env vars or network calls."""
+    def test_no_vault_dependencies(self):
+        """The service must have zero Vault env vars or network calls."""
         svc = TokenExchangeService()
-        # No vault_token, vault_addr, opa_endpoint attributes
         self.assertFalse(hasattr(svc, "vault_token"))
-        self.assertFalse(hasattr(svc, "opa_endpoint"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

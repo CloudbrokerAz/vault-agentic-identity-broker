@@ -6,12 +6,11 @@ Tests the full user journey through the demo UI server API:
   Step 1: Human authentication (password grant)
   Step 2: Agent consent update
   Step 3: SPIFFE SVID fetch
-  Step 4: OPA policy evaluation
-  Step 5: Token exchange (RFC 8693) — delegation token only
-  Step 6: Vault credential brokering (delegation-gated via Token Exchange)
-  Step 7: Database query with dynamic credentials
-  Step 8: Credential revocation + verification
-  Step 9: Audit trail
+  Step 4: Token exchange (RFC 8693) — delegation token only
+  Step 5: Vault credential brokering (delegation-gated via Token Exchange)
+  Step 6: Database query with dynamic credentials
+  Step 7: Credential revocation + verification
+  Step 8: Audit trail
 
 Requires all services to be running (bootstrap completed).
 Run with: python -m pytest tests/test_demo_ui_flow.py -v
@@ -121,28 +120,7 @@ class TestDemoUIFlow:
         flow_state["svid_token"] = data["svid_token"]
         flow_state["svid_decoded"] = data.get("decoded", {})
 
-    def test_step4_opa(self, flow_state):
-        """Step 4: OPA policy evaluation should allow the delegation."""
-        decoded = flow_state["decoded_token"]
-        opa_input = {
-            "human_token": {
-                "sub": decoded.get("email") or decoded.get("preferred_username", "alice"),
-                "groups": decoded.get("groups", []),
-                "may_act": decoded.get("may_act", {}),
-                "exp": decoded.get("exp", 0),
-                "iss": decoded.get("iss", ""),
-            },
-            "agent_spiffe_id": "spiffe://demo.local/agent/query-agent",
-            "requested_scope": "readonly",
-            "current_time": int(__import__("time").time()),
-            "delegation_depth": 0,
-        }
-        status, data = api("POST", "/api/opa/evaluate", {"input": opa_input})
-        assert status == 200, f"OPA eval failed: {data}"
-        result = data.get("result", data)
-        assert result.get("allow") is True, f"OPA denied: {result}"
-
-    def test_step5_token_exchange(self, flow_state):
+    def test_step4_token_exchange(self, flow_state):
         """Step 5: Token exchange should return delegation token (no db_credential)."""
         status, data = api("POST", "/api/token-exchange", {
             "subject_token": flow_state["access_token"],
@@ -353,7 +331,7 @@ class TestDemoUIEdgeCases:
         status, data = api("GET", "/api/health")
         assert "overall" in data
         assert "services" in data
-        expected_services = {"keycloak", "opa", "token_exchange", "vault", "postgresql", "spire"}
+        expected_services = {"keycloak", "token_exchange", "vault", "postgresql", "spire"}
         actual_services = set(data["services"].keys())
         assert expected_services == actual_services, \
             f"Missing services: {expected_services - actual_services}"

@@ -712,26 +712,30 @@ details.raw-json-details summary:hover { color: var(--text); }
     </button>
     <button class="step-btn" onclick="showStep(4)">
       <span class="step-num" id="stepNum4">4</span>
-      <div class="step-label"><div class="step-title">Policy Check</div><div class="step-subtitle">OPA evaluation</div></div>
+      <div class="step-label"><div class="step-title">Token Minting</div><div class="step-subtitle">Fused delegation JWT</div></div>
     </button>
     <button class="step-btn" onclick="showStep(5)">
       <span class="step-num" id="stepNum5">5</span>
-      <div class="step-label"><div class="step-title">Token Exchange</div><div class="step-subtitle">RFC 8693 delegation</div></div>
+      <div class="step-label"><div class="step-title">Vault SPIFFE Auth</div><div class="step-subtitle">Agent workload token</div></div>
     </button>
     <button class="step-btn" onclick="showStep(6)">
       <span class="step-num" id="stepNum6">6</span>
-      <div class="step-label"><div class="step-title">Vault Credentials</div><div class="step-subtitle">Delegation-gated credentials</div></div>
+      <div class="step-label"><div class="step-title">Vault JWT Auth</div><div class="step-subtitle">Delegation token login</div></div>
     </button>
     <button class="step-btn" onclick="showStep(7)">
       <span class="step-num" id="stepNum7">7</span>
-      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
+      <div class="step-label"><div class="step-title">Vault Credentials</div><div class="step-subtitle">Dynamic DB credentials</div></div>
     </button>
     <button class="step-btn" onclick="showStep(8)">
       <span class="step-num" id="stepNum8">8</span>
-      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+      <div class="step-label"><div class="step-title">Database Query</div><div class="step-subtitle">Real SQL execution</div></div>
     </button>
     <button class="step-btn" onclick="showStep(9)">
       <span class="step-num" id="stepNum9">9</span>
+      <div class="step-label"><div class="step-title">Revocation</div><div class="step-subtitle">Revoke &amp; verify</div></div>
+    </button>
+    <button class="step-btn" onclick="showStep(10)">
+      <span class="step-num" id="stepNum10">10</span>
       <div class="step-label"><div class="step-title">Audit Trail</div><div class="step-subtitle">Delegation audit log</div></div>
     </button>
   </nav>
@@ -752,7 +756,6 @@ details.raw-json-details summary:hover { color: var(--text); }
       <div class="service-grid" id="healthGrid">
         <div class="service-card" id="svc-keycloak"><span class="status-dot pending"></span><div><div class="service-name">Keycloak</div><div class="service-detail">:8080 OIDC IdP</div></div></div>
         <div class="service-card" id="svc-spire"><span class="status-dot pending"></span><div><div class="service-name">SPIRE</div><div class="service-detail">Unix socket</div></div></div>
-        <div class="service-card" id="svc-opa"><span class="status-dot pending"></span><div><div class="service-name">OPA</div><div class="service-detail">:8181 Policy engine</div></div></div>
         <div class="service-card" id="svc-token_exchange"><span class="status-dot pending"></span><div><div class="service-name">Token Exchange</div><div class="service-detail">:8090 RFC 8693</div></div></div>
         <div class="service-card" id="svc-vault"><span class="status-dot pending"></span><div><div class="service-name">Vault</div><div class="service-detail">:8200 Dynamic secrets</div></div></div>
         <div class="service-card" id="svc-postgresql"><span class="status-dot pending"></span><div><div class="service-name">PostgreSQL</div><div class="service-detail">:5432 Target DB</div></div></div>
@@ -853,7 +856,7 @@ details.raw-json-details summary:hover { color: var(--text); }
         <h2>Agent Delegation Consent</h2>
         <span class="timing-badge" id="consentTiming"></span>
       </div>
-      <p class="panel-desc">Before an AI agent can act on your behalf, you must explicitly authorize which agents may do so. This consent is stored as a Keycloak user attribute and included in your OIDC token as the <code>may_act</code> claim (RFC 8693 §4.4). Without consent, the delegation will be denied by OPA policy.</p>
+      <p class="panel-desc">Before an AI agent can act on your behalf, you must explicitly authorize which agents may do so. This consent is stored as a Keycloak user attribute and included in your OIDC token as the <code>may_act</code> claim (RFC 8693 §4.4). Without consent, the delegation will be denied by Vault Sentinel policy.</p>
 
       <div class="card" id="consentCurrentCard">
         <div class="card-header">Current Consent</div>
@@ -901,7 +904,7 @@ details.raw-json-details summary:hover { color: var(--text); }
         <div class="card-body" style="font-size:13px;color:var(--text-dim);line-height:1.6;">
           <strong style="color:var(--text);">Before (hardcoded):</strong> Every user's token contained the same <code>may_act</code> claim, authorizing all agents for all users.<br>
           <strong style="color:var(--text);">Now (dynamic):</strong> Each user's <code>agent_consent</code> attribute in Keycloak controls which agents they authorize. The <code>oidc-usermodel-attribute-mapper</code> reads this attribute at token issuance time and emits it as the <code>may_act</code> claim. Changing consent requires re-authentication to get a fresh token.<br><br>
-          <strong style="color:var(--text);">Token flow:</strong> User attribute &rarr; Keycloak mapper &rarr; <code>may_act</code> claim in OIDC token &rarr; OPA checks <code>may_act.aud</code> contains the requesting agent's SPIFFE ID &rarr; Token Exchange proceeds or denies.
+          <strong style="color:var(--text);">Token flow:</strong> User attribute &rarr; Keycloak mapper &rarr; <code>may_act</code> claim in OIDC token &rarr; Vault Sentinel checks <code>may_act.aud</code> contains the requesting agent's SPIFFE ID &rarr; Token Exchange proceeds or denies.
         </div>
       </div>
     </div>
@@ -981,50 +984,15 @@ details.raw-json-details summary:hover { color: var(--text); }
       </div>
     </div>
 
-    <!-- Step 4: OPA -->
+    <!-- Step 4: Token Minting -->
     <div class="step-panel" id="panel4">
       <div class="panel-header">
-        <h2>Policy Evaluation (OPA)</h2>
-        <span class="timing-badge" id="opaTiming"></span>
-      </div>
-      <p class="panel-desc">Evaluate the delegation policy in Open Policy Agent. The policy checks agent registration, user group permissions, scope authorization, and delegation depth.</p>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Scope</label>
-          <select id="scopeSelect">
-            <option value="readonly" selected>readonly</option>
-            <option value="readwrite">readwrite</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" onclick="evaluateOPA()" id="opaBtn" disabled>Evaluate Policy</button>
-      </div>
-      <div class="two-col" id="opaResults" style="display:none;">
-        <div class="card">
-          <div class="card-header">Policy Input</div>
-          <div class="card-body">
-            <pre class="json" id="opaRequest"></pre>
-            <div id="opaInputAnnotations"></div>
-          </div>
-        </div>
-        <div class="card" id="opaResponseCard">
-          <div class="card-header">Policy Decision</div>
-          <div class="card-body">
-            <pre class="json" id="opaResponse"></pre>
-            <div id="opaAnnotations"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Step 5: Token Exchange -->
-    <div class="step-panel" id="panel5">
-      <div class="panel-header">
-        <h2>Token Exchange (RFC 8693)</h2>
+        <h2>Token Minting (RFC 8693)</h2>
         <span class="timing-badge" id="exchangeTiming"></span>
       </div>
-      <p class="panel-desc">Two tokens go in (human OIDC + agent SPIFFE), one delegation token comes out. This is the core of the identity broker — the Token Exchange Service validates both tokens, checks policy, and mints a delegation token with a nested act{} claim.</p>
+      <p class="panel-desc">Two tokens go in (human OIDC + agent SPIFFE), one fused delegation JWT comes out. The Token Exchange Service validates both tokens, checks delegation permissions, and mints a delegation token with a nested act{} claim. This token will be used to authenticate to Vault in the next steps.</p>
       <div class="controls">
-        <button class="btn btn-primary" onclick="doTokenExchange()" id="exchangeBtn" disabled>Exchange Tokens</button>
+        <button class="btn btn-primary" onclick="doTokenExchange()" id="exchangeBtn" disabled>Mint Delegation Token</button>
       </div>
 
       <!-- A) Exchange Flow Diagram -->
@@ -1049,7 +1017,7 @@ details.raw-json-details summary:hover { color: var(--text); }
               <div class="esb-title">Token Exchange Service</div>
               <div class="esb-step" id="exSvc1"><span class="esb-num">1</span> Validate human token (Keycloak)</div>
               <div class="esb-step" id="exSvc2"><span class="esb-num">2</span> Validate agent SVID (SPIFFE JWKS)</div>
-              <div class="esb-step" id="exSvc3"><span class="esb-num">3</span> Check OPA delegation policy</div>
+              <div class="esb-step" id="exSvc3"><span class="esb-num">3</span> Validate delegation scope and permissions</div>
               <div class="esb-step" id="exSvc4"><span class="esb-num">4</span> Mint delegation token (RS256)</div>
             </div>
             <div class="exchange-arrow" id="exArrowOut">
@@ -1112,79 +1080,72 @@ details.raw-json-details summary:hover { color: var(--text); }
       </details>
     </div>
 
-    <!-- Step 6: Vault Credential Brokering (Mediated via Token Exchange) -->
+    <!-- Step 5: Vault SPIFFE Auth -->
+    <div class="step-panel" id="panel5">
+      <div class="panel-header">
+        <h2>Vault SPIFFE Auth</h2>
+        <span class="timing-badge" id="vaultSpiffeTiming"></span>
+      </div>
+      <p class="panel-desc">The agent authenticates to Vault using its SPIFFE JWT-SVID. Vault verifies the SVID against SPIRE's OIDC JWKS endpoint and returns a Vault workload token. This establishes the agent's identity with Vault independently of any human delegation.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="doVaultSpiffeAuth()" id="vaultSpiffeBtn" disabled>Authenticate with SPIFFE</button>
+      </div>
+      <div class="card" id="vaultSpiffeResultCard" style="display:none;">
+        <div class="card-header">Vault SPIFFE Auth Response</div>
+        <div class="card-body">
+          <pre class="json" id="vaultSpiffeResponse"></pre>
+          <div id="vaultSpiffeAnnotations"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 6: Vault JWT Auth -->
     <div class="step-panel" id="panel6">
       <div class="panel-header">
-        <h2>Vault Credential Brokering</h2>
+        <h2>Vault JWT Auth</h2>
+        <span class="timing-badge" id="vaultJwtTiming"></span>
+      </div>
+      <p class="panel-desc">The agent authenticates to Vault using the <strong>fused delegation JWT</strong> from Step 4. Vault verifies the token signature against Token Exchange's JWKS endpoint. The resulting Vault token carries policies scoped to the delegation's permissions (readonly/readwrite).</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="doVaultJwtAuth()" id="vaultJwtBtn" disabled>Authenticate with Delegation JWT</button>
+      </div>
+      <div class="card" id="vaultJwtResultCard" style="display:none;">
+        <div class="card-header">Vault JWT Auth Response</div>
+        <div class="card-body">
+          <pre class="json" id="vaultJwtResponse"></pre>
+          <div id="vaultJwtAnnotations"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Vault Credentials (Direct) -->
+    <div class="step-panel" id="panel7">
+      <div class="panel-header">
+        <h2>Vault Credentials</h2>
         <span class="timing-badge" id="vaultTiming"></span>
       </div>
-      <p class="panel-desc">The agent presents the <strong>delegation token from Step 5</strong> to the Token Exchange Service. Token Exchange validates the token (RS256 signature, expiry, revocation status), extracts the authorized scope, and uses <strong>its own Vault credentials</strong> to broker dynamic database credentials. The agent <strong>never authenticates to Vault directly</strong> — the delegation token IS the proof of human authorization that gates credential access.</p>
-
-      <!-- A) Credential Flow Diagram -->
-      <div class="card" id="credFlowCard">
-        <div class="card-header">Mediated Credential Flow</div>
+      <p class="panel-desc">The agent uses its <strong>delegation Vault token</strong> (from Step 6) to request dynamic database credentials directly from Vault's database secrets engine. Vault's policies enforce that the agent can only access the role matching its delegation scope.</p>
+      <div class="controls">
+        <button class="btn btn-primary" onclick="doVaultCredentials()" id="vaultCredsBtn" disabled>Request Credentials</button>
+      </div>
+      <div class="card" id="vaultCredsResultCard" style="display:none;">
+        <div class="card-header">Dynamic Credentials</div>
         <div class="card-body">
-          <div class="exchange-flow">
-            <div class="exchange-col">
-              <div class="exchange-token-box delegation" id="credFlowToken">
-                <div class="etb-title">Delegation Token</div>
-                <div class="etb-sub">From Step 5 — proves human authorization</div>
-              </div>
-            </div>
-            <div class="exchange-arrow" id="credArrowIn">
-              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
-            </div>
-            <div class="exchange-service-box" id="credServiceBox">
-              <div class="esb-title">Token Exchange Service</div>
-              <div class="esb-step" id="credSvc1"><span class="esb-num">1</span> Validate token (RS256 signature)</div>
-              <div class="esb-step" id="credSvc2"><span class="esb-num">2</span> Check expiry &amp; revocation</div>
-              <div class="esb-step" id="credSvc3"><span class="esb-num">3</span> Map scope to Vault role</div>
-              <div class="esb-step" id="credSvc4"><span class="esb-num">4</span> Broker credentials via Vault</div>
-            </div>
-            <div class="exchange-arrow" id="credArrowOut">
-              <svg viewBox="0 0 40 24"><line x1="0" y1="12" x2="32" y2="12"/><polygon points="32,6 40,12 32,18"/></svg>
-            </div>
-            <div class="exchange-col">
-              <div class="exchange-token-box vault" id="credFlowCreds">
-                <div class="etb-title">Dynamic Credentials</div>
-                <div class="etb-sub">PostgreSQL user + password, 5-min TTL</div>
-              </div>
-            </div>
-          </div>
+          <div id="vaultCredsDetails"></div>
+          <div id="vaultCredsAnnotations" style="margin-top:8px;"></div>
         </div>
       </div>
-
-      <!-- B) Broker Credentials Card -->
-      <div class="card" id="credBrokerCard">
-        <div class="card-header" style="color:var(--green);">Broker Credentials via Delegation Token</div>
-        <div class="card-body">
-          <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">The agent makes a single call to Token Exchange, presenting the delegation token as proof of human authorization. Token Exchange validates the token, maps the scope to a Vault role, and uses its own privileged Vault token to broker dynamic database credentials. The agent never touches Vault directly.</p>
-          <div class="controls">
-            <button class="btn btn-primary" onclick="doBrokerCredentials()" id="brokerCredsBtn" disabled>Broker Credentials</button>
-          </div>
-          <div id="credBrokerSteps" style="display:none;margin-top:12px;"></div>
-          <div class="card" id="credBrokerResultCard" style="display:none;margin-top:12px;">
-            <div class="card-header">Dynamic Credentials</div>
-            <div class="card-body">
-              <div id="credBrokerDetails"></div>
-              <div id="credBrokerAnnotations" style="margin-top:8px;"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- C) Raw JSON (collapsible) -->
       <details class="raw-json-details" id="credRawDetails" style="display:none;">
-        <summary>Raw Token Exchange Credential Response</summary>
+        <summary>Raw Vault Credential Response</summary>
         <div class="card">
-          <div class="card-header">Credential Broker Response</div>
-          <div class="card-body"><pre class="json" id="credBrokerRawJson"></pre></div>
+          <div class="card-header">Vault Response</div>
+          <div class="card-body"><pre class="json" id="credRawJson"></pre></div>
         </div>
       </details>
     </div>
 
-    <!-- Step 7: DB Query -->
-    <div class="step-panel" id="panel7">
+    <!-- Step 8: DB Query -->
+    <div class="step-panel" id="panel8">
       <div class="panel-header">
         <h2>Database Query</h2>
         <span class="timing-badge" id="queryTiming"></span>
@@ -1233,8 +1194,8 @@ details.raw-json-details summary:hover { color: var(--text); }
       </div>
     </div>
 
-    <!-- Step 8: Revocation -->
-    <div class="step-panel" id="panel8">
+    <!-- Step 9: Revocation -->
+    <div class="step-panel" id="panel9">
       <div class="panel-header">
         <h2>Credential Revocation</h2>
         <span class="timing-badge" id="revokeTiming"></span>
@@ -1262,8 +1223,8 @@ details.raw-json-details summary:hover { color: var(--text); }
       </div>
     </div>
 
-    <!-- Step 9: Audit -->
-    <div class="step-panel" id="panel9">
+    <!-- Step 10: Audit -->
+    <div class="step-panel" id="panel10">
       <div class="panel-header">
         <h2>Audit Trail</h2>
         <span class="timing-badge" id="auditTiming"></span>
@@ -1318,8 +1279,9 @@ const state = {
   spiffeSvid: null,
   svidDecoded: null,
   scope: 'readonly',
-  opaResult: null,
   delegationToken: null,
+  vaultWorkloadToken: null,
+  vaultDelegationToken: null,
   vaultLeaseId: null,
   dbCredential: null,
   sessionId: null,
@@ -1362,20 +1324,6 @@ const ANNOTATIONS = {
     { key: 'aud', color: 'orange', label: 'AUDIENCE', desc: 'This token is intended for the token-exchange service' },
     { key: 'client_type', color: 'pink', label: 'CLIENT TYPE', desc: 'Identifies this workload as an AI agent' },
   ],
-  opaInput: [
-    { key: 'human_token.sub', color: 'accent', label: 'SUBJECT', desc: 'The human requesting delegation' },
-    { key: 'human_token.groups', color: 'green', label: 'GROUPS', desc: 'Checked against group_permissions in policy data' },
-    { key: 'agent_spiffe_id', color: 'cyan', label: 'AGENT', desc: 'Must be in registered_agents list' },
-    { key: 'requested_scope', color: 'orange', label: 'SCOPE', desc: 'The permission level being requested' },
-  ],
-  opaDecision: [
-    { key: 'allow', color: 'bool', label: 'DECISION', desc: 'Whether the policy permits this delegation' },
-    { key: 'valid_human_token', color: 'bool', label: 'RULE 1', desc: 'Token not expired, issuer trusted' },
-    { key: 'valid_agent_identity', color: 'bool', label: 'RULE 2', desc: 'Agent registered in policy data' },
-    { key: 'authorized_delegation', color: 'bool', label: 'RULE 3', desc: 'may_act claim authorizes this agent' },
-    { key: 'scope_permitted', color: 'bool', label: 'RULE 4', desc: 'User\u2019s groups allow this scope' },
-    { key: 'decision.reason', color: 'yellow', label: 'REASON', desc: 'Explanation of the decision' },
-  ],
   delegationToken: [
     { key: 'sub', color: 'accent', label: 'SUBJECT', desc: 'The human this delegation represents' },
     { key: 'act', color: 'cyan', label: 'ACTOR CHAIN', desc: 'The agent(s) acting on behalf \u2014 RFC 8693 actor claim' },
@@ -1397,12 +1345,23 @@ const ANNOTATIONS = {
     { key: 'access_token', color: 'accent', label: 'DELEGATION TOKEN', desc: 'Proves who authorized what' },
     { key: 'session_id', color: 'purple', label: 'SESSION ID', desc: 'Correlates audit entries and enables revocation' },
   ],
-  credBroker: [
+  vaultSpiffe: [
+    { key: 'vault_token', color: 'accent', label: 'VAULT TOKEN', desc: 'Vault workload token issued via SPIFFE JWT auth' },
+    { key: 'policies', color: 'green', label: 'POLICIES', desc: 'Vault ACL policies attached to this token' },
+    { key: 'lease_duration', color: 'yellow', label: 'TTL', desc: 'Token validity period in seconds' },
+    { key: 'role', color: 'purple', label: 'AUTH ROLE', desc: 'Vault JWT auth role used for login' },
+  ],
+  vaultJwt: [
+    { key: 'vault_token', color: 'accent', label: 'VAULT TOKEN', desc: 'Vault delegation token issued via JWT auth with fused delegation JWT' },
+    { key: 'policies', color: 'green', label: 'POLICIES', desc: 'Vault ACL policies — scoped to delegation permissions' },
+    { key: 'lease_duration', color: 'yellow', label: 'TTL', desc: 'Token validity period in seconds' },
+    { key: 'role', color: 'purple', label: 'AUTH ROLE', desc: 'Vault JWT auth role for delegated agents' },
+  ],
+  vaultCreds: [
     { key: 'username', color: 'accent', label: 'DYNAMIC USER', desc: 'Vault-generated PostgreSQL role (auto-expires)' },
     { key: 'ttl_seconds', color: 'yellow', label: 'TTL', desc: 'Credentials expire after this many seconds' },
     { key: 'lease_id', color: 'orange', label: 'LEASE ID', desc: 'Vault lease identifier — used to revoke these specific credentials' },
     { key: 'vault_role', color: 'purple', label: 'VAULT ROLE', desc: 'Database secrets engine role that created these credentials' },
-    { key: 'delegation_verified', color: 'green', label: 'DELEGATION VERIFIED', desc: 'Token Exchange confirmed the delegation token before issuing credentials' },
   ],
   dbCreds: [
     { key: 'username', color: 'accent', label: 'DYNAMIC USER', desc: 'Vault-generated PostgreSQL role (auto-expires)' },
@@ -1856,7 +1815,10 @@ async function handleAuthCodeCallback() {
       statusText.innerHTML = '<span style="color:var(--green);">&#10003;</span> Authenticated as ' + escapeHtml(state.user) + '!';
       completeStep(1);
       document.getElementById('svidBtn').disabled = false;
+      document.getElementById('consentUpdateBtn').disabled = false;
+      document.getElementById('consentRevokeBtn').disabled = false;
       showLogoutButton();
+      loadConsent();
     } else {
       showJson('authResponse', data);
       document.getElementById('authResponseCard').className = 'card error';
@@ -2070,7 +2032,7 @@ async function fetchSVID() {
     }, delay);
 
     completeStep(3);
-    document.getElementById('opaBtn').disabled = false;
+    document.getElementById('exchangeBtn').disabled = false;
   } catch (e) {
     document.getElementById('attestDetail').innerHTML = '<span style="color:var(--red);">\u2717</span> Failed: ' + escapeHtml(e.message);
     showJson('svidDecoded', { error: e.message });
@@ -2081,60 +2043,7 @@ async function fetchSVID() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: OPA
-// ---------------------------------------------------------------------------
-async function evaluateOPA() {
-  const scope = document.getElementById('scopeSelect').value;
-  state.scope = scope;
-  btnLoading('opaBtn', 'Evaluating...');
-
-  const spiffeId = state.svidDecoded?.sub || 'spiffe://demo.local/' + state.agentType + '/' + state.agent;
-  const opaInput = {
-    human_token: {
-      sub: state.decodedToken?.email || state.decodedToken?.preferred_username || state.user || 'unknown',
-      groups: state.decodedToken?.groups || [],
-      may_act: state.decodedToken?.may_act || {},
-      exp: state.decodedToken?.exp || 0,
-      iss: state.decodedToken?.iss || '',
-    },
-    agent_spiffe_id: spiffeId,
-    requested_scope: scope,
-    current_time: Math.floor(Date.now() / 1000),
-    delegation_depth: 0,
-  };
-
-  document.getElementById('opaResults').style.display = '';
-  showJson('opaRequest', opaInput);
-  renderAnnotatedResponse('opaInputAnnotations', opaInput, ANNOTATIONS.opaInput);
-
-  try {
-    const { status, data } = await api('POST', '/api/opa/evaluate', { input: opaInput });
-    setTiming('opaTiming', data.elapsed_ms || 0, !!data.result?.allow);
-
-    const result = data.result || data;
-    showJson('opaResponse', result);
-    renderAnnotatedResponse('opaAnnotations', result, ANNOTATIONS.opaDecision);
-
-    const allowed = data.result?.allow === true;
-    document.getElementById('opaResponseCard').className = 'card ' + (allowed ? 'success' : 'error');
-
-    if (allowed) {
-      completeStep(4);
-    } else {
-      failStep(4);
-    }
-    state.opaResult = data.result;
-    document.getElementById('exchangeBtn').disabled = false;
-  } catch (e) {
-    showJson('opaResponse', { error: e.message });
-    document.getElementById('opaResponseCard').className = 'card error';
-    failStep(4);
-  }
-  btnRestore('opaBtn', 'Evaluate Policy');
-}
-
-// ---------------------------------------------------------------------------
-// Step 5: Token Exchange — Helpers
+// Step 4: Token Exchange — Helpers
 // ---------------------------------------------------------------------------
 function renderActChainViz(elementId, actClaim, topSubject) {
   const el = document.getElementById(elementId);
@@ -2216,7 +2125,7 @@ function animateExchangeFlow(success) {
     if (arrow) arrow.classList.add('active');
   }, 500);
 
-  // Animate service steps one by one (4 steps now — no Vault brokering)
+  // Animate service steps one by one
   for (let i = 1; i <= 4; i++) {
     setTimeout(() => {
       const step = document.getElementById('exSvc' + i);
@@ -2244,10 +2153,10 @@ function animateExchangeFlow(success) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 5: Token Exchange
+// Step 4: Token Minting
 // ---------------------------------------------------------------------------
 async function doTokenExchange() {
-  btnLoading('exchangeBtn', 'Exchanging...');
+  btnLoading('exchangeBtn', 'Minting...');
 
   const reqBody = {
     subject_token: state.accessToken,
@@ -2304,7 +2213,7 @@ async function doTokenExchange() {
       state.sessionId = data.session_id;
 
       document.getElementById('exchangeResponseCard').className = 'card success';
-      completeStep(5);
+      completeStep(4);
 
       // B) Show decoded input tokens
       document.getElementById('exchangeInputTokens').style.display = '';
@@ -2331,99 +2240,127 @@ async function doTokenExchange() {
         renderActChainViz('actChainViz', data.delegation_token_decoded.act, data.delegation_token_decoded.sub);
       }
 
-      // Enable Step 6 (Vault Credential Brokering)
-      document.getElementById('brokerCredsBtn').disabled = false;
+      // Enable Steps 5 & 6 (Vault auth)
+      document.getElementById('vaultSpiffeBtn').disabled = false;
+      document.getElementById('vaultJwtBtn').disabled = false;
       document.getElementById('auditBtn').disabled = false;
     } else {
       document.getElementById('exchangeResponseCard').className = 'card error';
       showJson('exchangeResponse', data);
-      failStep(5);
+      failStep(4);
       document.getElementById('auditBtn').disabled = false;
     }
   } catch (e) {
     showJson('exchangeResponse', { error: e.message });
     document.getElementById('exchangeResponseCard').className = 'card error';
-    failStep(5);
+    failStep(4);
   }
-  btnRestore('exchangeBtn', 'Exchange Tokens');
+  btnRestore('exchangeBtn', 'Mint Delegation Token');
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: Vault Credential Brokering (Mediated via Token Exchange)
+// Step 5: Vault SPIFFE Auth
 // ---------------------------------------------------------------------------
-async function doBrokerCredentials() {
-  btnLoading('brokerCredsBtn', 'Brokering...');
+async function doVaultSpiffeAuth() {
+  btnLoading('vaultSpiffeBtn', 'Authenticating...');
+
+  try {
+    const { status, data } = await api('POST', '/api/vault/spiffe-auth', {
+      svid_token: state.spiffeSvid,
+      role: 'gateway',
+    });
+    setTiming('vaultSpiffeTiming', data.elapsed_ms || 0, status === 200 && !data.error);
+
+    document.getElementById('vaultSpiffeResultCard').style.display = '';
+
+    if (status === 200 && data.vault_token) {
+      state.vaultWorkloadToken = data.vault_token;
+      const displayData = { ...data };
+      if (displayData.vault_token) displayData.vault_token = displayData.vault_token.substring(0, 20) + '...';
+      showJson('vaultSpiffeResponse', displayData);
+      renderAnnotatedResponse('vaultSpiffeAnnotations', displayData, ANNOTATIONS.vaultSpiffe);
+      document.getElementById('vaultSpiffeResultCard').className = 'card success';
+      completeStep(5);
+    } else {
+      showJson('vaultSpiffeResponse', data);
+      document.getElementById('vaultSpiffeResultCard').className = 'card error';
+      failStep(5);
+    }
+  } catch (e) {
+    document.getElementById('vaultSpiffeResultCard').style.display = '';
+    showJson('vaultSpiffeResponse', { error: e.message });
+    document.getElementById('vaultSpiffeResultCard').className = 'card error';
+    failStep(5);
+  }
+  btnRestore('vaultSpiffeBtn', 'Authenticate with SPIFFE');
+}
+
+// ---------------------------------------------------------------------------
+// Step 6: Vault JWT Auth
+// ---------------------------------------------------------------------------
+async function doVaultJwtAuth() {
+  btnLoading('vaultJwtBtn', 'Authenticating...');
+
+  try {
+    const { status, data } = await api('POST', '/api/vault/jwt-auth', {
+      delegation_token: state.delegationToken,
+      role: 'delegated-agent',
+    });
+    setTiming('vaultJwtTiming', data.elapsed_ms || 0, status === 200 && !data.error);
+
+    document.getElementById('vaultJwtResultCard').style.display = '';
+
+    if (status === 200 && data.vault_token) {
+      state.vaultDelegationToken = data.vault_token;
+      const displayData = { ...data };
+      if (displayData.vault_token) displayData.vault_token = displayData.vault_token.substring(0, 20) + '...';
+      showJson('vaultJwtResponse', displayData);
+      renderAnnotatedResponse('vaultJwtAnnotations', displayData, ANNOTATIONS.vaultJwt);
+      document.getElementById('vaultJwtResultCard').className = 'card success';
+      completeStep(6);
+      // Enable Step 7 (Vault Credentials)
+      document.getElementById('vaultCredsBtn').disabled = false;
+    } else {
+      showJson('vaultJwtResponse', data);
+      document.getElementById('vaultJwtResultCard').className = 'card error';
+      failStep(6);
+    }
+  } catch (e) {
+    document.getElementById('vaultJwtResultCard').style.display = '';
+    showJson('vaultJwtResponse', { error: e.message });
+    document.getElementById('vaultJwtResultCard').className = 'card error';
+    failStep(6);
+  }
+  btnRestore('vaultJwtBtn', 'Authenticate with Delegation JWT');
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: Vault Credentials (Direct)
+// ---------------------------------------------------------------------------
+async function doVaultCredentials() {
+  btnLoading('vaultCredsBtn', 'Requesting...');
 
   try {
     const { status, data } = await api('POST', '/api/vault/credentials', {
-      delegation_token: state.delegationToken,
+      vault_token: state.vaultDelegationToken,
+      scope: state.scope,
     });
 
     const elapsed = data.elapsed_ms || 0;
 
-    // Show step trace
-    if (data.steps) {
-      renderProcessSteps('credBrokerSteps', data.steps);
-    }
-
     // Show raw JSON
     document.getElementById('credRawDetails').style.display = '';
-    showJson('credBrokerRawJson', data);
+    showJson('credRawJson', data);
 
     if (status === 200 && data.username) {
       state.dbCredential = data;
       state.vaultLeaseId = data.lease_id;
 
-      // Animate flow diagram
-      setTimeout(() => {
-        const tokenBox = document.getElementById('credFlowToken');
-        if (tokenBox) tokenBox.classList.add('active');
-      }, 200);
-      setTimeout(() => {
-        const arrow = document.getElementById('credArrowIn');
-        if (arrow) arrow.classList.add('active');
-      }, 500);
-      setTimeout(() => {
-        const svc1 = document.getElementById('credSvc1');
-        if (svc1) svc1.classList.add('done');
-      }, 800);
-      setTimeout(() => {
-        const svc2 = document.getElementById('credSvc2');
-        if (svc2) svc2.classList.add('done');
-      }, 1100);
-      setTimeout(() => {
-        const svc3 = document.getElementById('credSvc3');
-        if (svc3) svc3.classList.add('done');
-      }, 1400);
-      setTimeout(() => {
-        const svc4 = document.getElementById('credSvc4');
-        if (svc4) svc4.classList.add('done');
-      }, 1700);
-      setTimeout(() => {
-        const arrow = document.getElementById('credArrowOut');
-        if (arrow) arrow.classList.add('active');
-      }, 2000);
-      setTimeout(() => {
-        const credsBox = document.getElementById('credFlowCreds');
-        if (credsBox) {
-          credsBox.querySelector('.etb-sub').innerHTML =
-            '<strong style="color:var(--green);">' + escapeHtml(data.username) + '</strong> — ' +
-            escapeHtml(String(data.ttl_seconds)) + 's TTL';
-          credsBox.classList.add('active');
-        }
-      }, 2300);
-
       // Show credential result
-      document.getElementById('credBrokerResultCard').style.display = '';
-      renderVaultCredentials('credBrokerDetails', data);
-      const annotationData = {
-        username: data.username,
-        ttl_seconds: data.ttl_seconds,
-        lease_id: data.lease_id,
-        vault_role: data.vault_role,
-        delegation_verified: data.delegation_verified,
-      };
-      renderAnnotatedResponse('credBrokerAnnotations', annotationData, ANNOTATIONS.credBroker);
+      document.getElementById('vaultCredsResultCard').style.display = '';
+      renderVaultCredentials('vaultCredsDetails', data);
+      renderAnnotatedResponse('vaultCredsAnnotations', data, ANNOTATIONS.vaultCreds);
+      document.getElementById('vaultCredsResultCard').className = 'card success';
 
       // Populate DB Query step fields
       document.getElementById('queryCredFields').style.display = '';
@@ -2448,24 +2385,25 @@ async function doBrokerCredentials() {
       document.getElementById('queryBtn').disabled = false;
       document.getElementById('revokeBtn').disabled = false;
 
-      completeStep(6);
+      completeStep(7);
       setTiming('vaultTiming', elapsed, true);
     } else {
-      document.getElementById('credBrokerResultCard').style.display = '';
-      document.getElementById('credBrokerResultCard').className = 'card error';
-      failStep(6);
+      document.getElementById('vaultCredsResultCard').style.display = '';
+      document.getElementById('vaultCredsResultCard').className = 'card error';
+      showJson('credRawJson', data);
+      failStep(7);
       setTiming('vaultTiming', elapsed, false);
     }
   } catch (e) {
-    document.getElementById('credBrokerResultCard').style.display = '';
-    showJson('credBrokerRawJson', { error: e.message });
-    failStep(6);
+    document.getElementById('vaultCredsResultCard').style.display = '';
+    showJson('credRawJson', { error: e.message });
+    failStep(7);
   }
-  btnRestore('brokerCredsBtn', 'Broker Credentials');
+  btnRestore('vaultCredsBtn', 'Request Credentials');
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: Database Query
+// Step 8: Database Query
 // ---------------------------------------------------------------------------
 function updateQueryText() {
   const sel = document.getElementById('queryPreset');
@@ -2496,7 +2434,7 @@ async function executeQuery() {
     if (data.error) {
       document.getElementById('queryResultCard').className = 'card error';
       document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight(data) + '</pre>';
-      failStep(7);
+      failStep(8);
     } else if (data.columns && data.rows) {
       document.getElementById('queryResultCard').className = 'card success';
       let html = '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">' + data.row_count + ' row(s) returned</div>';
@@ -2511,11 +2449,11 @@ async function executeQuery() {
       html += '</tbody></table></div>';
       document.getElementById('queryResultBody').innerHTML = html;
       state.queryResults = data;
-      completeStep(7);
+      completeStep(8);
     }
   } catch (e) {
     document.getElementById('queryResultBody').innerHTML = '<pre class="json">' + syntaxHighlight({ error: e.message }) + '</pre>';
-    failStep(7);
+    failStep(8);
   }
   btnRestore('queryBtn', 'Execute');
 }
@@ -2526,7 +2464,7 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 8: Revocation
+// Step 9: Revocation
 // ---------------------------------------------------------------------------
 async function doRevoke() {
   btnLoading('revokeBtn', 'Revoking...');
@@ -2537,6 +2475,7 @@ async function doRevoke() {
       session_id: state.sessionId,
       delegation_token: state.delegationToken,
       lease_id: state.vaultLeaseId,
+      vault_token: state.vaultDelegationToken,
     });
     setTiming('revokeTiming', data.elapsed_ms || 0, true);
 
@@ -2572,7 +2511,7 @@ async function verifyRevoked() {
 
     if (data.revoked) {
       document.getElementById('verifyResponseCard').className = 'card success';
-      completeStep(8);
+      completeStep(9);
     } else {
       document.getElementById('verifyResponseCard').className = 'card error';
     }
@@ -2584,7 +2523,7 @@ async function verifyRevoked() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 9: Audit — Helpers
+// Step 10: Audit — Helpers
 // ---------------------------------------------------------------------------
 function formatTimestamp(ts) {
   if (!ts) return 'N/A';
@@ -2722,7 +2661,7 @@ function renderAuditTimeline(containerId, entries, currentSessionId) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 9: Audit
+// Step 10: Audit
 // ---------------------------------------------------------------------------
 async function fetchAudit() {
   btnLoading('auditBtn', 'Fetching...');
@@ -2746,11 +2685,11 @@ async function fetchAudit() {
     document.getElementById('auditRawDetails').style.display = '';
     showJson('auditResponse', entries);
 
-    completeStep(9);
+    completeStep(10);
   } catch (e) {
     document.getElementById('auditRawDetails').style.display = '';
     showJson('auditResponse', { error: e.message });
-    failStep(9);
+    failStep(10);
   }
   btnRestore('auditBtn', 'Fetch Audit Log');
 }

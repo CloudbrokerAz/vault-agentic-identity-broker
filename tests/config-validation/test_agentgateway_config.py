@@ -212,7 +212,6 @@ class TestGatewayConfigConsistency(unittest.TestCase):
         docker_dns_names = [
             "keycloak:",
             "token-exchange:",
-            "opa:",
             "vault:",
             "postgresql:",
         ]

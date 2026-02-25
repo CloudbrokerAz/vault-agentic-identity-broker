@@ -26,9 +26,6 @@ pgdata/
 # Keycloak data
 keycloak/data/
 
-# OPA bundles
-opa/bundles/
-
 # Build artifacts
 ai-agent/ai-agent
 *.exe

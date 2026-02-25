@@ -2,7 +2,7 @@
 Live-Integrated Interactive Demo UI Server.
 
 Lightweight Python backend that serves the HTML UI and proxies
-real API calls to Keycloak, SPIRE, OPA, Token Exchange, Vault, and PostgreSQL.
+real API calls to Keycloak, SPIRE, Token Exchange, Vault, and PostgreSQL.
 """
 
 import html as html_mod
@@ -26,13 +26,11 @@ import psycopg2
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8500"))
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://127.0.0.1:8080")
 TOKEN_EXCHANGE_URL = os.environ.get("TOKEN_EXCHANGE_URL", "http://127.0.0.1:8090")
-OPA_URL = os.environ.get("OPA_URL", "http://127.0.0.1:8181")
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
 DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))
 DB_NAME = os.environ.get("DB_NAME", "appdb")
 SPIRE_SOCKET = os.environ.get("SPIRE_SOCKET", "/tmp/spire-agent/public/api.sock")
-GATEWAY_VAULT_TOKEN = os.environ.get("GATEWAY_VAULT_TOKEN", "")
 
 KEYCLOAK_REALM = "demo"
 KEYCLOAK_CLIENT_ID = "demo-cli"
@@ -248,8 +246,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             "/api/consent/get": self._handle_consent_get,
             "/api/consent/update": self._handle_consent_update,
             "/api/spiffe/svid": self._handle_spiffe_svid,
-            "/api/opa/evaluate": self._handle_opa_evaluate,
             "/api/token-exchange": self._handle_token_exchange,
+            "/api/vault/spiffe-auth": self._handle_vault_spiffe_auth,
+            "/api/vault/jwt-auth": self._handle_vault_jwt_auth,
             "/api/vault/credentials": self._handle_vault_credentials,
             "/api/db/query": self._handle_db_query,
             "/api/revoke": self._handle_revoke,
@@ -306,13 +305,6 @@ class DemoHandler(BaseHTTPRequestHandler):
             services["keycloak"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": KEYCLOAK_URL}
         except Exception as e:
             services["keycloak"] = {"status": "unhealthy", "error": str(e)}
-
-        # OPA
-        try:
-            r = requests.get(f"{OPA_URL}/health", timeout=3)
-            services["opa"] = {"status": "healthy" if r.status_code == 200 else "unhealthy", "url": OPA_URL}
-        except Exception as e:
-            services["opa"] = {"status": "unhealthy", "error": str(e)}
 
         # Token Exchange
         try:
@@ -997,31 +989,6 @@ class DemoHandler(BaseHTTPRequestHandler):
             "elapsed_ms": elapsed,
         })
 
-    # --- OPA Policy Evaluation ---
-
-    def _handle_opa_evaluate(self):
-        body = self._read_body()
-
-        opa_input = body.get("input", {})
-        start = time.time()
-        try:
-            # Query the full decision object for detailed results
-            r = requests.post(f"{OPA_URL}/v1/data/delegation", json={"input": opa_input}, timeout=5)
-            elapsed = int((time.time() - start) * 1000)
-
-            if r.status_code != 200:
-                self._send_json(r.status_code, {"error": True, "service": "opa", "message": r.text, "elapsed_ms": elapsed})
-                return
-
-            result = r.json().get("result", {})
-            self._send_json(200, {
-                "result": result,
-                "input": opa_input,
-                "elapsed_ms": elapsed,
-            })
-        except Exception as e:
-            self._send_error(502, "opa", str(e))
-
     # --- Token Exchange ---
 
     def _handle_token_exchange(self):
@@ -1063,139 +1030,184 @@ class DemoHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_error(502, "token-exchange", str(e))
 
-    # --- Mediated Vault Credential Brokering (Step 6) ---
+    # --- Vault SPIFFE Auth (Step 5) ---
 
-    def _handle_vault_credentials(self):
-        """Broker dynamic database credentials via Token Exchange.
+    def _handle_vault_spiffe_auth(self):
+        """Authenticate to Vault using the agent's SPIFFE JWT-SVID.
 
-        The agent presents the delegation token from Step 5. Token Exchange
-        validates the token (RS256 signature, expiry, revocation) and uses
-        its own privileged Vault token to broker credentials. The agent never
-        talks to Vault directly.
+        The agent presents its SPIFFE JWT-SVID to Vault's JWT auth method
+        (role: 'gateway'). Vault verifies the SVID against SPIRE's OIDC JWKS
+        endpoint and returns a Vault workload token scoped to the agent's identity.
         """
         body = self._read_body()
-        delegation_token = body.get("delegation_token", "")
+        svid_token = body.get("svid_token", "")
+        role = body.get("role", "gateway")
 
-        if not delegation_token:
-            self._send_error(400, "token-exchange", "delegation_token is required")
+        if not svid_token:
+            self._send_error(400, "vault", "svid_token is required")
             return
 
         start = time.time()
-        steps = []
-
-        # Decode delegation token client-side (for UI display only)
-        delegation_decoded = decode_token_safe(delegation_token)
-        scope = delegation_decoded.get("scope", "readonly") if delegation_decoded else "readonly"
-        session_id = delegation_decoded.get("session_id", "") if delegation_decoded else ""
-        vault_role = f"ai-agent-{scope}"
-
-        steps.append({
-            "step": 1,
-            "action": "Present delegation token to Token Exchange",
-            "detail": (
-                "The agent sends the delegation token (from Step 5) to the "
-                "Token Exchange Service's /v1/token/credentials endpoint. "
-                "This token proves that a human authorized this agent to act."
-            ),
-            "result": f"Delegation token presented (session: {session_id}, scope: {scope})",
-            "status": "ok",
-        })
-
-        steps.append({
-            "step": 2,
-            "action": "Token Exchange validates delegation token",
-            "detail": (
-                "Token Exchange verifies the RS256 signature using its own signing key, "
-                "checks the token hasn't expired, and confirms it hasn't been revoked."
-            ),
-            "result": "Validating...",
-            "status": "pending",
-        })
-
-        # Call Token Exchange to broker credentials
         try:
             r = requests.post(
-                f"{TOKEN_EXCHANGE_URL}/v1/token/credentials",
-                json={"delegation_token": delegation_token},
-                timeout=15,
+                f"{VAULT_ADDR}/v1/auth/jwt/login",
+                json={"jwt": svid_token, "role": role},
+                timeout=10,
             )
             elapsed = int((time.time() - start) * 1000)
-            data = r.json()
 
-            if r.status_code == 200 and "error" not in data:
-                steps[1]["result"] = "Token validated: signature OK, not expired, not revoked"
-                steps[1]["status"] = "ok"
-
-                steps.append({
-                    "step": 3,
-                    "action": f"Map scope to Vault role ({scope} → {vault_role})",
-                    "detail": (
-                        f"The authorized scope '{scope}' maps to Vault database role "
-                        f"'{vault_role}', which controls the PostgreSQL permissions granted."
-                    ),
-                    "result": f"Vault role: {vault_role}",
-                    "status": "ok",
-                })
-
-                steps.append({
-                    "step": 4,
-                    "action": "Vault issues dynamic credentials",
-                    "detail": (
-                        "Token Exchange uses its own privileged Vault token (from bootstrap) "
-                        "to request credentials from Vault's database secrets engine. "
-                        "The agent never authenticates to Vault directly."
-                    ),
-                    "result": f"Dynamic user: {data.get('username', '?')}, TTL: {data.get('ttl_seconds', '?')}s",
-                    "status": "ok",
-                })
-
-                # Override host for host-network mode
-                host = data.get("host", DB_HOST)
-                if host == "postgresql":
-                    host = DB_HOST
-
+            if r.status_code == 200:
+                data = r.json()
+                auth = data.get("auth", {})
                 self._send_json(200, {
-                    "username": data.get("username", ""),
-                    "password": data.get("password", ""),
-                    "host": host,
-                    "port": data.get("port", DB_PORT),
-                    "database": data.get("database", DB_NAME),
-                    "ttl_seconds": data.get("ttl_seconds", 0),
-                    "lease_id": data.get("lease_id", ""),
-                    "vault_role": data.get("vault_role", vault_role),
-                    "delegation_verified": data.get("delegation_verified", True),
-                    "scope": data.get("scope", scope),
-                    "subject": data.get("subject", ""),
-                    "actor": data.get("actor", ""),
-                    "session_id": data.get("session_id", session_id),
-                    "steps": steps,
-                    "cli_command": (
-                        f"curl -X POST {TOKEN_EXCHANGE_URL}/v1/token/credentials "
-                        f"-d '{{\"delegation_token\": \"$DELEGATION_TOKEN\"}}'"
-                    ),
-                    "http_equivalent": {
-                        "method": "POST",
-                        "url": f"{TOKEN_EXCHANGE_URL}/v1/token/credentials",
-                        "body": {"delegation_token": "<delegation-token-from-step-5>"},
-                    },
+                    "vault_token": auth.get("client_token", ""),
+                    "policies": auth.get("policies", []),
+                    "token_type": auth.get("token_type", ""),
+                    "lease_duration": auth.get("lease_duration", 0),
+                    "metadata": auth.get("metadata", {}),
+                    "role": role,
                     "elapsed_ms": elapsed,
                 })
             else:
-                error_desc = data.get("error_description", data.get("error", "Unknown error"))
-                steps[1]["result"] = f"Validation failed: {error_desc}"
-                steps[1]["status"] = "fail"
-
-                self._send_json(r.status_code if r.status_code >= 400 else 400, {
-                    "error": data.get("error", "credential_broker_failed"),
-                    "error_description": error_desc,
-                    "steps": steps,
+                error_data = {}
+                try:
+                    error_data = r.json()
+                except Exception:
+                    pass
+                errors = error_data.get("errors", [r.text])
+                self._send_json(r.status_code, {
+                    "error": True,
+                    "service": "vault",
+                    "message": "; ".join(errors) if errors else "Vault JWT auth failed",
                     "elapsed_ms": elapsed,
                 })
         except Exception as e:
+            self._send_error(502, "vault", str(e))
+
+    # --- Vault JWT Auth with Delegation Token (Step 6) ---
+
+    def _handle_vault_jwt_auth(self):
+        """Authenticate to Vault using the fused delegation JWT.
+
+        The agent presents the delegation token (minted by Token Exchange in
+        Step 4) to Vault's JWT auth method (role: 'delegated-agent'). Vault
+        verifies the token signature against Token Exchange's JWKS endpoint
+        and returns a Vault delegation token with policies scoped to the
+        delegation's scope (readonly/readwrite).
+        """
+        body = self._read_body()
+        delegation_token = body.get("delegation_token", "")
+        role = body.get("role", "delegated-agent")
+
+        if not delegation_token:
+            self._send_error(400, "vault", "delegation_token is required")
+            return
+
+        # Decode for display
+        decoded = decode_token_safe(delegation_token)
+
+        start = time.time()
+        try:
+            r = requests.post(
+                f"{VAULT_ADDR}/v1/auth/jwt/login",
+                json={"jwt": delegation_token, "role": role},
+                timeout=10,
+            )
             elapsed = int((time.time() - start) * 1000)
-            steps[1]["result"] = f"Error: {e}"
-            steps[1]["status"] = "fail"
-            self._send_error(502, "token-exchange", str(e))
+
+            if r.status_code == 200:
+                data = r.json()
+                auth = data.get("auth", {})
+                self._send_json(200, {
+                    "vault_token": auth.get("client_token", ""),
+                    "policies": auth.get("policies", []),
+                    "token_type": auth.get("token_type", ""),
+                    "lease_duration": auth.get("lease_duration", 0),
+                    "metadata": auth.get("metadata", {}),
+                    "role": role,
+                    "delegation_decoded": decoded,
+                    "elapsed_ms": elapsed,
+                })
+            else:
+                error_data = {}
+                try:
+                    error_data = r.json()
+                except Exception:
+                    pass
+                errors = error_data.get("errors", [r.text])
+                self._send_json(r.status_code, {
+                    "error": True,
+                    "service": "vault",
+                    "message": "; ".join(errors) if errors else "Vault JWT auth failed",
+                    "delegation_decoded": decoded,
+                    "elapsed_ms": elapsed,
+                })
+        except Exception as e:
+            self._send_error(502, "vault", str(e))
+
+    # --- Direct Vault Credential Request (Step 7) ---
+
+    def _handle_vault_credentials(self):
+        """Request dynamic database credentials directly from Vault.
+
+        The agent uses its delegation Vault token (obtained in Step 6 via
+        JWT auth with the fused delegation token) to request credentials
+        from Vault's database secrets engine. The Vault token's policies
+        control which database role (readonly/readwrite) the agent can access.
+        """
+        body = self._read_body()
+        vault_token = body.get("vault_token", "")
+        scope = body.get("scope", "readonly")
+
+        if not vault_token:
+            self._send_error(400, "vault", "vault_token is required")
+            return
+
+        vault_role = f"ai-agent-{scope}"
+        start = time.time()
+
+        try:
+            r = requests.get(
+                f"{VAULT_ADDR}/v1/database/creds/{vault_role}",
+                headers={"X-Vault-Token": vault_token},
+                timeout=10,
+            )
+            elapsed = int((time.time() - start) * 1000)
+
+            if r.status_code == 200:
+                data = r.json()
+                cred_data = data.get("data", {})
+                lease_id = data.get("lease_id", "")
+                lease_duration = data.get("lease_duration", 0)
+
+                self._send_json(200, {
+                    "username": cred_data.get("username", ""),
+                    "password": cred_data.get("password", ""),
+                    "host": DB_HOST,
+                    "port": DB_PORT,
+                    "database": DB_NAME,
+                    "ttl_seconds": lease_duration,
+                    "lease_id": lease_id,
+                    "vault_role": vault_role,
+                    "scope": scope,
+                    "elapsed_ms": elapsed,
+                })
+            else:
+                error_data = {}
+                try:
+                    error_data = r.json()
+                except Exception:
+                    pass
+                errors = error_data.get("errors", [r.text])
+                self._send_json(r.status_code if r.status_code >= 400 else 400, {
+                    "error": True,
+                    "service": "vault",
+                    "message": "; ".join(errors) if errors else "Vault credential request failed",
+                    "vault_role": vault_role,
+                    "elapsed_ms": elapsed,
+                })
+        except Exception as e:
+            self._send_error(502, "vault", str(e))
 
     # --- Database Query ---
 
@@ -1267,6 +1279,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         session_id = body.get("session_id", "")
         delegation_token = body.get("delegation_token", "")
         lease_id = body.get("lease_id", "")
+        vault_token = body.get("vault_token", "")
 
         start = time.time()
         try:
@@ -1279,12 +1292,12 @@ class DemoHandler(BaseHTTPRequestHandler):
             data = r.json()
             data["elapsed_ms"] = elapsed
 
-            # Also revoke the Vault lease directly if we have one
-            if lease_id and GATEWAY_VAULT_TOKEN:
+            # Also revoke the Vault lease using the agent's own Vault token
+            if lease_id and vault_token:
                 try:
                     requests.put(
                         f"{VAULT_ADDR}/v1/sys/leases/revoke",
-                        headers={"X-Vault-Token": GATEWAY_VAULT_TOKEN},
+                        headers={"X-Vault-Token": vault_token},
                         json={"lease_id": lease_id},
                         timeout=10,
                     )
