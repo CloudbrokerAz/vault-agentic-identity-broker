@@ -16,11 +16,13 @@ This agent demonstrates the full identity delegation chain:
 The full audit trail and delegation chain is preserved at every step.
 """
 
+import base64
 import json
 import logging
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -420,6 +422,63 @@ class TokenExchangeClient:
         self.chain_url = f"{config.token_exchange_url}/v1/delegation/chain"
         self.health_url = f"{config.token_exchange_url}/health"
 
+    @staticmethod
+    def _decode_jwt_payload(token: str) -> dict:
+        """Decode a JWT payload without verification (for local claim extraction)."""
+        try:
+            return pyjwt.decode(token, options={"verify_signature": False})
+        except pyjwt.InvalidTokenError:
+            # Fallback: manual base64 decode of the payload segment
+            try:
+                parts = token.split(".")
+                if len(parts) != 3:
+                    return {}
+                payload = parts[1]
+                # Add padding if needed
+                payload += "=" * (4 - len(payload) % 4)
+                return json.loads(base64.urlsafe_b64decode(payload))
+            except Exception:
+                return {}
+
+    @staticmethod
+    def _build_delegation_chain(claims: dict) -> list:
+        """
+        Build a delegation chain list from the nested act{} claims
+        in a fused delegation JWT.
+        """
+        chain = []
+        sub = claims.get("sub", "unknown")
+        act = claims.get("act", {})
+        depth = 0
+
+        if act:
+            # The top-level act.sub is the immediate actor (agent)
+            actor_sub = act.get("sub", "unknown")
+            chain.append({
+                "subject": sub,
+                "actor": actor_sub,
+                "actor_type": "agent" if "spiffe://" in actor_sub else "human",
+                "scope": claims.get("scope", "unknown"),
+                "depth": depth,
+            })
+
+            # Walk nested act{} claims for sub-delegation chains
+            inner_act = act.get("act", {})
+            while inner_act:
+                depth += 1
+                inner_sub = inner_act.get("sub", "unknown")
+                chain.append({
+                    "subject": actor_sub,
+                    "actor": inner_sub,
+                    "actor_type": "human" if not inner_sub.startswith("spiffe://") else "agent",
+                    "scope": claims.get("scope", "unknown"),
+                    "depth": depth,
+                })
+                actor_sub = inner_sub
+                inner_act = inner_act.get("act", {})
+
+        return chain
+
     def exchange_token(
         self,
         human_token: str,
@@ -431,12 +490,16 @@ class TokenExchangeClient:
         Perform RFC 8693 Token Exchange.
 
         Exchanges the human's OIDC token + agent's SPIFFE SVID
-        for a fused delegation JWT. Does NOT return database credentials —
+        for a fused delegation JWT. Does NOT return database credentials --
         the agent must authenticate to Vault directly to obtain those.
+
+        The Token Exchange service is stateless: it returns a signed JWT
+        with no session_id or delegation_chain in the response body. This
+        method decodes the JWT locally to extract delegation metadata.
 
         Returns:
             dict with keys: delegation_token, session_id, expires_in,
-            delegation_chain, scope.
+            delegation_chain, scope, human_subject.
         """
         logger.info("Performing RFC 8693 token exchange: scope=%s", requested_scope)
 
@@ -460,14 +523,27 @@ class TokenExchangeClient:
                     f"{data.get('error_description', '')}"
                 )
 
-            chain = data.get("delegation_chain", [])
+            delegation_token = data["access_token"]
+
+            # Decode the fused JWT locally to extract delegation metadata
+            claims = self._decode_jwt_payload(delegation_token)
+
+            # Use the JWT's jti claim as session_id, or generate a UUID
+            session_id = claims.get("jti", str(uuid.uuid4()))
+
+            # Build delegation chain from nested act{} claims
+            chain = self._build_delegation_chain(claims)
+
+            # Extract human subject from the JWT sub claim
+            human_subject = claims.get("sub", "unknown")
+
             result = {
-                "delegation_token": data["access_token"],
-                "session_id": data["session_id"],
+                "delegation_token": delegation_token,
+                "session_id": session_id,
                 "expires_in": data.get("expires_in", 300),
                 "delegation_chain": chain,
-                "scope": requested_scope,
-                "human_subject": chain[0]["subject"] if chain else "unknown",
+                "scope": data.get("scope", requested_scope),
+                "human_subject": human_subject,
             }
 
             logger.info(
@@ -480,24 +556,40 @@ class TokenExchangeClient:
             raise RuntimeError(f"Token exchange request failed: {e}") from e
 
     def get_delegation_chain(self, session_id: str) -> dict:
-        """Get the full delegation chain for a session."""
-        try:
-            resp = requests.get(
-                f"{self.chain_url}?session_id={session_id}", timeout=5
-            )
-            return resp.json()
-        except Exception as e:
-            return {"error": str(e)}
+        """
+        Get the delegation chain for a session.
+
+        The Token Exchange service is stateless and does not track sessions
+        server-side. This method returns a locally-constructed representation.
+        The actual chain is embedded in the fused JWT's nested act{} claims.
+        """
+        logger.debug(
+            "get_delegation_chain called for session=%s — "
+            "Token Exchange is stateless; chain is embedded in the JWT",
+            session_id,
+        )
+        return {
+            "session_id": session_id,
+            "note": "Token Exchange is stateless. Delegation chain is embedded in the fused JWT act{} claims.",
+        }
 
     def revoke_token(self, token: str) -> dict:
-        """Revoke a delegation token."""
-        try:
-            resp = requests.post(
-                self.revoke_url, json={"token": token}, timeout=10
-            )
-            return resp.json()
-        except Exception as e:
-            return {"error": str(e)}
+        """
+        Revoke a delegation token.
+
+        The Token Exchange service is stateless and does not support
+        token revocation. Tokens are self-expiring JWTs. This method
+        is a no-op that logs a warning.
+        """
+        logger.warning(
+            "revoke_token called but Token Exchange is stateless — "
+            "delegation tokens are self-expiring JWTs and cannot be revoked. "
+            "Rely on short TTLs and Vault lease revocation instead."
+        )
+        return {
+            "status": "not_supported",
+            "message": "Token Exchange is stateless; delegation tokens are self-expiring JWTs.",
+        }
 
     def check_health(self) -> dict:
         """Check the token exchange service's health."""
@@ -953,11 +1045,8 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
         print(f"         actor_token = <sub-agent SPIFFE SVID>")
         print(f"  [INFO] Sub-agents then auth to Vault independently")
 
-        chain_info = tx_client.get_delegation_chain(session_id)
-        if "error" not in chain_info:
-            print(f"  [OK] Chain verified: depth={chain_info.get('chain_depth', 0)}")
-        else:
-            print(f"  [INFO] Chain query: {chain_info}")
+        print(f"  [OK] Chain depth: {len(chain)} (embedded in fused JWT act{{}} claims)")
+        print(f"  [INFO] Token Exchange is stateless — chain is self-contained in the JWT")
     else:
         print(f"  [SKIP] No delegation token")
 

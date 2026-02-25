@@ -7,6 +7,7 @@ Tests cover:
 - SPIFFEIdentity demo SVID generation
 - HumanAuthenticator auth modes (device, token, password)
 - TokenExchangeClient delegation requests (JWT-only, no DB creds)
+- TokenExchangeClient local JWT decoding and chain extraction
 - VaultClient SPIFFE auth, JWT auth, DB credential requests
 - DatabaseQuerier session validation
 - Natural language to SQL mapping
@@ -15,6 +16,7 @@ Tests cover:
 import json
 import os
 import time
+import uuid
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -417,6 +419,26 @@ class TestHumanAuthenticator(unittest.TestCase):
 class TestTokenExchangeClient(unittest.TestCase):
     """Tests for TokenExchangeClient class (JWT-only, no DB creds)."""
 
+    def _make_fused_jwt(self, claims: dict, secret: str = "test-secret") -> str:
+        """Create a fused delegation JWT for testing."""
+        defaults = {
+            "iss": "token-exchange.demo.local",
+            "sub": "alice@acme.com",
+            "aud": "vault",
+            "exp": int(time.time()) + 300,
+            "iat": int(time.time()),
+            "jti": str(uuid.uuid4()),
+            "scope": "readonly",
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "act": {"sub": "alice@acme.com"},
+            },
+            "groups": ["data-analysts"],
+            "delegation_depth": 1,
+        }
+        defaults.update(claims)
+        return pyjwt.encode(defaults, secret, algorithm="HS256")
+
     def test_url_construction(self):
         config = AgentConfig(token_exchange_url="http://exchange:9090")
         client = TokenExchangeClient(config)
@@ -426,23 +448,26 @@ class TestTokenExchangeClient(unittest.TestCase):
 
     @patch("agent.requests.post")
     def test_exchange_token_success(self, mock_post):
-        """Token exchange returns fused delegation JWT only (no DB creds)."""
+        """Token exchange returns fused delegation JWT; agent decodes locally."""
+        jti = "test-jti-abc123"
+        fused_jwt = self._make_fused_jwt({
+            "jti": jti,
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "act": {"sub": "alice@acme.com"},
+            },
+        })
+
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "access_token": "fused-delegation-jwt-xyz",
-            "session_id": "sess-abc123",
+            "access_token": fused_jwt,
+            "issued_token_type": "urn:agentic:token-type:agent-delegation",
+            "token_type": "Bearer",
             "expires_in": 300,
             "scope": "readonly",
-            "delegation_chain": [
-                {
-                    "subject": "alice@acme.com",
-                    "actor": "spiffe://demo.local/agent/query-agent",
-                    "actor_type": "agent",
-                    "scope": "readonly",
-                    "depth": 0,
-                }
-            ],
         }
         mock_post.return_value = mock_response
 
@@ -455,27 +480,45 @@ class TestTokenExchangeClient(unittest.TestCase):
         )
 
         self.assertIsInstance(result, dict)
-        self.assertEqual(result["session_id"], "sess-abc123")
-        self.assertEqual(result["delegation_token"], "fused-delegation-jwt-xyz")
+        # session_id is extracted from the JWT jti claim
+        self.assertEqual(result["session_id"], jti)
+        self.assertEqual(result["delegation_token"], fused_jwt)
+        # human_subject is extracted from the JWT sub claim
         self.assertEqual(result["human_subject"], "alice@acme.com")
         self.assertEqual(result["expires_in"], 300)
         self.assertEqual(result["scope"], "readonly")
-        self.assertEqual(len(result["delegation_chain"]), 1)
+        # delegation_chain is built from the JWT act{} claims
+        self.assertGreater(len(result["delegation_chain"]), 0)
+        self.assertEqual(result["delegation_chain"][0]["subject"], "alice@acme.com")
+        self.assertEqual(
+            result["delegation_chain"][0]["actor"],
+            "spiffe://demo.local/agent/query-agent",
+        )
         # Verify no DB credentials are returned
         self.assertNotIn("db_credential", result)
         self.assertNotIn("username", result)
         self.assertNotIn("password", result)
 
     @patch("agent.requests.post")
-    def test_exchange_token_empty_chain(self, mock_post):
-        """Empty delegation chain should set human_subject to 'unknown'."""
+    def test_exchange_token_no_act_claims(self, mock_post):
+        """JWT without act{} claims should produce empty chain, sub from JWT."""
+        fused_jwt = self._make_fused_jwt({
+            "sub": "bob@acme.com",
+            "jti": "jti-no-act",
+        })
+        # Remove the act claim by re-encoding without it
+        fused_jwt = pyjwt.encode({
+            "sub": "bob@acme.com",
+            "jti": "jti-no-act",
+            "exp": int(time.time()) + 300,
+        }, "secret", algorithm="HS256")
+
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "access_token": "fused-jwt",
-            "session_id": "sess-no-chain",
+            "access_token": fused_jwt,
             "expires_in": 300,
-            "delegation_chain": [],
+            "scope": "readonly",
         }
         mock_post.return_value = mock_response
 
@@ -483,7 +526,40 @@ class TestTokenExchangeClient(unittest.TestCase):
         client = TokenExchangeClient(config)
         result = client.exchange_token("human-tok", "agent-svid")
 
-        self.assertEqual(result["human_subject"], "unknown")
+        self.assertEqual(result["human_subject"], "bob@acme.com")
+        self.assertEqual(result["delegation_chain"], [])
+        self.assertEqual(result["session_id"], "jti-no-act")
+
+    @patch("agent.requests.post")
+    def test_exchange_token_generates_session_id_when_no_jti(self, mock_post):
+        """When JWT has no jti claim, a UUID should be generated for session_id."""
+        fused_jwt = pyjwt.encode({
+            "sub": "alice@acme.com",
+            "exp": int(time.time()) + 300,
+            "scope": "readonly",
+        }, "secret", algorithm="HS256")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": fused_jwt,
+            "expires_in": 300,
+            "scope": "readonly",
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        result = client.exchange_token("human-tok", "agent-svid")
+
+        # session_id should be a valid UUID since there's no jti
+        session_id = result["session_id"]
+        try:
+            uuid.UUID(session_id)
+            valid_uuid = True
+        except ValueError:
+            valid_uuid = False
+        self.assertTrue(valid_uuid, f"Expected UUID, got: {session_id}")
 
     @patch("agent.requests.post")
     def test_exchange_token_error(self, mock_post):
@@ -535,6 +611,88 @@ class TestTokenExchangeClient(unittest.TestCase):
 
         self.assertEqual(health["status"], "unhealthy")
         self.assertIn("connection refused", health["error"])
+
+
+class TestTokenExchangeJWTDecoding(unittest.TestCase):
+    """Tests for TokenExchangeClient JWT payload decoding and chain building."""
+
+    def test_decode_jwt_payload_valid(self):
+        """Valid JWT should decode to claims dict."""
+        token = pyjwt.encode(
+            {"sub": "alice@acme.com", "scope": "readonly"},
+            "secret",
+            algorithm="HS256",
+        )
+        claims = TokenExchangeClient._decode_jwt_payload(token)
+        self.assertEqual(claims["sub"], "alice@acme.com")
+        self.assertEqual(claims["scope"], "readonly")
+
+    def test_decode_jwt_payload_invalid(self):
+        """Invalid token should return empty dict."""
+        claims = TokenExchangeClient._decode_jwt_payload("not-a-jwt")
+        self.assertEqual(claims, {})
+
+    def test_decode_jwt_payload_empty(self):
+        """Empty string should return empty dict."""
+        claims = TokenExchangeClient._decode_jwt_payload("")
+        self.assertEqual(claims, {})
+
+    def test_build_delegation_chain_with_act(self):
+        """Claims with nested act{} should produce a delegation chain."""
+        claims = {
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "act": {"sub": "alice@acme.com"},
+            },
+        }
+        chain = TokenExchangeClient._build_delegation_chain(claims)
+        self.assertEqual(len(chain), 2)
+        # First link: alice -> agent
+        self.assertEqual(chain[0]["subject"], "alice@acme.com")
+        self.assertEqual(chain[0]["actor"], "spiffe://demo.local/agent/query-agent")
+        self.assertEqual(chain[0]["actor_type"], "agent")
+        self.assertEqual(chain[0]["depth"], 0)
+        # Second link: agent -> alice (inner act)
+        self.assertEqual(chain[1]["subject"], "spiffe://demo.local/agent/query-agent")
+        self.assertEqual(chain[1]["actor"], "alice@acme.com")
+        self.assertEqual(chain[1]["actor_type"], "human")
+        self.assertEqual(chain[1]["depth"], 1)
+
+    def test_build_delegation_chain_no_act(self):
+        """Claims without act{} should produce empty chain."""
+        claims = {"sub": "alice@acme.com", "scope": "readonly"}
+        chain = TokenExchangeClient._build_delegation_chain(claims)
+        self.assertEqual(chain, [])
+
+    def test_build_delegation_chain_single_act(self):
+        """Claims with single-level act{} (no nested act) produce one link."""
+        claims = {
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "act": {"sub": "spiffe://demo.local/agent/query-agent"},
+        }
+        chain = TokenExchangeClient._build_delegation_chain(claims)
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(chain[0]["subject"], "alice@acme.com")
+        self.assertEqual(chain[0]["actor"], "spiffe://demo.local/agent/query-agent")
+
+    def test_get_delegation_chain_is_stateless(self):
+        """get_delegation_chain should return a note about statelessness."""
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        result = client.get_delegation_chain("some-session-id")
+        self.assertEqual(result["session_id"], "some-session-id")
+        self.assertIn("stateless", result["note"].lower())
+
+    def test_revoke_token_is_noop(self):
+        """revoke_token should return not_supported status (no-op)."""
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        result = client.revoke_token("some-delegation-token")
+        self.assertEqual(result["status"], "not_supported")
+        self.assertIn("stateless", result["message"].lower())
 
 
 class TestDatabaseQuerier(unittest.TestCase):
