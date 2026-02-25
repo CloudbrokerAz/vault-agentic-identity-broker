@@ -408,18 +408,21 @@ class TokenExchangeClient:
     """
     Client for the Token Exchange Service (RFC 8693).
 
-    The Token Exchange Service is a thin JWT minter: it validates the human
-    token and agent SPIFFE identity, evaluates OPA policy, and returns a
-    fused delegation JWT. It does NOT broker Vault credentials — the agent
-    authenticates to Vault directly.
+    The Token Exchange Service is a stateless JWT minter: it validates the human
+    token and agent SPIFFE identity, and returns a fused delegation JWT.
+    It does NOT broker Vault credentials — the agent authenticates to Vault directly.
+
+    The only remote endpoints used are:
+    - POST /v1/token/exchange  (RFC 8693 token exchange)
+    - GET  /health             (health check)
+
+    Delegation chain is embedded in the fused JWT's nested act{} claims
+    and extracted locally. Tokens are self-expiring; there is no revocation endpoint.
     """
 
     def __init__(self, config: AgentConfig):
         self.config = config
         self.exchange_url = f"{config.token_exchange_url}/v1/token/exchange"
-        self.delegate_url = f"{config.token_exchange_url}/v1/delegate"
-        self.revoke_url = f"{config.token_exchange_url}/v1/token/revoke"
-        self.chain_url = f"{config.token_exchange_url}/v1/delegation/chain"
         self.health_url = f"{config.token_exchange_url}/health"
 
     @staticmethod
@@ -554,42 +557,6 @@ class TokenExchangeClient:
 
         except requests.RequestException as e:
             raise RuntimeError(f"Token exchange request failed: {e}") from e
-
-    def get_delegation_chain(self, session_id: str) -> dict:
-        """
-        Get the delegation chain for a session.
-
-        The Token Exchange service is stateless and does not track sessions
-        server-side. This method returns a locally-constructed representation.
-        The actual chain is embedded in the fused JWT's nested act{} claims.
-        """
-        logger.debug(
-            "get_delegation_chain called for session=%s — "
-            "Token Exchange is stateless; chain is embedded in the JWT",
-            session_id,
-        )
-        return {
-            "session_id": session_id,
-            "note": "Token Exchange is stateless. Delegation chain is embedded in the fused JWT act{} claims.",
-        }
-
-    def revoke_token(self, token: str) -> dict:
-        """
-        Revoke a delegation token.
-
-        The Token Exchange service is stateless and does not support
-        token revocation. Tokens are self-expiring JWTs. This method
-        is a no-op that logs a warning.
-        """
-        logger.warning(
-            "revoke_token called but Token Exchange is stateless — "
-            "delegation tokens are self-expiring JWTs and cannot be revoked. "
-            "Rely on short TTLs and Vault lease revocation instead."
-        )
-        return {
-            "status": "not_supported",
-            "message": "Token Exchange is stateless; delegation tokens are self-expiring JWTs.",
-        }
 
     def check_health(self) -> dict:
         """Check the token exchange service's health."""

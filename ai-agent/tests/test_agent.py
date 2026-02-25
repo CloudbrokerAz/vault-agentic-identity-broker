@@ -443,7 +443,6 @@ class TestTokenExchangeClient(unittest.TestCase):
         config = AgentConfig(token_exchange_url="http://exchange:9090")
         client = TokenExchangeClient(config)
         self.assertEqual(client.exchange_url, "http://exchange:9090/v1/token/exchange")
-        self.assertEqual(client.delegate_url, "http://exchange:9090/v1/delegate")
         self.assertEqual(client.health_url, "http://exchange:9090/health")
 
     @patch("agent.requests.post")
@@ -678,21 +677,6 @@ class TestTokenExchangeJWTDecoding(unittest.TestCase):
         self.assertEqual(chain[0]["subject"], "alice@acme.com")
         self.assertEqual(chain[0]["actor"], "spiffe://demo.local/agent/query-agent")
 
-    def test_get_delegation_chain_is_stateless(self):
-        """get_delegation_chain should return a note about statelessness."""
-        config = AgentConfig()
-        client = TokenExchangeClient(config)
-        result = client.get_delegation_chain("some-session-id")
-        self.assertEqual(result["session_id"], "some-session-id")
-        self.assertIn("stateless", result["note"].lower())
-
-    def test_revoke_token_is_noop(self):
-        """revoke_token should return not_supported status (no-op)."""
-        config = AgentConfig()
-        client = TokenExchangeClient(config)
-        result = client.revoke_token("some-delegation-token")
-        self.assertEqual(result["status"], "not_supported")
-        self.assertIn("stateless", result["message"].lower())
 
 
 class TestDatabaseQuerier(unittest.TestCase):
