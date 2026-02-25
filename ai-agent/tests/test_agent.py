@@ -26,6 +26,7 @@ import jwt as pyjwt
 # Import the module under test
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "subagents"))
 from agent import (
     AgentConfig,
     DelegationSession,
@@ -38,6 +39,7 @@ from agent import (
     QUERY_MAPPINGS,
     DEFAULT_QUERY,
 )
+from sql_executor import SQLExecutorSubAgent, SubAgentConfig
 
 
 class TestAgentConfig(unittest.TestCase):
@@ -1312,6 +1314,314 @@ class TestDatabaseQuerierExpiry(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             querier.query("SELECT 1")
         self.assertIn("expired", str(ctx.exception))
+
+
+class TestTokenExchangeNegativePaths(unittest.TestCase):
+    """Negative path tests for TokenExchangeClient."""
+
+    @patch("agent.requests.post")
+    def test_exchange_token_error_response(self, mock_post):
+        """exchange_token must raise RuntimeError on error field in response."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "Human token expired",
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        with self.assertRaises(RuntimeError) as ctx:
+            client.exchange_token("bad-token", "svid", "readonly")
+        self.assertIn("invalid_grant", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_exchange_token_missing_error_description(self, mock_post):
+        """exchange_token must handle missing error_description."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"error": "server_error"}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        with self.assertRaises(RuntimeError) as ctx:
+            client.exchange_token("token", "svid", "readonly")
+        self.assertIn("server_error", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_exchange_token_scope_denied(self, mock_post):
+        """exchange_token must raise on invalid_scope error."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "error": "invalid_scope",
+            "error_description": "Scope 'admin' not permitted",
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        with self.assertRaises(RuntimeError) as ctx:
+            client.exchange_token("token", "svid", "admin")
+        self.assertIn("invalid_scope", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_exchange_token_timeout(self, mock_post):
+        """exchange_token must raise on request timeout."""
+        import requests as real_requests
+        mock_post.side_effect = real_requests.exceptions.Timeout("Connection timed out")
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        with self.assertRaises(RuntimeError):
+            client.exchange_token("token", "svid", "readonly")
+
+
+class TestVaultClientNegativePaths(unittest.TestCase):
+    """Negative path tests for VaultClient."""
+
+    def _make_config(self):
+        return AgentConfig(vault_addr="http://vault:8200")
+
+    @patch("agent.requests.post")
+    def test_login_jwt_wrong_role_error(self, mock_post):
+        """login_jwt with non-existent role should raise with role info."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "errors": ["role \"nonexistent\" could not be found"]
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_jwt("jwt", role="nonexistent")
+        self.assertIn("Vault JWT auth failed", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_login_jwt_missing_auth_block(self, mock_post):
+        """login_jwt without auth block should raise no client_token error."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_jwt("jwt", role="delegated-agent-readonly")
+        self.assertIn("no client_token", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_login_spiffe_expired_svid(self, mock_post):
+        """login_spiffe with expired SVID should raise."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"errors": ["token is expired"]}
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_spiffe("expired-svid", role="gateway")
+        self.assertIn("Vault SPIFFE auth failed", str(ctx.exception))
+
+    @patch("agent.requests.get")
+    def test_db_credentials_sentinel_denied(self, mock_get):
+        """DB creds denied by Sentinel should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "errors": [
+                "egp standard policy \"require-delegation\" evaluation resulted in denial"
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError):
+            client.get_database_credentials("s.bad-token", role="ai-agent-readonly")
+
+
+class TestJWTDecodingEdgeCases(unittest.TestCase):
+    """Test JWT decoding edge cases used in agent code paths."""
+
+    def test_malformed_jwt_raises(self):
+        """Decoding a malformed JWT should raise DecodeError."""
+        with self.assertRaises(pyjwt.exceptions.DecodeError):
+            pyjwt.decode("not.a.valid.jwt", options={"verify_signature": False})
+
+    def test_empty_string_jwt_raises(self):
+        """Empty string should raise DecodeError."""
+        with self.assertRaises(pyjwt.exceptions.DecodeError):
+            pyjwt.decode("", options={"verify_signature": False})
+
+    def test_valid_jwt_with_act_claims(self):
+        """A well-formed JWT with act{} claims should decode correctly."""
+        payload = {
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "act": {"sub": "spiffe://demo.local/agent/query-agent"},
+        }
+        token = pyjwt.encode(payload, "secret", algorithm="HS256")
+        decoded = pyjwt.decode(token, options={"verify_signature": False})
+        self.assertEqual(decoded["sub"], "alice@acme.com")
+        self.assertEqual(decoded["act"]["sub"], "spiffe://demo.local/agent/query-agent")
+
+    def test_deeply_nested_act_claims(self):
+        """JWT with 3 levels of nested act{} should decode the full chain."""
+        payload = {
+            "sub": "alice@acme.com",
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "act": {
+                    "sub": "spiffe://demo.local/subagent/sql-executor",
+                    "act": {"sub": "spiffe://demo.local/subagent/formatter"},
+                },
+            },
+        }
+        token = pyjwt.encode(payload, "secret", algorithm="HS256")
+        decoded = pyjwt.decode(token, options={"verify_signature": False})
+
+        depth = 0
+        current = decoded
+        actors = []
+        while "act" in current:
+            current = current["act"]
+            actors.append(current["sub"])
+            depth += 1
+        self.assertEqual(depth, 3)
+        self.assertEqual(actors[2], "spiffe://demo.local/subagent/formatter")
+
+
+class TestSubAgentDelegation(unittest.TestCase):
+    """Tests for SQLExecutorSubAgent delegation chain extension."""
+
+    def _make_subagent_config(self):
+        return SubAgentConfig(
+            spiffe_id="spiffe://demo.local/subagent/sql-executor",
+            token_exchange_url="http://token-exchange:8090",
+            vault_addr="http://vault:8200",
+        )
+
+    def _make_delegation_jwt(self, claims):
+        return pyjwt.encode(claims, "test-secret", algorithm="HS256")
+
+    @patch("sql_executor.requests.get")
+    @patch("sql_executor.requests.post")
+    def test_request_subdelegation_success(self, mock_post, mock_get):
+        """request_subdelegation with mocked responses should succeed end-to-end."""
+        delegation_claims = {
+            "sub": "alice@acme.com",
+            "jti": "sess-sub-123",
+            "scope": "readonly",
+            "delegation_depth": 2,
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "act": {"sub": "spiffe://demo.local/subagent/sql-executor"},
+            },
+        }
+        fused_jwt = self._make_delegation_jwt(delegation_claims)
+
+        exchange_response = MagicMock()
+        exchange_response.json.return_value = {"access_token": fused_jwt, "expires_in": 300}
+
+        spiffe_auth_response = MagicMock()
+        spiffe_auth_response.json.return_value = {
+            "auth": {"client_token": "s.spiffe-sub-token", "policies": ["default"], "lease_duration": 3600}
+        }
+
+        jwt_auth_response = MagicMock()
+        jwt_auth_response.json.return_value = {
+            "auth": {"client_token": "s.delegation-sub-token", "policies": ["default", "ai-agent-db-read"], "lease_duration": 300}
+        }
+
+        mock_post.side_effect = [exchange_response, spiffe_auth_response, jwt_auth_response]
+
+        db_creds_response = MagicMock()
+        db_creds_response.json.return_value = {
+            "data": {"username": "v-sub-readonly-abc", "password": "sub-dynamic-pw"},
+            "lease_id": "database/creds/ai-agent-readonly/sub123",
+            "lease_duration": 300,
+        }
+        mock_get.return_value = db_creds_response
+
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        sub_agent.request_subdelegation(parent_delegation_token="parent-token", scope="readonly", agent_jwt_svid="fake-svid")
+
+        self.assertEqual(sub_agent.session_id, "sess-sub-123")
+        self.assertEqual(sub_agent._db_credentials["username"], "v-sub-readonly-abc")
+
+    @patch("sql_executor.requests.post")
+    def test_request_subdelegation_exchange_error(self, mock_post):
+        """request_subdelegation must raise when token exchange returns error."""
+        error_response = MagicMock()
+        error_response.json.return_value = {"error": "invalid_grant", "error_description": "Depth exceeded"}
+        mock_post.return_value = error_response
+
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            sub_agent.request_subdelegation("parent-token", scope="readonly", agent_jwt_svid="fake-svid")
+        self.assertIn("Sub-delegation failed", str(ctx.exception))
+
+    def test_get_delegation_chain_from_token(self):
+        """get_delegation_chain must extract chain from nested act{} claims."""
+        token = self._make_delegation_jwt({
+            "sub": "alice@acme.com",
+            "scope": "readonly",
+            "act": {
+                "sub": "spiffe://demo.local/agent/query-agent",
+                "scope": "readonly",
+                "act": {"sub": "spiffe://demo.local/subagent/sql-executor"},
+            },
+        })
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        sub_agent._delegation_token = token
+
+        result = sub_agent.get_delegation_chain()
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["subject"], "alice@acme.com")
+        self.assertEqual(result[0]["actor"], "spiffe://demo.local/agent/query-agent")
+
+    def test_get_delegation_chain_no_token(self):
+        """get_delegation_chain must return empty list when no token set."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        self.assertEqual(sub_agent.get_delegation_chain(), [])
+
+    def test_get_delegation_chain_invalid_token(self):
+        """get_delegation_chain must return empty list for invalid token."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        sub_agent._delegation_token = "not-a-jwt"
+        self.assertEqual(sub_agent.get_delegation_chain(), [])
+
+    def test_execute_query_without_credentials_raises(self):
+        """execute_query must raise RuntimeError if no credentials obtained."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            sub_agent.execute_query("SELECT 1")
+        self.assertIn("No database credentials", str(ctx.exception))
+
+    def test_session_id_initially_none(self):
+        """session_id property should be None before subdelegation."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        self.assertIsNone(sub_agent.session_id)
+
+    @patch("sql_executor.requests.put")
+    def test_revoke_credentials_calls_vault(self, mock_put):
+        """revoke_credentials should call Vault lease revocation."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        sub_agent._vault_token = "s.sub-vault-token"
+        sub_agent._lease_id = "database/creds/ai-agent-readonly/sub-lease"
+        sub_agent.revoke_credentials()
+        mock_put.assert_called_once()
+
+    def test_revoke_credentials_noop_without_token(self):
+        """revoke_credentials should be a no-op if no vault token or lease."""
+        sub_agent = SQLExecutorSubAgent(self._make_subagent_config())
+        sub_agent.revoke_credentials()  # Should not raise
+
+    def test_subagent_config_defaults(self):
+        """SubAgentConfig should have correct default values."""
+        config = SubAgentConfig()
+        self.assertEqual(config.spiffe_id, "spiffe://demo.local/subagent/sql-executor")
+        self.assertEqual(config.db_host, "postgresql")
+        self.assertEqual(config.db_port, 5432)
 
 
 if __name__ == "__main__":
