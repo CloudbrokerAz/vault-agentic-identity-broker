@@ -288,37 +288,14 @@ curl -sf "${VAULT_ADDR}/v1/sys/leases/revoke" \
     -d "{\"lease_id\": \"${TEST_LEASE}\"}" > /dev/null
 log_ok "Test credential revoked"
 
-# ─── Step 6: Create Gateway Token ───────────────────────────────────────
+# ─── Step 6: (Removed — Token Exchange no longer needs a Vault token) ────
+# The Token Exchange Service is now a stateless JWT minter that validates
+# human tokens (Keycloak JWKS) and agent SVIDs (SPIRE OIDC JWKS), then
+# mints fused delegation JWTs. It has no Vault dependency.
+# Agents authenticate to Vault directly via SPIFFE + JWT auth.
 
-log_step 6 "Creating Token Exchange Service Vault token"
-
-GATEWAY_TOKEN_RESPONSE=$(curl -sf "${VAULT_ADDR}/v1/auth/token/create" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "policies": ["gateway-policy"],
-        "display_name": "token-exchange",
-        "period": "1h",
-        "explicit_max_ttl": "24h",
-        "renewable": true,
-        "allowed_policies": ["ai-agent-db-read", "ai-agent-db-readwrite"],
-        "metadata": {
-            "service": "token-exchange",
-            "purpose": "delegation-broker"
-        }
-    }')
-
-GATEWAY_VAULT_TOKEN=$(echo "${GATEWAY_TOKEN_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])")
-log_ok "Token Exchange Vault token created"
-
-# Save credentials for reference
-cat > "${PROJECT_DIR}/.gateway.env" <<EOF
-GATEWAY_VAULT_TOKEN=${GATEWAY_VAULT_TOKEN}
-EOF
-chmod 600 "${PROJECT_DIR}/.gateway.env"
-
-log_ok "Token Exchange credentials saved to .gateway.env"
+log_step 6 "Skipping gateway token creation (Token Exchange is stateless)"
+log_ok "Token Exchange no longer needs a Vault token — agents auth to Vault directly"
 
 # ─── Step 7: Configure Vault JWT Auth for fused delegation tokens ─────
 # The JWT auth method validates fused tokens minted by Token Exchange.
@@ -695,6 +672,7 @@ log_step "8d" "Pre-provisioning Vault Identity entities for agent unification"
 # JWT mount accessor is not needed here — JWT aliases are created dynamically.
 log_info "Retrieving auth mount accessors..."
 SPIFFE_ACCESSOR=""
+JWT_ACCESSOR=""
 AUTH_MOUNTS=$(curl -sf "${VAULT_ADDR}/v1/sys/auth" \
     -H "X-Vault-Token: ${VAULT_TOKEN}" 2>/dev/null || echo "")
 
@@ -705,10 +683,21 @@ data = json.load(sys.stdin)
 spiffe = data.get('spiffe/', data.get('data', {}).get('spiffe/', {}))
 print(spiffe.get('accessor', ''))" 2>/dev/null || echo "")
 
+    JWT_ACCESSOR=$(echo "${AUTH_MOUNTS}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+jwt_mount = data.get('jwt/', data.get('data', {}).get('jwt/', {}))
+print(jwt_mount.get('accessor', ''))" 2>/dev/null || echo "")
+
     if [ -n "${SPIFFE_ACCESSOR}" ]; then
         log_ok "SPIFFE auth mount accessor: ${SPIFFE_ACCESSOR}"
     else
         log_info "SPIFFE auth mount not found (OSS Vault). Entities created without SPIFFE alias."
+    fi
+    if [ -n "${JWT_ACCESSOR}" ]; then
+        log_ok "JWT auth mount accessor: ${JWT_ACCESSOR}"
+    else
+        log_warn "JWT auth mount accessor not found. External identity groups may not work."
     fi
 else
     log_warn "Could not retrieve auth mounts."
@@ -993,25 +982,20 @@ else
     log_warn "Delegation enforcement will rely on ACL policies only."
 fi
 
-# ─── Step 9: Restart Token Exchange Service with Token ─────────────────────
+# ─── Step 9: Verify Token Exchange Service ───────────────────────────────
+# Token Exchange is a stateless JWT minter — no Vault token needed.
+# It should already be running from docker compose up.
 
-log_step 9 "Restarting Token Exchange Service with Vault token"
+log_step 9 "Verifying Token Exchange Service"
 
-# Export the token so docker compose picks it up via ${GATEWAY_VAULT_TOKEN:-}
-export GATEWAY_VAULT_TOKEN
-${COMPOSE} up -d --force-recreate token-exchange 2>/dev/null
-
-# Wait for the service to come up
-log_info "Waiting for Token Exchange Service to start..."
+log_info "Waiting for Token Exchange Service..."
 for i in $(seq 1 15); do
     if curl -sf "http://localhost:8090/health" > /dev/null 2>&1; then
-        log_ok "Token Exchange Service is ready"
+        log_ok "Token Exchange Service is healthy (stateless JWT minter)"
         break
     fi
     sleep 2
 done
-
-log_ok "Token Exchange Service restarted with Vault token"
 
 # ─── Step 10: Verify Setup ─────────────────────────────────────────────
 
@@ -1085,12 +1069,15 @@ echo -e "${GREEN}  Bootstrap complete!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo "  Vault Root Token:       ${VAULT_ROOT_TOKEN}"
-echo "  Token Exchange Token:   ${GATEWAY_VAULT_TOKEN}"
+echo ""
+echo "  Architecture: Vault Enterprise as core identity broker"
+echo "  Token Exchange: Stateless JWT minter (no Vault token needed)"
+echo "  Agent Auth: SPIFFE + JWT auth directly with Vault"
+echo "  Policy: Sentinel EGP enforcement on database/creds/*"
 echo ""
 echo "  To run the demo:"
 echo "    ./scripts/demo.sh"
 echo ""
 echo "  To run the AI agent manually:"
-echo "    docker compose exec -e VAULT_TOKEN=${GATEWAY_VAULT_TOKEN} \\"
-echo "      -e AGENT_MODE=demo ai-agent python agent.py"
+echo "    docker compose exec -e AGENT_MODE=demo ai-agent python agent.py"
 echo ""

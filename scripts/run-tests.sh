@@ -75,8 +75,8 @@ ELAPSED=0
 echo "Checking for bootstrap completion (timeout: ${TIMEOUT}s)..."
 
 while [ ${ELAPSED} -lt ${TIMEOUT} ]; do
-    # Check credential files exist
-    if [ -f "${PROJECT_DIR}/.vault-root-token" ] && [ -f "${PROJECT_DIR}/.gateway.env" ]; then
+    # Check credential files exist (Token Exchange no longer needs a Vault token)
+    if [ -f "${PROJECT_DIR}/.vault-root-token" ]; then
         # Check Token Exchange health
         if curl -sf "http://localhost:8090/health" > /dev/null 2>&1; then
             BOOTSTRAP_READY=true

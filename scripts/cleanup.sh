@@ -22,6 +22,6 @@ ${COMPOSE} down -v --remove-orphans 2>/dev/null || true
 echo "Removing generated credential files..."
 rm -f "${PROJECT_DIR}/.vault-unseal-key"
 rm -f "${PROJECT_DIR}/.vault-root-token"
-rm -f "${PROJECT_DIR}/.gateway.env"
+rm -f "${PROJECT_DIR}/.gateway.env"  # Legacy — no longer created by bootstrap
 
 echo "Cleanup complete."

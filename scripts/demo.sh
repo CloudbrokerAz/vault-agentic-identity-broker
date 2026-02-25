@@ -4,8 +4,8 @@
 #
 # Runs the complete identity delegation flow:
 #   Alice logs in → AI agent gets SPIFFE identity → Gateway validates both →
-#   OPA approves delegation → Vault issues 5-min DB creds → Agent queries DB →
-#   Credentials auto-revoke → Full audit trail visible
+#   Vault Sentinel approves delegation → Vault issues 5-min DB creds →
+#   Agent queries DB → Credentials auto-revoke → Full audit trail visible
 ###############################################################################
 
 set -euo pipefail
@@ -32,12 +32,8 @@ fi
 VAULT_ROOT_TOKEN=$(cat "${PROJECT_DIR}/.vault-root-token")
 VAULT_ADDR="http://localhost:8200"
 
-if [ -f "${PROJECT_DIR}/.gateway.env" ]; then
-    source "${PROJECT_DIR}/.gateway.env"
-    # GATEWAY_VAULT_TOKEN is set by the sourced file
-else
-    GATEWAY_VAULT_TOKEN="${VAULT_ROOT_TOKEN}"
-fi
+# Vault root token is used for the demo script's direct credential requests.
+# In production, agents would authenticate via SPIFFE + JWT auth.
 
 echo ""
 echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════════════════════════╗${NC}"
@@ -193,47 +189,10 @@ echo -e "  ${GREEN}✓${NC} SPIFFE ID: ${AGENT_SPIFFE_ID}"
 echo -e "  ${GREEN}✓${NC} Trust Domain: demo.local"
 echo -e "  ${GREEN}✓${NC} JWT-SVID: (obtained from SPIRE Workload API)"
 
-# ─── Step 3: OPA Policy Evaluation ────────────────────────────────────────
+# ─── Step 3: Vault Issues Dynamic Credentials ────────────────────────────
 
 echo ""
-echo -e "${CYAN}━━━ Step 3: OPA evaluates delegation policy ━━━${NC}"
-echo ""
-
-OPA_RESPONSE=$(curl -sf "http://localhost:8181/v1/data/delegation" \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"input\": {
-            \"human_token\": {
-                \"sub\": \"alice@acme.com\",
-                \"groups\": [\"data-analysts\", \"trading-team\"],
-                \"may_act\": {\"sub\": \"agent:query-agent-v2\", \"client_id\": \"ai-agent-service\"},
-                \"exp\": 9999999999,
-                \"iss\": \"http://keycloak:8080/realms/demo\"
-            },
-            \"agent_spiffe_id\": \"${AGENT_SPIFFE_ID}\",
-            \"requested_scope\": \"readonly\",
-            \"current_time\": $(date +%s)
-        }
-    }")
-
-echo "${OPA_RESPONSE}" | python3 -c "
-import sys, json
-r = json.load(sys.stdin)['result']
-print(f\"  Decision: {'ALLOW' if r.get('allow') else 'DENY'}\")
-d = r.get('decision', {})
-if d:
-    print(f\"    Human:  {d.get('human', 'N/A')}\")
-    print(f\"    Agent:  {d.get('agent', 'N/A')}\")
-    print(f\"    Scope:  {d.get('scope', 'N/A')}\")
-    print(f\"    Reason: {d.get('reason', 'N/A')}\")
-"
-echo -e "  ${GREEN}✓${NC} Delegation approved by OPA"
-
-# ─── Step 4: Vault Issues Dynamic Credentials ────────────────────────────
-
-echo ""
-echo -e "${CYAN}━━━ Step 4: Vault issues dynamic database credentials ━━━${NC}"
+echo -e "${CYAN}━━━ Step 3: Vault issues dynamic database credentials ━━━${NC}"
 echo ""
 
 VAULT_CREDS=$(curl -sf "${VAULT_ADDR}/v1/database/creds/ai-agent-readonly" \
@@ -250,10 +209,10 @@ echo "    TTL:       ${LEASE_TTL} seconds"
 echo "    Lease ID:  ${LEASE_ID}"
 echo "    Database:  appdb (PostgreSQL)"
 
-# ─── Step 5: Agent Queries Database ───────────────────────────────────────
+# ─── Step 4: Agent Queries Database ───────────────────────────────────────
 
 echo ""
-echo -e "${CYAN}━━━ Step 5: Agent queries database on behalf of alice@acme.com ━━━${NC}"
+echo -e "${CYAN}━━━ Step 4: Agent queries database on behalf of alice@acme.com ━━━${NC}"
 echo ""
 echo -e "  Question: \"${QUESTION}\""
 echo ""
@@ -269,10 +228,10 @@ ${COMPOSE} exec -T -e PGPASSWORD="${DB_PASSWORD}" postgresql \
     ORDER BY (quantity * unit_price) DESC;
     " 2>/dev/null || echo -e "  ${YELLOW}Query execution requires running PostgreSQL container${NC}"
 
-# ─── Step 6: Audit Trail ─────────────────────────────────────────────────
+# ─── Step 5: Audit Trail ─────────────────────────────────────────────────
 
 echo ""
-echo -e "${CYAN}━━━ Step 6: Audit trail verification ━━━${NC}"
+echo -e "${CYAN}━━━ Step 5: Audit trail verification ━━━${NC}"
 echo ""
 
 echo -e "  ${BOLD}Correlation chain:${NC}"
@@ -301,10 +260,10 @@ except Exception as e:
     print(f'    (Audit log parsing: {e})')
 " 2>/dev/null || echo "    (Vault audit log not available)"
 
-# ─── Step 7: Credential Revocation ────────────────────────────────────────
+# ─── Step 6: Credential Revocation ────────────────────────────────────────
 
 echo ""
-echo -e "${CYAN}━━━ Step 7: Credential lifecycle (auto-revocation) ━━━${NC}"
+echo -e "${CYAN}━━━ Step 6: Credential lifecycle (auto-revocation) ━━━${NC}"
 echo ""
 
 echo -e "  Revoking lease: ${LEASE_ID}"
@@ -344,11 +303,10 @@ else
 echo -e "${BOLD}${GREEN}║  1. ✓ Human authenticated via password grant (DEMO ONLY)        ║${NC}"
 fi
 echo -e "${BOLD}${GREEN}║  2. ✓ Agent attested via SPIFFE (SPIRE)                         ║${NC}"
-echo -e "${BOLD}${GREEN}║  3. ✓ Delegation approved by OPA policy                         ║${NC}"
-echo -e "${BOLD}${GREEN}║  4. ✓ Dynamic credentials issued by Vault (5-min TTL)           ║${NC}"
-echo -e "${BOLD}${GREEN}║  5. ✓ Database queried with delegated identity                  ║${NC}"
-echo -e "${BOLD}${GREEN}║  6. ✓ Full audit trail preserved across all layers              ║${NC}"
-echo -e "${BOLD}${GREEN}║  7. ✓ Credentials auto-revoked after use                        ║${NC}"
+echo -e "${BOLD}${GREEN}║  3. ✓ Dynamic credentials issued by Vault (5-min TTL)           ║${NC}"
+echo -e "${BOLD}${GREEN}║  4. ✓ Database queried with delegated identity                  ║${NC}"
+echo -e "${BOLD}${GREEN}║  5. ✓ Full audit trail preserved across all layers              ║${NC}"
+echo -e "${BOLD}${GREEN}║  6. ✓ Credentials auto-revoked after use                        ║${NC}"
 echo -e "${BOLD}${GREEN}║                                                                  ║${NC}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
