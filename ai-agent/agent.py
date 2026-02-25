@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-AI Agent with SPIFFE Identity, Token Exchange (RFC 8693), and Sub-Agent Delegation
+AI Agent with SPIFFE Identity, Token Exchange (RFC 8693), and Direct Vault Auth
 
-This agent demonstrates the full identity delegation chain with token exchange:
+This agent demonstrates the full identity delegation chain:
 1. Obtains a SPIFFE SVID from the local SPIRE agent
 2. Authenticates the human via Keycloak OIDC
-3. Performs RFC 8693 token exchange (human token + agent SPIFFE → delegation token)
-4. Receives short-lived database credentials from Vault
-5. Optionally delegates to sub-agents via delegation chain extension
-6. Queries PostgreSQL with the dynamic credentials
-7. Credentials auto-expire after 5 minutes
+3. Performs RFC 8693 token exchange (human token + agent SPIFFE → fused delegation JWT)
+4. Authenticates to Vault via SPIFFE workload identity
+5. Authenticates to Vault via JWT auth with the fused delegation token
+6. Requests short-lived database credentials directly from Vault
+7. Optionally delegates to sub-agents via delegation chain extension
+8. Queries PostgreSQL with the dynamic credentials
+9. Credentials auto-expire after 5 minutes
 
 The full audit trail and delegation chain is preserved at every step.
 """
@@ -43,6 +45,7 @@ class AgentConfig:
     spire_socket_path: str = "/tmp/spire-agent/public/api.sock"
     gateway_url: str = "http://token-exchange:8090"
     token_exchange_url: str = "http://token-exchange:8090"
+    vault_addr: str = "http://vault:8200"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "demo"
     trust_domain: str = "demo.local"
@@ -57,6 +60,7 @@ class AgentConfig:
             spire_socket_path=os.getenv("SPIRE_AGENT_SOCKET", cls.spire_socket_path),
             gateway_url=os.getenv("GATEWAY_URL", cls.gateway_url),
             token_exchange_url=os.getenv("TOKEN_EXCHANGE_URL", cls.token_exchange_url),
+            vault_addr=os.getenv("VAULT_ADDR", cls.vault_addr),
             keycloak_url=os.getenv("KEYCLOAK_URL", cls.keycloak_url),
             keycloak_realm=os.getenv("KEYCLOAK_REALM", cls.keycloak_realm),
             trust_domain=os.getenv("TRUST_DOMAIN", cls.trust_domain),
@@ -82,6 +86,8 @@ class DelegationSession:
     ttl_seconds: int
     delegation_token: str = ""
     delegation_chain: list = field(default_factory=list)
+    vault_workload_token: str = ""
+    vault_delegation_token: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -400,8 +406,10 @@ class TokenExchangeClient:
     """
     Client for the Token Exchange Service (RFC 8693).
 
-    Implements standard OAuth 2.0 Token Exchange (RFC 8693)
-    for human-to-agent delegation.
+    The Token Exchange Service is a thin JWT minter: it validates the human
+    token and agent SPIFFE identity, evaluates OPA policy, and returns a
+    fused delegation JWT. It does NOT broker Vault credentials — the agent
+    authenticates to Vault directly.
     """
 
     def __init__(self, config: AgentConfig):
@@ -418,12 +426,17 @@ class TokenExchangeClient:
         agent_jwt_svid: str,
         requested_scope: str = "readonly",
         audience: str = "database",
-    ) -> DelegationSession:
+    ) -> dict:
         """
         Perform RFC 8693 Token Exchange.
 
         Exchanges the human's OIDC token + agent's SPIFFE SVID
-        for a delegated token with database credentials.
+        for a fused delegation JWT. Does NOT return database credentials —
+        the agent must authenticate to Vault directly to obtain those.
+
+        Returns:
+            dict with keys: delegation_token, session_id, expires_in,
+            delegation_chain, scope.
         """
         logger.info("Performing RFC 8693 token exchange: scope=%s", requested_scope)
 
@@ -447,88 +460,24 @@ class TokenExchangeClient:
                     f"{data.get('error_description', '')}"
                 )
 
-            db_cred = data.get("db_credential", {})
             chain = data.get("delegation_chain", [])
-
-            session = DelegationSession(
-                session_id=data["session_id"],
-                human_subject=chain[0]["subject"] if chain else "unknown",
-                scope=requested_scope,
-                db_username=db_cred.get("username", ""),
-                db_password=db_cred.get("password", ""),
-                db_host=db_cred.get("host", self.config.db_host),
-                db_port=db_cred.get("port", self.config.db_port),
-                db_name=db_cred.get("database", self.config.db_name),
-                lease_id=db_cred.get("lease_id", ""),
-                ttl_seconds=data.get("expires_in", 300),
-                delegation_token=data["access_token"],
-                delegation_chain=chain,
-            )
+            result = {
+                "delegation_token": data["access_token"],
+                "session_id": data["session_id"],
+                "expires_in": data.get("expires_in", 300),
+                "delegation_chain": chain,
+                "scope": requested_scope,
+                "human_subject": chain[0]["subject"] if chain else "unknown",
+            }
 
             logger.info(
-                "Token exchange successful: session=%s, db_user=%s, chain_depth=%d",
-                session.session_id, session.db_username, len(chain),
+                "Token exchange successful: session=%s, chain_depth=%d",
+                result["session_id"], len(chain),
             )
-            return session
+            return result
 
         except requests.RequestException as e:
             raise RuntimeError(f"Token exchange request failed: {e}") from e
-
-    def delegate_legacy(
-        self,
-        human_token: str,
-        agent_spiffe_id: str,
-        agent_jwt_svid: str,
-        requested_scope: str = "readonly",
-    ) -> DelegationSession:
-        """
-        Legacy delegation API (backward-compatible).
-        Internally uses RFC 8693 token exchange.
-        """
-        logger.info("Requesting delegation (legacy API): scope=%s", requested_scope)
-
-        payload = {
-            "human_token": human_token,
-            "agent_spiffe_id": agent_spiffe_id,
-            "agent_jwt_svid": agent_jwt_svid,
-            "requested_scope": requested_scope,
-        }
-
-        try:
-            resp = requests.post(self.delegate_url, json=payload, timeout=15)
-            if resp.status_code != 200:
-                error_data = resp.json()
-                raise RuntimeError(
-                    f"Delegation failed ({resp.status_code}): "
-                    f"{error_data.get('error', error_data.get('error_description', 'unknown'))}"
-                )
-
-            data = resp.json()
-            db_cred = data.get("db_credential", {})
-
-            session = DelegationSession(
-                session_id=data["session_id"],
-                human_subject=data.get("metadata", {}).get("delegating_human", "unknown"),
-                scope=requested_scope,
-                db_username=db_cred.get("username", ""),
-                db_password=db_cred.get("password", ""),
-                db_host=db_cred.get("host", self.config.db_host),
-                db_port=db_cred.get("port", self.config.db_port),
-                db_name=db_cred.get("database", self.config.db_name),
-                lease_id=db_cred.get("lease_id", ""),
-                ttl_seconds=db_cred.get("ttl_seconds", 300),
-                delegation_token=data.get("delegation_token", ""),
-                delegation_chain=data.get("metadata", {}).get("delegation_chain", []),
-            )
-
-            logger.info(
-                "Delegation successful: session=%s, db_user=%s",
-                session.session_id, session.db_username,
-            )
-            return session
-
-        except requests.RequestException as e:
-            raise RuntimeError(f"Delegation request failed: {e}") from e
 
     def get_delegation_chain(self, session_id: str) -> dict:
         """Get the full delegation chain for a session."""
@@ -557,6 +506,171 @@ class TokenExchangeClient:
             return resp.json()
         except Exception as e:
             return {"status": "unhealthy", "error": str(e)}
+
+
+class VaultClient:
+    """
+    Client for direct Vault authentication and credential management.
+
+    Implements the two-step Vault auth flow:
+    1. SPIFFE auth — workload identity login via JWT-SVID
+    2. JWT auth — delegation identity login via fused delegation token
+
+    Then requests dynamic database credentials directly from Vault.
+    """
+
+    def __init__(self, config: AgentConfig):
+        self.config = config
+        self.vault_addr = config.vault_addr
+
+    def login_spiffe(self, jwt_svid: str, role: str = "gateway") -> dict:
+        """
+        Authenticate to Vault via SPIFFE workload identity.
+
+        POST /v1/auth/jwt/login with the SPIFFE JWT-SVID.
+        Returns Vault client token and metadata.
+        """
+        logger.info("Vault SPIFFE auth: role=%s", role)
+
+        try:
+            resp = requests.post(
+                f"{self.vault_addr}/v1/auth/jwt/login",
+                json={"jwt": jwt_svid, "role": role},
+                timeout=10,
+            )
+            data = resp.json()
+
+            if "errors" in data:
+                raise RuntimeError(
+                    f"Vault SPIFFE auth failed: {data['errors']}"
+                )
+
+            auth = data.get("auth", {})
+            token = auth.get("client_token", "")
+            if not token:
+                raise RuntimeError("Vault SPIFFE auth returned no client_token")
+
+            logger.info(
+                "Vault SPIFFE auth successful: policies=%s, ttl=%s",
+                auth.get("policies", []), auth.get("lease_duration", 0),
+            )
+            return {
+                "client_token": token,
+                "policies": auth.get("policies", []),
+                "lease_duration": auth.get("lease_duration", 0),
+                "metadata": auth.get("metadata", {}),
+            }
+
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault SPIFFE auth request failed: {e}") from e
+
+    def login_jwt(self, fused_jwt: str, role: str = "agent-readonly") -> dict:
+        """
+        Authenticate to Vault via JWT auth with the fused delegation token.
+
+        POST /v1/auth/jwt/login with the fused delegation JWT.
+        Returns a Vault token that carries the delegation identity.
+        """
+        logger.info("Vault JWT auth (delegation): role=%s", role)
+
+        try:
+            resp = requests.post(
+                f"{self.vault_addr}/v1/auth/jwt/login",
+                json={"jwt": fused_jwt, "role": role},
+                timeout=10,
+            )
+            data = resp.json()
+
+            if "errors" in data:
+                raise RuntimeError(
+                    f"Vault JWT auth failed: {data['errors']}"
+                )
+
+            auth = data.get("auth", {})
+            token = auth.get("client_token", "")
+            if not token:
+                raise RuntimeError("Vault JWT auth returned no client_token")
+
+            logger.info(
+                "Vault JWT auth successful: policies=%s, ttl=%s",
+                auth.get("policies", []), auth.get("lease_duration", 0),
+            )
+            return {
+                "client_token": token,
+                "policies": auth.get("policies", []),
+                "lease_duration": auth.get("lease_duration", 0),
+                "metadata": auth.get("metadata", {}),
+            }
+
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault JWT auth request failed: {e}") from e
+
+    def get_database_credentials(
+        self, vault_token: str, role: str = "ai-agent-readonly"
+    ) -> dict:
+        """
+        Request dynamic database credentials from Vault.
+
+        GET /v1/database/creds/{role} with the Vault delegation token.
+        Returns username, password, lease_id, lease_duration.
+        """
+        logger.info("Requesting Vault DB credentials: role=%s", role)
+
+        try:
+            resp = requests.get(
+                f"{self.vault_addr}/v1/database/creds/{role}",
+                headers={"X-Vault-Token": vault_token},
+                timeout=10,
+            )
+            data = resp.json()
+
+            if "errors" in data:
+                raise RuntimeError(
+                    f"Vault DB credential request failed: {data['errors']}"
+                )
+
+            cred_data = data.get("data", {})
+            result = {
+                "username": cred_data.get("username", ""),
+                "password": cred_data.get("password", ""),
+                "lease_id": data.get("lease_id", ""),
+                "lease_duration": data.get("lease_duration", 0),
+            }
+
+            logger.info(
+                "Vault DB credentials obtained: user=%s, lease_id=%s, ttl=%ds",
+                result["username"], result["lease_id"], result["lease_duration"],
+            )
+            return result
+
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault DB credential request failed: {e}") from e
+
+    def revoke_lease(self, vault_token: str, lease_id: str) -> None:
+        """
+        Revoke a Vault credential lease.
+
+        PUT /v1/sys/leases/revoke to revoke a credential lease.
+        """
+        logger.info("Revoking Vault lease: %s", lease_id)
+
+        try:
+            resp = requests.put(
+                f"{self.vault_addr}/v1/sys/leases/revoke",
+                headers={"X-Vault-Token": vault_token},
+                json={"lease_id": lease_id},
+                timeout=10,
+            )
+            if resp.status_code == 204 or resp.status_code == 200:
+                logger.info("Vault lease revoked: %s", lease_id)
+            else:
+                data = resp.json() if resp.text else {}
+                logger.warning(
+                    "Vault lease revocation returned %d: %s",
+                    resp.status_code, data.get("errors", []),
+                )
+        except requests.RequestException as e:
+            logger.warning("Failed to revoke Vault lease: %s", e)
 
 
 class DatabaseQuerier:
@@ -686,9 +800,9 @@ def map_natural_language_to_sql(question: str) -> str:
 def print_banner():
     auth_mode = os.getenv("AUTH_MODE", "device")
     print("\n" + "=" * 70)
-    print("  Vault Agentic Identity Broker v2 - Token Exchange + Sub-Agents")
-    print("  Flow: Human → Agent → [Sub-Agent] → Database")
-    print("  Protocol: RFC 8693 OAuth 2.0 Token Exchange")
+    print("  Vault Agentic Identity Broker v3 - Direct Vault Auth")
+    print("  Flow: Human → Agent → Vault (SPIFFE + JWT) → Database")
+    print("  Protocol: RFC 8693 Token Exchange + Vault Direct Auth")
     if auth_mode == "device":
         print("  Auth: Device Flow (RFC 8628) — agent never sees password")
     elif auth_mode == "token":
@@ -705,7 +819,7 @@ def print_step(num: int, description: str):
 
 
 def run_demo(question: str = "show me all orders over $1000 from last month"):
-    """Run the full identity delegation demo with token exchange."""
+    """Run the full identity delegation demo with direct Vault auth."""
     config = AgentConfig.from_env()
     auth_mode = os.getenv("AUTH_MODE", "device")
 
@@ -742,55 +856,113 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
     print(f"  [OK] SPIFFE ID: {spiffe.spiffe_id}")
     print(f"  [OK] JWT-SVID obtained (audience: token-exchange)")
 
-    # ── Step 3: RFC 8693 Token Exchange ──
-    print_step(3, "RFC 8693 Token Exchange at Token Exchange Service")
+    # ── Step 3: RFC 8693 Token Exchange → Fused Delegation JWT ──
+    print_step(3, "RFC 8693 Token Exchange → fused delegation JWT (no DB creds)")
     tx_client = TokenExchangeClient(config)
 
     try:
-        session = tx_client.exchange_token(
+        exchange_result = tx_client.exchange_token(
             human_token=human_token,
             agent_jwt_svid=agent_svid,
             requested_scope="readonly",
             audience="database",
         )
+        delegation_token = exchange_result["delegation_token"]
+        session_id = exchange_result["session_id"]
+        chain = exchange_result["delegation_chain"]
+        human_subject = exchange_result["human_subject"]
         print(f"  [OK] Token exchange successful (RFC 8693)")
-        print(f"  [OK] Session ID: {session.session_id}")
-        print(f"  [OK] Delegation token issued")
-        print(f"  [OK] Delegation chain depth: {len(session.delegation_chain)}")
-        for link in session.delegation_chain:
+        print(f"  [OK] Session ID: {session_id}")
+        print(f"  [OK] Fused delegation JWT issued (thin minter — no DB creds)")
+        print(f"  [OK] Delegation chain depth: {len(chain)}")
+        for link in chain:
             print(f"       [{link.get('depth', '?')}] {link.get('subject', '?')} -> "
                   f"{link.get('actor', '?')} ({link.get('actor_type', '?')})")
     except Exception as e:
         print(f"  [FAIL] Token exchange failed: {e}")
         sys.exit(1)
 
-    # ── Step 4: Vault Dynamic Credentials ──
-    print_step(4, "Vault issues dynamic database credentials (5-min TTL)")
+    # ── Step 4: Vault SPIFFE Auth → workload token ──
+    print_step(4, "Vault SPIFFE auth (workload identity)")
+    vault_client = VaultClient(config)
+
+    try:
+        spiffe_auth = vault_client.login_spiffe(agent_svid, role="gateway")
+        vault_workload_token = spiffe_auth["client_token"]
+        print(f"  [OK] Vault SPIFFE auth successful")
+        print(f"  [OK] Policies: {spiffe_auth['policies']}")
+    except Exception as e:
+        print(f"  [FAIL] Vault SPIFFE auth failed: {e}")
+        sys.exit(1)
+
+    # ── Step 5: Vault JWT Auth with fused delegation token ──
+    print_step(5, "Vault JWT auth (delegation identity via fused token)")
+
+    scope = exchange_result["scope"]
+    vault_jwt_role = f"agent-{scope}" if scope else "agent-readonly"
+    try:
+        jwt_auth = vault_client.login_jwt(delegation_token, role=vault_jwt_role)
+        vault_delegation_token = jwt_auth["client_token"]
+        print(f"  [OK] Vault JWT auth successful: role={vault_jwt_role}")
+        print(f"  [OK] Policies: {jwt_auth['policies']}")
+    except Exception as e:
+        print(f"  [FAIL] Vault JWT auth failed: {e}")
+        sys.exit(1)
+
+    # ── Step 6: Request DB credentials from Vault ──
+    print_step(6, "Vault issues dynamic database credentials (5-min TTL)")
+
+    vault_db_role = f"ai-agent-{scope}" if scope else "ai-agent-readonly"
+    try:
+        db_creds = vault_client.get_database_credentials(
+            vault_delegation_token, role=vault_db_role
+        )
+    except Exception as e:
+        print(f"  [FAIL] Vault DB credential request failed: {e}")
+        sys.exit(1)
+
+    session = DelegationSession(
+        session_id=session_id,
+        human_subject=human_subject,
+        scope=scope,
+        db_username=db_creds["username"],
+        db_password=db_creds["password"],
+        db_host=config.db_host,
+        db_port=config.db_port,
+        db_name=config.db_name,
+        lease_id=db_creds["lease_id"],
+        ttl_seconds=db_creds.get("lease_duration", 300),
+        delegation_token=delegation_token,
+        delegation_chain=chain,
+        vault_workload_token=vault_workload_token,
+        vault_delegation_token=vault_delegation_token,
+    )
+
     print(f"  [OK] DB Username: {session.db_username}")
     print(f"  [OK] DB Host: {session.db_host}:{session.db_port}/{session.db_name}")
     print(f"  [OK] TTL: {session.ttl_seconds} seconds")
     print(f"  [OK] Lease ID: {session.lease_id}")
 
-    # ── Step 5: Sub-Agent Delegation (optional) ──
-    print_step(5, "Sub-agent delegation chain extension")
+    # ── Step 7: Sub-Agent Delegation (optional) ──
+    print_step(7, "Sub-agent delegation chain extension")
     if session.delegation_token:
         print(f"  [OK] Delegation token available for sub-agent handoff")
         print(f"  [INFO] Sub-agents can extend the chain via:")
         print(f"         POST /v1/token/exchange")
         print(f"         subject_token = <this delegation token>")
         print(f"         actor_token = <sub-agent SPIFFE SVID>")
+        print(f"  [INFO] Sub-agents then auth to Vault independently")
 
-        # Demonstrate sub-agent chain query
-        chain_info = tx_client.get_delegation_chain(session.session_id)
+        chain_info = tx_client.get_delegation_chain(session_id)
         if "error" not in chain_info:
             print(f"  [OK] Chain verified: depth={chain_info.get('chain_depth', 0)}")
         else:
             print(f"  [INFO] Chain query: {chain_info}")
     else:
-        print(f"  [SKIP] No delegation token (using legacy mode)")
+        print(f"  [SKIP] No delegation token")
 
-    # ── Step 6: Query Database ──
-    print_step(6, f"Agent queries database on behalf of {session.human_subject}")
+    # ── Step 8: Query Database ──
+    print_step(8, f"Agent queries database on behalf of {session.human_subject}")
     print(f"  Question: \"{question}\"")
 
     sql = map_natural_language_to_sql(question)
@@ -809,18 +981,19 @@ def run_demo(question: str = "show me all orders over $1000 from last month"):
     finally:
         querier.close()
 
-    # ── Step 7: Audit Trail ──
-    print_step(7, "Audit trail and delegation chain verification")
+    # ── Step 9: Audit Trail ──
+    print_step(9, "Audit trail and delegation chain verification")
     print(f"  Session: {session.session_id}")
     print(f"  Human: {session.human_subject}")
     print(f"  Agent: {spiffe.spiffe_id}")
     print(f"  DB User: {session.db_username}")
+    print(f"  Vault Auth: SPIFFE + JWT (direct)")
     print(f"  Credentials expire at: {session.expires_at.isoformat()}")
     print(f"  Remaining TTL: {session.remaining_seconds}s")
-    print(f"  Token Exchange Flow: RFC 8693")
+    print(f"  Token Exchange Flow: RFC 8693 (thin minter)")
 
     print(f"\n{'=' * 70}")
-    print("  Demo complete. Full identity chain verified via token exchange.")
+    print("  Demo complete. Full identity chain verified via direct Vault auth.")
     print(f"  Credentials will auto-expire in {session.remaining_seconds}s")
     print(f"{'=' * 70}\n")
 
@@ -846,6 +1019,7 @@ def run_interactive():
     agent_svid = spiffe.fetch_jwt_svid(audience="token-exchange")
 
     tx_client = TokenExchangeClient(config)
+    vault_client = VaultClient(config)
 
     while True:
         try:
@@ -859,11 +1033,35 @@ def run_interactive():
             else:
                 question = choice
 
-            # RFC 8693 token exchange for each query
-            session = tx_client.exchange_token(
+            # RFC 8693 token exchange → fused JWT only
+            exchange_result = tx_client.exchange_token(
                 human_token=human_token,
                 agent_jwt_svid=agent_svid,
                 requested_scope="readonly",
+            )
+
+            # Vault auth + DB creds
+            spiffe_auth = vault_client.login_spiffe(agent_svid, role="gateway")
+            jwt_auth = vault_client.login_jwt(
+                exchange_result["delegation_token"], role="agent-readonly"
+            )
+            db_creds = vault_client.get_database_credentials(
+                jwt_auth["client_token"], role="ai-agent-readonly"
+            )
+
+            session = DelegationSession(
+                session_id=exchange_result["session_id"],
+                human_subject=exchange_result["human_subject"],
+                scope="readonly",
+                db_username=db_creds["username"],
+                db_password=db_creds["password"],
+                db_host=config.db_host,
+                db_port=config.db_port,
+                db_name=config.db_name,
+                lease_id=db_creds["lease_id"],
+                ttl_seconds=db_creds.get("lease_duration", 300),
+                delegation_token=exchange_result["delegation_token"],
+                vault_delegation_token=jwt_auth["client_token"],
             )
 
             sql = map_natural_language_to_sql(question)

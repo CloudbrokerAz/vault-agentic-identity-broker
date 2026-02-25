@@ -2,16 +2,18 @@
 """
 SQL Executor Sub-Agent
 
-A sub-agent that receives delegated credentials from a parent agent
-via RFC 8693 token exchange chain and executes SQL queries.
+A sub-agent that receives a delegation token from a parent agent,
+extends the delegation chain via RFC 8693 token exchange, then
+authenticates to Vault independently to obtain its own DB credentials.
 
-Delegation chain: Human → Parent Agent → SQL Executor Sub-Agent → Database
+Delegation chain: Human → Parent Agent → SQL Executor Sub-Agent → Vault → Database
 
 This demonstrates:
   - Sub-agent identity via SPIFFE
   - Delegation chain extension (depth 2)
   - Scope narrowing (parent's scope → readonly only)
-  - Credential inheritance through token exchange
+  - Independent Vault authentication (SPIFFE + JWT)
+  - Direct DB credential request from Vault
 """
 
 import json
@@ -39,6 +41,7 @@ class SubAgentConfig:
     """Configuration for the SQL Executor sub-agent."""
     spiffe_id: str = "spiffe://demo.local/subagent/sql-executor"
     token_exchange_url: str = "http://token-exchange:8090"
+    vault_addr: str = "http://vault:8200"
     trust_domain: str = "demo.local"
     db_host: str = "postgresql"
     db_port: int = 5432
@@ -49,6 +52,7 @@ class SubAgentConfig:
         return cls(
             spiffe_id=os.getenv("AGENT_SPIFFE_ID", cls.spiffe_id),
             token_exchange_url=os.getenv("TOKEN_EXCHANGE_URL", cls.token_exchange_url),
+            vault_addr=os.getenv("VAULT_ADDR", cls.vault_addr),
             trust_domain=os.getenv("TRUST_DOMAIN", cls.trust_domain),
             db_host=os.getenv("DB_HOST", cls.db_host),
             db_port=int(os.getenv("DB_PORT", str(cls.db_port))),
@@ -62,9 +66,11 @@ class SQLExecutorSubAgent:
 
     Flow:
     1. Receives a delegation token from the parent agent
-    2. Exchanges it for a sub-delegation token via RFC 8693
-    3. Receives database credentials in the exchange response
-    4. Executes the query and returns results
+    2. Gets its own SPIFFE JWT-SVID
+    3. Exchanges parent token for a sub-delegation JWT via RFC 8693
+    4. Authenticates to Vault independently (SPIFFE + JWT auth)
+    5. Requests its own database credentials from Vault
+    6. Executes the query and returns results
     """
 
     def __init__(self, config: SubAgentConfig):
@@ -72,6 +78,8 @@ class SQLExecutorSubAgent:
         self._delegation_token: Optional[str] = None
         self._db_credentials: Optional[dict] = None
         self._session_id: Optional[str] = None
+        self._vault_token: Optional[str] = None
+        self._lease_id: Optional[str] = None
 
     def request_subdelegation(
         self,
@@ -80,12 +88,12 @@ class SQLExecutorSubAgent:
         agent_jwt_svid: str = "",
     ) -> dict:
         """
-        Extend the delegation chain by exchanging the parent's delegation
-        token for a sub-delegation token.
+        Extend the delegation chain and obtain DB credentials via Vault.
 
-        This is the RFC 8693 Token Exchange with:
-          - subject_token = parent's delegation token
-          - actor_token = this sub-agent's SPIFFE JWT-SVID
+        1. RFC 8693 Token Exchange: parent token + sub-agent SVID → fused JWT
+        2. Vault SPIFFE auth → workload token
+        3. Vault JWT auth with fused JWT → delegation token
+        4. Vault DB creds request → username/password
         """
         logger.info("Requesting sub-delegation: scope=%s", scope)
 
@@ -95,6 +103,7 @@ class SQLExecutorSubAgent:
         else:
             actor_token = self._fetch_jwt_svid()
 
+        # Step 1: RFC 8693 token exchange → fused delegation JWT
         exchange_params = {
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
             "subject_token": parent_delegation_token,
@@ -121,21 +130,78 @@ class SQLExecutorSubAgent:
 
             self._delegation_token = result["access_token"]
             self._session_id = result["session_id"]
-            self._db_credentials = result.get("db_credential")
 
             chain = result.get("delegation_chain", [])
             logger.info(
-                "Sub-delegation successful: session=%s, depth=%d",
+                "Sub-delegation token exchange successful: session=%s, depth=%d",
                 self._session_id, len(chain),
             )
-
-            return result
 
         except requests.RequestException as e:
             raise RuntimeError(f"Token exchange request failed: {e}") from e
 
+        # Step 2: Vault SPIFFE auth
+        try:
+            spiffe_resp = requests.post(
+                f"{self.config.vault_addr}/v1/auth/jwt/login",
+                json={"jwt": actor_token, "role": "gateway"},
+                timeout=10,
+            )
+            spiffe_data = spiffe_resp.json()
+            if "errors" in spiffe_data:
+                raise RuntimeError(f"Vault SPIFFE auth failed: {spiffe_data['errors']}")
+            logger.info("Sub-agent Vault SPIFFE auth successful")
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault SPIFFE auth request failed: {e}") from e
+
+        # Step 3: Vault JWT auth with fused delegation token
+        vault_jwt_role = f"agent-{scope}" if scope else "agent-readonly"
+        try:
+            jwt_resp = requests.post(
+                f"{self.config.vault_addr}/v1/auth/jwt/login",
+                json={"jwt": self._delegation_token, "role": vault_jwt_role},
+                timeout=10,
+            )
+            jwt_data = jwt_resp.json()
+            if "errors" in jwt_data:
+                raise RuntimeError(f"Vault JWT auth failed: {jwt_data['errors']}")
+
+            self._vault_token = jwt_data.get("auth", {}).get("client_token", "")
+            if not self._vault_token:
+                raise RuntimeError("Vault JWT auth returned no client_token")
+            logger.info("Sub-agent Vault JWT auth successful: role=%s", vault_jwt_role)
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault JWT auth request failed: {e}") from e
+
+        # Step 4: Request DB credentials from Vault
+        vault_db_role = f"ai-agent-{scope}" if scope else "ai-agent-readonly"
+        try:
+            creds_resp = requests.get(
+                f"{self.config.vault_addr}/v1/database/creds/{vault_db_role}",
+                headers={"X-Vault-Token": self._vault_token},
+                timeout=10,
+            )
+            creds_data = creds_resp.json()
+            if "errors" in creds_data:
+                raise RuntimeError(f"Vault DB creds failed: {creds_data['errors']}")
+
+            cred_inner = creds_data.get("data", {})
+            self._db_credentials = {
+                "username": cred_inner.get("username", ""),
+                "password": cred_inner.get("password", ""),
+            }
+            self._lease_id = creds_data.get("lease_id", "")
+            logger.info(
+                "Sub-agent Vault DB credentials obtained: user=%s, lease=%s",
+                self._db_credentials["username"], self._lease_id,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(f"Vault DB credential request failed: {e}") from e
+
+        return result
+
     def execute_query(self, sql: str) -> list[dict]:
-        """Execute a SQL query using the sub-delegated credentials."""
+        """Execute a SQL query using the Vault-issued credentials."""
         if not self._db_credentials:
             raise RuntimeError("No database credentials. Call request_subdelegation first.")
 
@@ -146,9 +212,9 @@ class SQLExecutorSubAgent:
         )
 
         conn = psycopg2.connect(
-            host=creds.get("host", self.config.db_host),
-            port=creds.get("port", self.config.db_port),
-            dbname=creds.get("database", self.config.db_name),
+            host=self.config.db_host,
+            port=self.config.db_port,
+            dbname=self.config.db_name,
             user=creds["username"],
             password=creds["password"],
             connect_timeout=5,
@@ -179,6 +245,20 @@ class SQLExecutorSubAgent:
             return claims.get("delegation_chain", [])
         except pyjwt.InvalidTokenError:
             return []
+
+    def revoke_credentials(self) -> None:
+        """Revoke the Vault credential lease."""
+        if self._vault_token and self._lease_id:
+            try:
+                requests.put(
+                    f"{self.config.vault_addr}/v1/sys/leases/revoke",
+                    headers={"X-Vault-Token": self._vault_token},
+                    json={"lease_id": self._lease_id},
+                    timeout=10,
+                )
+                logger.info("Sub-agent Vault lease revoked: %s", self._lease_id)
+            except requests.RequestException as e:
+                logger.warning("Failed to revoke sub-agent Vault lease: %s", e)
 
     def _fetch_jwt_svid(self, audience: str = "token-exchange") -> str:
         """Fetch a JWT-SVID from the SPIRE Workload API."""
@@ -277,20 +357,20 @@ class ResultFormatterSubAgent:
 
 def run_subagent_demo(parent_token: str):
     """
-    Run a demo showing sub-agent delegation.
+    Run a demo showing sub-agent delegation with direct Vault auth.
 
     This demonstrates the full chain:
-    Human → Parent Agent → SQL Executor Sub-Agent → Database
+    Human → Parent Agent → SQL Executor Sub-Agent → Vault → Database
     """
     config = SubAgentConfig.from_env()
 
     print("\n" + "=" * 60)
-    print("  Sub-Agent Delegation Demo")
-    print("  Chain: Human → Agent → Sub-Agent → DB")
+    print("  Sub-Agent Delegation Demo (Direct Vault Auth)")
+    print("  Chain: Human → Agent → Sub-Agent → Vault → DB")
     print("=" * 60)
 
-    # Step 1: SQL Executor requests sub-delegation
-    print("\n[1] SQL Executor requesting sub-delegation...")
+    # Step 1: SQL Executor requests sub-delegation + Vault auth
+    print("\n[1] SQL Executor requesting sub-delegation + Vault credentials...")
     executor = SQLExecutorSubAgent(config)
     result = executor.request_subdelegation(parent_token, scope="readonly")
 
@@ -301,7 +381,7 @@ def run_subagent_demo(parent_token: str):
         print(f"      [{link['depth']}] {link['subject']} → {link['actor']} ({link['actor_type']})")
 
     # Step 2: Execute query
-    print("\n[2] Sub-agent executing query...")
+    print("\n[2] Sub-agent executing query with Vault-issued credentials...")
     sql = "SELECT id, customer_name, total_amount, status FROM app.orders LIMIT 5"
     results = executor.execute_query(sql)
 
@@ -314,8 +394,12 @@ def run_subagent_demo(parent_token: str):
     print(f"\n{table}")
     print(f"\n    Summary: {summary['row_count']} rows, {summary['column_count']} columns")
 
+    # Step 4: Revoke credentials
+    print("\n[4] Revoking sub-agent Vault credentials...")
+    executor.revoke_credentials()
+
     print("\n" + "=" * 60)
-    print("  Sub-agent delegation chain complete")
+    print("  Sub-agent delegation chain complete (direct Vault auth)")
     print("=" * 60)
 
     return results

@@ -6,7 +6,8 @@ Tests cover:
 - DelegationSession lifecycle and expiry
 - SPIFFEIdentity demo SVID generation
 - HumanAuthenticator auth modes (device, token, password)
-- TokenExchangeClient delegation requests
+- TokenExchangeClient delegation requests (JWT-only, no DB creds)
+- VaultClient SPIFFE auth, JWT auth, DB credential requests
 - DatabaseQuerier session validation
 - Natural language to SQL mapping
 """
@@ -29,6 +30,7 @@ from agent import (
     SPIFFEIdentity,
     HumanAuthenticator,
     TokenExchangeClient,
+    VaultClient,
     DatabaseQuerier,
     map_natural_language_to_sql,
     QUERY_MAPPINGS,
@@ -43,6 +45,7 @@ class TestAgentConfig(unittest.TestCase):
         config = AgentConfig()
         self.assertEqual(config.spire_socket_path, "/tmp/spire-agent/public/api.sock")
         self.assertEqual(config.gateway_url, "http://token-exchange:8090")
+        self.assertEqual(config.vault_addr, "http://vault:8200")
         self.assertEqual(config.keycloak_url, "http://keycloak:8080")
         self.assertEqual(config.keycloak_realm, "demo")
         self.assertEqual(config.trust_domain, "demo.local")
@@ -55,13 +58,14 @@ class TestAgentConfig(unittest.TestCase):
         """from_env should return defaults when no env vars are set."""
         env_vars = [
             "SPIRE_AGENT_SOCKET", "GATEWAY_URL", "TOKEN_EXCHANGE_URL",
-            "KEYCLOAK_URL", "KEYCLOAK_REALM", "TRUST_DOMAIN",
+            "VAULT_ADDR", "KEYCLOAK_URL", "KEYCLOAK_REALM", "TRUST_DOMAIN",
             "AGENT_SPIFFE_ID", "DB_HOST", "DB_PORT", "DB_NAME",
         ]
         saved = {k: os.environ.pop(k, None) for k in env_vars}
         try:
             config = AgentConfig.from_env()
             self.assertEqual(config.gateway_url, "http://token-exchange:8090")
+            self.assertEqual(config.vault_addr, "http://vault:8200")
             self.assertEqual(config.db_port, 5432)
         finally:
             for k, v in saved.items():
@@ -71,15 +75,18 @@ class TestAgentConfig(unittest.TestCase):
     def test_from_env_custom(self):
         """from_env should read from environment variables."""
         os.environ["GATEWAY_URL"] = "http://custom-gateway:9090"
+        os.environ["VAULT_ADDR"] = "http://vault-prod:8200"
         os.environ["DB_PORT"] = "5433"
         os.environ["TRUST_DOMAIN"] = "prod.example.com"
         try:
             config = AgentConfig.from_env()
             self.assertEqual(config.gateway_url, "http://custom-gateway:9090")
+            self.assertEqual(config.vault_addr, "http://vault-prod:8200")
             self.assertEqual(config.db_port, 5433)
             self.assertEqual(config.trust_domain, "prod.example.com")
         finally:
             os.environ.pop("GATEWAY_URL", None)
+            os.environ.pop("VAULT_ADDR", None)
             os.environ.pop("DB_PORT", None)
             os.environ.pop("TRUST_DOMAIN", None)
 
@@ -408,7 +415,7 @@ class TestHumanAuthenticator(unittest.TestCase):
 
 
 class TestTokenExchangeClient(unittest.TestCase):
-    """Tests for TokenExchangeClient class."""
+    """Tests for TokenExchangeClient class (JWT-only, no DB creds)."""
 
     def test_url_construction(self):
         config = AgentConfig(token_exchange_url="http://exchange:9090")
@@ -419,21 +426,14 @@ class TestTokenExchangeClient(unittest.TestCase):
 
     @patch("agent.requests.post")
     def test_exchange_token_success(self, mock_post):
+        """Token exchange returns fused delegation JWT only (no DB creds)."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "access_token": "delegation-token-xyz",
+            "access_token": "fused-delegation-jwt-xyz",
             "session_id": "sess-abc123",
             "expires_in": 300,
             "scope": "readonly",
-            "db_credential": {
-                "username": "v-spiffe-readonly-xyz",
-                "password": "dynamic-pw",
-                "host": "postgresql",
-                "port": 5432,
-                "database": "appdb",
-                "lease_id": "database/creds/ai-agent-readonly/abc",
-            },
             "delegation_chain": [
                 {
                     "subject": "alice@acme.com",
@@ -448,17 +448,42 @@ class TestTokenExchangeClient(unittest.TestCase):
 
         config = AgentConfig()
         client = TokenExchangeClient(config)
-        session = client.exchange_token(
+        result = client.exchange_token(
             human_token="fake-token",
             agent_jwt_svid="fake-svid",
             requested_scope="readonly",
         )
 
-        self.assertEqual(session.session_id, "sess-abc123")
-        self.assertEqual(session.human_subject, "alice@acme.com")
-        self.assertEqual(session.db_username, "v-spiffe-readonly-xyz")
-        self.assertEqual(session.ttl_seconds, 300)
-        self.assertFalse(session.is_expired)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["session_id"], "sess-abc123")
+        self.assertEqual(result["delegation_token"], "fused-delegation-jwt-xyz")
+        self.assertEqual(result["human_subject"], "alice@acme.com")
+        self.assertEqual(result["expires_in"], 300)
+        self.assertEqual(result["scope"], "readonly")
+        self.assertEqual(len(result["delegation_chain"]), 1)
+        # Verify no DB credentials are returned
+        self.assertNotIn("db_credential", result)
+        self.assertNotIn("username", result)
+        self.assertNotIn("password", result)
+
+    @patch("agent.requests.post")
+    def test_exchange_token_empty_chain(self, mock_post):
+        """Empty delegation chain should set human_subject to 'unknown'."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "fused-jwt",
+            "session_id": "sess-no-chain",
+            "expires_in": 300,
+            "delegation_chain": [],
+        }
+        mock_post.return_value = mock_response
+
+        config = AgentConfig()
+        client = TokenExchangeClient(config)
+        result = client.exchange_token("human-tok", "agent-svid")
+
+        self.assertEqual(result["human_subject"], "unknown")
 
     @patch("agent.requests.post")
     def test_exchange_token_error(self, mock_post):
@@ -847,76 +872,6 @@ class TestTokenExchangeClientErrors(unittest.TestCase):
     """Tests for TokenExchangeClient error handling."""
 
     @patch("agent.requests.post")
-    def test_missing_db_credential_creates_empty_session(self, mock_post):
-        """Response without db_credential should produce session with empty username."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "session_id": "sess-no-cred",
-            "access_token": "delegation-token-xyz",
-            "delegation_chain": [
-                {"subject": "alice@acme.com", "actor": "agent", "depth": 0}
-            ],
-            "expires_in": 300,
-        }
-        mock_post.return_value = mock_response
-
-        config = AgentConfig()
-        client = TokenExchangeClient(config)
-        session = client.exchange_token("human-tok", "agent-svid")
-
-        self.assertEqual(session.db_username, "")
-        self.assertEqual(session.db_password, "")
-        self.assertEqual(session.lease_id, "")
-
-    @patch("agent.requests.post")
-    def test_empty_delegation_chain_sets_unknown_subject(self, mock_post):
-        """Empty delegation_chain should set human_subject to 'unknown'."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "session_id": "sess-no-chain",
-            "access_token": "delegation-token-xyz",
-            "delegation_chain": [],
-            "expires_in": 300,
-            "db_credential": {
-                "username": "v-user",
-                "password": "pw",
-                "host": "localhost",
-                "port": 5432,
-                "database": "appdb",
-                "lease_id": "lease-1",
-            },
-        }
-        mock_post.return_value = mock_response
-
-        config = AgentConfig()
-        client = TokenExchangeClient(config)
-        session = client.exchange_token("human-tok", "agent-svid")
-
-        self.assertEqual(session.human_subject, "unknown")
-
-    @patch("agent.requests.post")
-    def test_null_db_credential_raises(self, mock_post):
-        """Response with db_credential=None should raise AttributeError."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "session_id": "sess-null-cred",
-            "access_token": "delegation-token-xyz",
-            "delegation_chain": [],
-            "expires_in": 300,
-            "db_credential": None,
-        }
-        mock_post.return_value = mock_response
-
-        config = AgentConfig()
-        client = TokenExchangeClient(config)
-
-        with self.assertRaises(AttributeError):
-            client.exchange_token("human-tok", "agent-svid")
-
-    @patch("agent.requests.post")
     def test_http_500_with_error_key_raises(self, mock_post):
         """Response containing 'error' key should raise RuntimeError."""
         mock_response = MagicMock()
@@ -934,6 +889,221 @@ class TestTokenExchangeClientErrors(unittest.TestCase):
             client.exchange_token("human-tok", "agent-svid")
         self.assertIn("Token exchange failed", str(ctx.exception))
         self.assertIn("server_error", str(ctx.exception))
+
+
+class TestVaultClient(unittest.TestCase):
+    """Tests for VaultClient SPIFFE auth, JWT auth, and DB credentials."""
+
+    def _make_config(self):
+        return AgentConfig(vault_addr="http://vault:8200")
+
+    # ── SPIFFE auth tests ──
+
+    @patch("agent.requests.post")
+    def test_login_spiffe_success(self, mock_post):
+        """Successful SPIFFE login returns client token and policies."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "auth": {
+                "client_token": "s.vault-spiffe-token-xyz",
+                "policies": ["default", "gateway"],
+                "lease_duration": 3600,
+                "metadata": {"role": "gateway"},
+            }
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        result = client.login_spiffe("fake-jwt-svid", role="gateway")
+
+        self.assertEqual(result["client_token"], "s.vault-spiffe-token-xyz")
+        self.assertIn("gateway", result["policies"])
+        self.assertEqual(result["lease_duration"], 3600)
+        mock_post.assert_called_once_with(
+            "http://vault:8200/v1/auth/jwt/login",
+            json={"jwt": "fake-jwt-svid", "role": "gateway"},
+            timeout=10,
+        )
+
+    @patch("agent.requests.post")
+    def test_login_spiffe_error_response(self, mock_post):
+        """Vault error response should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "errors": ["permission denied"]
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_spiffe("bad-svid")
+        self.assertIn("Vault SPIFFE auth failed", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_login_spiffe_no_token(self, mock_post):
+        """Missing client_token in auth response should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "auth": {
+                "policies": ["default"],
+                "lease_duration": 0,
+            }
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_spiffe("svid")
+        self.assertIn("no client_token", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_login_spiffe_connection_error(self, mock_post):
+        """Network failure should raise RuntimeError."""
+        import requests as real_requests
+        mock_post.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_spiffe("svid")
+        self.assertIn("Vault SPIFFE auth request failed", str(ctx.exception))
+
+    # ── JWT auth tests ──
+
+    @patch("agent.requests.post")
+    def test_login_jwt_success(self, mock_post):
+        """Successful JWT login returns client token with delegation identity."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "auth": {
+                "client_token": "s.vault-delegation-token-abc",
+                "policies": ["default", "ai-agent-db-read"],
+                "lease_duration": 300,
+                "metadata": {"role": "agent-readonly"},
+            }
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        result = client.login_jwt("fused-delegation-jwt", role="agent-readonly")
+
+        self.assertEqual(result["client_token"], "s.vault-delegation-token-abc")
+        self.assertIn("ai-agent-db-read", result["policies"])
+        mock_post.assert_called_once_with(
+            "http://vault:8200/v1/auth/jwt/login",
+            json={"jwt": "fused-delegation-jwt", "role": "agent-readonly"},
+            timeout=10,
+        )
+
+    @patch("agent.requests.post")
+    def test_login_jwt_error_response(self, mock_post):
+        """Vault error in JWT auth should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "errors": ["role not found"]
+        }
+        mock_post.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_jwt("bad-jwt", role="nonexistent")
+        self.assertIn("Vault JWT auth failed", str(ctx.exception))
+
+    @patch("agent.requests.post")
+    def test_login_jwt_connection_error(self, mock_post):
+        """Network failure should raise RuntimeError."""
+        import requests as real_requests
+        mock_post.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.login_jwt("jwt", role="agent-readonly")
+        self.assertIn("Vault JWT auth request failed", str(ctx.exception))
+
+    # ── DB credential tests ──
+
+    @patch("agent.requests.get")
+    def test_get_database_credentials_success(self, mock_get):
+        """Successful DB credential request returns username, password, lease."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": {
+                "username": "v-spiffe-readonly-xyz",
+                "password": "dynamic-pw-123",
+            },
+            "lease_id": "database/creds/ai-agent-readonly/abc123",
+            "lease_duration": 300,
+        }
+        mock_get.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        result = client.get_database_credentials(
+            "s.vault-token", role="ai-agent-readonly"
+        )
+
+        self.assertEqual(result["username"], "v-spiffe-readonly-xyz")
+        self.assertEqual(result["password"], "dynamic-pw-123")
+        self.assertEqual(result["lease_id"], "database/creds/ai-agent-readonly/abc123")
+        self.assertEqual(result["lease_duration"], 300)
+        mock_get.assert_called_once_with(
+            "http://vault:8200/v1/database/creds/ai-agent-readonly",
+            headers={"X-Vault-Token": "s.vault-token"},
+            timeout=10,
+        )
+
+    @patch("agent.requests.get")
+    def test_get_database_credentials_error(self, mock_get):
+        """Vault error response should raise RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "errors": ["1 error occurred: permission denied"]
+        }
+        mock_get.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.get_database_credentials("s.bad-token", role="ai-agent-readonly")
+        self.assertIn("Vault DB credential request failed", str(ctx.exception))
+
+    @patch("agent.requests.get")
+    def test_get_database_credentials_connection_error(self, mock_get):
+        """Network failure should raise RuntimeError."""
+        import requests as real_requests
+        mock_get.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        client = VaultClient(self._make_config())
+        with self.assertRaises(RuntimeError) as ctx:
+            client.get_database_credentials("s.token", role="ai-agent-readonly")
+        self.assertIn("Vault DB credential request failed", str(ctx.exception))
+
+    # ── Lease revocation tests ──
+
+    @patch("agent.requests.put")
+    def test_revoke_lease_success(self, mock_put):
+        """Successful lease revocation should not raise."""
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_put.return_value = mock_response
+
+        client = VaultClient(self._make_config())
+        # Should not raise
+        client.revoke_lease("s.vault-token", "database/creds/ai-agent-readonly/abc")
+
+        mock_put.assert_called_once_with(
+            "http://vault:8200/v1/sys/leases/revoke",
+            headers={"X-Vault-Token": "s.vault-token"},
+            json={"lease_id": "database/creds/ai-agent-readonly/abc"},
+            timeout=10,
+        )
+
+    @patch("agent.requests.put")
+    def test_revoke_lease_connection_error(self, mock_put):
+        """Network failure during revocation should not raise (just warn)."""
+        import requests as real_requests
+        mock_put.side_effect = real_requests.exceptions.ConnectionError("refused")
+
+        client = VaultClient(self._make_config())
+        # Should not raise — revoke_lease is best-effort
+        client.revoke_lease("s.token", "lease-id")
 
 
 class TestNaturalLanguageSecurity(unittest.TestCase):
