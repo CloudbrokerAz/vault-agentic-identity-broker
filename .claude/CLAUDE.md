@@ -305,7 +305,6 @@ cd /workspace && python -m pytest ai-agent/tests/test_agent.py -v
 | `GATEWAY_VAULT_TOKEN` | (set by bootstrap) | (legacy) | No longer used — Token Exchange is stateless |
 | `SPIRE_JOIN_TOKEN` | (set by bootstrap) | spire-agent | SPIRE agent join token |
 | `HOST_NETWORK` | (unset) | bootstrap.sh, cleanup.sh, test-runner, E2E tests | Set to `true` as alternative to `--host` flag |
-| `TOKEN_SIGNING_SECRET` | `token-exchange-secret-change-in-production` | token-exchange | Deprecated: HMAC secret (RS256 keypair used by default) |
 | `SIGNING_KEY_PATH` | (none) | token-exchange | Path to PEM private key for RS256 signing (generates in-memory if empty) |
 | `SPIRE_OIDC_URL` | `http://spire-oidc:8082` | token-exchange | SPIRE OIDC Discovery Provider URL for JWKS verification |
 | `MAX_DELEGATION_DEPTH` | `3` | token-exchange | Maximum delegation chain depth |

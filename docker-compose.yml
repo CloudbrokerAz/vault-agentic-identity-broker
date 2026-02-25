@@ -234,7 +234,6 @@ services:
       KEYCLOAK_JWKS_URL: "http://keycloak:8080/realms/demo/protocol/openid-connect/certs"
       TRUST_DOMAIN: "demo.local"
       SPIRE_OIDC_URL: "http://spire-oidc:8082"
-      SIGNING_SECRET: "${TOKEN_SIGNING_SECRET:-token-exchange-secret-change-in-production}"
       MAX_DELEGATION_DEPTH: "3"
       DEFAULT_TTL: "300"
       MAX_TTL: "1800"
