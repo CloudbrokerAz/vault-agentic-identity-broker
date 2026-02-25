@@ -6,11 +6,19 @@ Tests the full user journey through the demo UI server API:
   Step 1: Human authentication (password grant)
   Step 2: Agent consent update
   Step 3: SPIFFE SVID fetch
-  Step 4: Token exchange (RFC 8693) — delegation token only
-  Step 5: Vault credential brokering (delegation-gated via Token Exchange)
-  Step 6: Database query with dynamic credentials
-  Step 7: Credential revocation + verification
-  Step 8: Audit trail
+  Step 4: Token exchange (RFC 8693) -- delegation token only
+  Step 5: Vault SPIFFE auth (workload identity)
+  Step 6: Vault JWT auth (delegation token -> Vault token)
+  Step 7: Vault credential request (vault_token -> DB creds)
+  Step 8: Database query with dynamic credentials
+  Step 9: Credential revocation + verification
+  Step 10: Audit trail
+
+In the new architecture (Vault Enterprise as core identity broker):
+  - Token Exchange is a stateless JWT minter (no Vault, no OPA)
+  - Agents authenticate to Vault via SPIFFE + JWT auth
+  - Vault Sentinel EGPs enforce delegation policy (replacing OPA)
+  - DB credentials come directly from Vault, not from Token Exchange
 
 Requires all services to be running (bootstrap completed).
 Run with: python -m pytest tests/test_demo_ui_flow.py -v
@@ -121,7 +129,7 @@ class TestDemoUIFlow:
         flow_state["svid_decoded"] = data.get("decoded", {})
 
     def test_step4_token_exchange(self, flow_state):
-        """Step 5: Token exchange should return delegation token (no db_credential)."""
+        """Step 4: Token exchange should return delegation token (no db_credential)."""
         status, data = api("POST", "/api/token-exchange", {
             "subject_token": flow_state["access_token"],
             "actor_token": flow_state["svid_token"],
@@ -164,31 +172,45 @@ class TestDemoUIFlow:
         assert dt["act"].get("sub"), "act.sub should contain the agent SPIFFE ID"
         assert "scope" in dt, "Delegation token should have scope claim"
 
-    def test_step6_vault_credentials(self, flow_state):
-        """Step 6: Broker credentials via delegation token through Token Exchange."""
+    def test_step6_vault_jwt_auth(self, flow_state):
+        """Step 6: Authenticate to Vault via JWT auth with delegation token."""
         delegation_token = flow_state.get("delegation_token")
         if not delegation_token:
-            pytest.skip("No delegation token from step 5")
+            pytest.skip("No delegation token from step 4")
+
+        status, data = api("POST", "/api/vault/jwt-auth", {
+            "delegation_token": delegation_token,
+            "role": "delegated-agent",
+        })
+        assert status == 200, f"Vault JWT auth failed (status {status}): {data}"
+        assert data.get("vault_token"), "No vault_token returned from JWT auth"
+        assert data.get("policies"), "No policies returned from JWT auth"
+
+        flow_state["vault_token"] = data["vault_token"]
+
+    def test_step7_vault_credentials(self, flow_state):
+        """Step 7: Request DB credentials from Vault using the Vault token."""
+        vault_token = flow_state.get("vault_token")
+        if not vault_token:
+            pytest.skip("No Vault token from step 6")
 
         status, data = api("POST", "/api/vault/credentials", {
-            "delegation_token": delegation_token,
+            "vault_token": vault_token,
+            "scope": "readonly",
         })
-        assert status == 200, f"Credential brokering failed (status {status}): {data}"
+        assert status == 200, f"Credential request failed (status {status}): {data}"
         assert data.get("username"), "DB credential missing username"
         assert data.get("password"), "DB credential missing password"
         assert data.get("host"), "DB credential missing host"
         assert data.get("database") == "appdb", f"Expected database 'appdb', got '{data.get('database')}'"
         assert data.get("ttl_seconds", 0) > 0, "TTL should be positive"
         assert data.get("lease_id"), "DB credential missing lease_id"
-        assert data.get("delegation_verified") is True, \
-            "delegation_verified should be True — delegation token was checked"
-        assert data.get("steps"), "Educational step trace should be present"
 
         flow_state["db_credential"] = data
         flow_state["vault_lease_id"] = data.get("lease_id")
 
-    def test_step7_db_query(self, flow_state):
-        """Step 7: Execute a SQL query with dynamic credentials."""
+    def test_step8_db_query(self, flow_state):
+        """Step 8: Execute a SQL query with dynamic credentials."""
         db = flow_state.get("db_credential")
         if not db:
             pytest.skip("No DB credentials (Vault token may be expired)")
@@ -207,18 +229,19 @@ class TestDemoUIFlow:
         assert "rows" in data, "Response missing rows"
         assert data.get("row_count", 0) > 0, "Expected at least 1 row"
 
-    def test_step8_revoke(self, flow_state):
-        """Step 8: Revoke the delegation token and credentials."""
+    def test_step9_revoke(self, flow_state):
+        """Step 9: Revoke the delegation token and credentials."""
         status, data = api("POST", "/api/revoke", {
-            "session_id": flow_state["session_id"],
-            "delegation_token": flow_state["delegation_token"],
+            "session_id": flow_state.get("session_id", ""),
+            "delegation_token": flow_state.get("delegation_token", ""),
+            "vault_token": flow_state.get("vault_token", ""),
             "lease_id": flow_state.get("vault_lease_id", ""),
         })
         assert status == 200, f"Revocation failed: {data}"
         flow_state["revoked"] = True
 
-    def test_step8_verify_revocation(self, flow_state):
-        """Step 8b: Verify credentials are no longer valid after revocation."""
+    def test_step9_verify_revocation(self, flow_state):
+        """Step 9b: Verify credentials are no longer valid after revocation."""
         db = flow_state.get("db_credential")
         if not db:
             pytest.skip("No DB credentials to verify")
@@ -230,8 +253,8 @@ class TestDemoUIFlow:
         assert status == 200, f"Verify-revoked failed: {data}"
         assert data.get("revoked") is True, f"Credentials should be revoked: {data}"
 
-    def test_step9_audit(self, flow_state):
-        """Step 9: Audit trail should contain entries for this session."""
+    def test_step10_audit(self, flow_state):
+        """Step 10: Audit trail should contain entries for this session."""
         status, data = api("GET", "/api/audit")
         assert status == 200, f"Audit fetch failed: {data}"
 
@@ -257,8 +280,8 @@ class TestDemoUIFlow:
             assert "token_exchange" in actions, \
                 f"Expected 'token_exchange' in session audit, got: {actions}"
 
-    def test_step9_audit_entry_structure(self, flow_state):
-        """Step 9b: Verify audit entries have the fields the UI timeline expects."""
+    def test_step10_audit_entry_structure(self, flow_state):
+        """Step 10b: Verify audit entries have the fields the UI timeline expects."""
         status, data = api("GET", "/api/audit")
         entries = data.get("entries", data)
 
@@ -309,19 +332,26 @@ class TestDemoUIEdgeCases:
             "actor_token": "",
             "scope": "readonly",
         })
-        # Should not crash — may return 4xx or 502
+        # Should not crash -- may return 4xx or 502
         assert status >= 400
 
-    def test_vault_credentials_missing_delegation_token(self):
-        """Vault credentials should fail without a delegation_token."""
+    def test_vault_credentials_missing_vault_token(self):
+        """Vault credentials should fail without a vault_token."""
         status, data = api("POST", "/api/vault/credentials", {
+            "vault_token": "",
+        })
+        assert status == 400
+
+    def test_vault_jwt_auth_missing_delegation_token(self):
+        """Vault JWT auth should fail without a delegation_token."""
+        status, data = api("POST", "/api/vault/jwt-auth", {
             "delegation_token": "",
         })
         assert status == 400
 
-    def test_vault_credentials_invalid_delegation_token(self):
-        """Vault credentials should fail with an invalid delegation token."""
-        status, data = api("POST", "/api/vault/credentials", {
+    def test_vault_jwt_auth_invalid_delegation_token(self):
+        """Vault JWT auth should fail with an invalid delegation token."""
+        status, data = api("POST", "/api/vault/jwt-auth", {
             "delegation_token": "not-a-valid-jwt-token",
         })
         assert status >= 400
@@ -349,7 +379,7 @@ class TestDemoUIEdgeCases:
             "agent_id": "rogue-agent",
             "agent_type": "agent",
         })
-        # May succeed with demo SVID or fail — should not crash
+        # May succeed with demo SVID or fail -- should not crash
         assert status in (200, 400, 404, 502)
 
 

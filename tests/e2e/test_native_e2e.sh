@@ -4,16 +4,17 @@
 #
 # Runs all services natively (no Docker required):
 #   - Mock Keycloak and Vault via Python
-#   - Real Token Exchange (Python service)
+#   - Real Token Exchange (Python service, stateless JWT minter)
 #   - Real PostgreSQL database
 #
 # Tests the full identity delegation chain:
 #   1. Service health checks
 #   2. Keycloak authentication (alice, bob, invalid)
 #   3. Vault dynamic credential lifecycle
-#   4. Token Exchange delegation flow
+#   4. Token Exchange delegation flow (RFC 8693)
 #   5. Database queries with dynamic credentials
 #   6. Credential revocation
+#   7. PostgreSQL schema validation
 ###############################################################################
 
 set -uo pipefail
@@ -45,23 +46,24 @@ cleanup() {
         kill "$(cat /tmp/mock-services.pid)" 2>/dev/null || true
         rm -f /tmp/mock-services.pid
     fi
-    # Kill gateway
-    if [ -n "${GATEWAY_PID:-}" ]; then
-        kill "${GATEWAY_PID}" 2>/dev/null || true
+    # Kill token exchange
+    if [ -n "${TE_PID:-}" ]; then
+        kill "${TE_PID}" 2>/dev/null || true
     fi
     rm -f /tmp/mock-vault-root-token /tmp/gateway-vault-token
 }
 trap cleanup EXIT
 
 echo ""
-echo "═══════════════════════════════════════════════════════"
+echo "================================================================="
 echo "  Native E2E Integration Tests"
-echo "═══════════════════════════════════════════════════════"
+echo "  Architecture: Stateless Token Exchange + Direct Vault Auth"
+echo "================================================================="
 echo ""
 
 # ─── Step 0: Start Services ────────────────────────────────────────────
 
-echo "── Starting Services ──"
+echo "-- Starting Services --"
 
 # Use alternate ports to avoid conflicts with live Docker services
 MOCK_KC_PORT=19080
@@ -89,31 +91,19 @@ if [ -z "${VAULT_TOKEN}" ]; then
     exit 1
 fi
 
-# Create gateway token via Vault
-info "Creating Gateway Vault token..."
-GATEWAY_TOKEN_RESP=$(curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/auth/token/create" \
-    -X POST \
-    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{"policies": ["gateway-policy"]}' 2>/dev/null)
-GATEWAY_VAULT_TOKEN=$(echo "${GATEWAY_TOKEN_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])" 2>/dev/null)
-echo "${GATEWAY_VAULT_TOKEN}" > /tmp/gateway-vault-token
-
-# Start Token Exchange (Python service)
+# Start Token Exchange (stateless JWT minter, no Vault token needed)
 info "Starting Token Exchange..."
 LISTEN_PORT=${TE_PORT} \
-KEYCLOAK_URL="http://127.0.0.1:${MOCK_KC_PORT}" \
-KEYCLOAK_REALM="demo" \
-VAULT_ADDR="http://127.0.0.1:${MOCK_VAULT_PORT}" \
-VAULT_TOKEN="${GATEWAY_VAULT_TOKEN}" \
+KEYCLOAK_JWKS_URL="http://127.0.0.1:${MOCK_KC_PORT}/realms/demo/protocol/openid-connect/certs" \
+SPIRE_OIDC_URL="http://127.0.0.1:${MOCK_KC_PORT}" \
 TRUST_DOMAIN="demo.local" \
-SIGNING_SECRET="test-signing-secret-for-native-e2e" \
 MAX_DELEGATION_DEPTH=3 \
+DEFAULT_TTL=300 \
 python3 "${PROJECT_DIR}/token-exchange/token_exchange.py" > /tmp/token-exchange-native-e2e.log 2>&1 &
-GATEWAY_PID=$!
+TE_PID=$!
 sleep 3
 
-if ! kill -0 "${GATEWAY_PID}" 2>/dev/null; then
+if ! kill -0 "${TE_PID}" 2>/dev/null; then
     echo -e "${RED}Failed to start Token Exchange. Check /tmp/token-exchange-native-e2e.log${NC}"
     exit 1
 fi
@@ -123,7 +113,7 @@ pass "All services started successfully"
 # ─── Test 1: Service Health ──────────────────────────────────────
 
 echo ""
-echo "── Service Health ──"
+echo "-- Service Health --"
 
 # Vault health
 if curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/sys/health" > /dev/null 2>&1; then
@@ -140,10 +130,13 @@ else
 fi
 
 # Token Exchange health
-if curl -sf "http://127.0.0.1:${TE_PORT}/health" > /dev/null 2>&1; then
-    pass "Token Exchange is healthy"
+TE_HEALTH=$(curl -sf "http://127.0.0.1:${TE_PORT}/health" 2>/dev/null)
+TE_STATUS=$(echo "${TE_HEALTH}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+TE_VERSION=$(echo "${TE_HEALTH}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null)
+if [ "${TE_STATUS}" = "healthy" ]; then
+    pass "Token Exchange is healthy (version=${TE_VERSION})"
 else
-    fail "Token Exchange health check" "not responding"
+    fail "Token Exchange health check" "status=${TE_STATUS}"
 fi
 
 # PostgreSQL health
@@ -156,7 +149,7 @@ fi
 # ─── Test 2: Keycloak Authentication ────────────────────────────
 
 echo ""
-echo "── Keycloak Authentication ──"
+echo "-- Keycloak Authentication --"
 
 # Alice login
 ALICE_TOKEN=$(curl -sf "http://127.0.0.1:${MOCK_KC_PORT}/realms/demo/protocol/openid-connect/token" \
@@ -254,7 +247,7 @@ fi
 # ─── Test 3: Vault Dynamic Credentials ──────────────────────────
 
 echo ""
-echo "── Vault Dynamic Credentials ──"
+echo "-- Vault Dynamic Credentials --"
 
 # Generate readonly credentials
 CRED_RESULT=$(curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/database/creds/ai-agent-readonly" \
@@ -316,265 +309,174 @@ else
     fail "Vault credential generation" "no response from Vault"
 fi
 
-# ─── Test 4: Token Exchange Delegation Flow ───────────────────
+# ─── Test 4: Token Exchange RFC 8693 Flow ───────────────────────
 
 echo ""
-echo "── Token Exchange Delegation Flow ──"
+echo "-- Token Exchange RFC 8693 Flow --"
+
+# Generate agent SPIFFE JWT-SVID for Token Exchange
+AGENT_SVID=$(python3 -c "
+import jwt, time
+token = jwt.encode({
+    'sub': 'spiffe://demo.local/agent/query-agent',
+    'aud': ['token-exchange'],
+    'exp': int(time.time()) + 3600,
+    'iat': int(time.time()),
+}, 'spiffe-secret', algorithm='HS256')
+print(token)
+")
 
 if [ -n "${ALICE_TOKEN}" ]; then
-    # Successful delegation: alice → readonly
-    DELEGATION_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" \
+    # Successful exchange: alice → readonly
+    EXCHANGE_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/token/exchange" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "{
-            \"human_token\": \"${ALICE_TOKEN}\",
-            \"agent_spiffe_id\": \"spiffe://demo.local/agent/query-agent\",
-            \"requested_scope\": \"readonly\"
+            \"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
+            \"subject_token\": \"${ALICE_TOKEN}\",
+            \"actor_token\": \"${AGENT_SVID}\",
+            \"scope\": \"readonly\"
         }" 2>/dev/null)
 
-    HTTP_CODE=$(echo "${DELEGATION_RESP}" | tail -1)
-    RESPONSE_BODY=$(echo "${DELEGATION_RESP}" | sed '$d')
+    HTTP_CODE=$(echo "${EXCHANGE_RESP}" | tail -1)
+    RESPONSE_BODY=$(echo "${EXCHANGE_RESP}" | sed '$d')
 
     if [ "${HTTP_CODE}" = "200" ]; then
-        pass "Token Exchange accepts valid delegation request"
+        pass "Token Exchange accepts valid RFC 8693 exchange"
 
-        # Verify response structure
-        SESSION_ID=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['session_id'])" 2>/dev/null)
-        DB_USERNAME=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['username'])" 2>/dev/null)
-        DB_PASSWORD=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['password'])" 2>/dev/null)
-        DELEG_HUMAN=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['delegating_human'])" 2>/dev/null)
-        DELEG_SCOPE=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['delegation_scope'])" 2>/dev/null)
-        DELEG_LEASE=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['lease_id'])" 2>/dev/null)
+        # Verify delegation token structure
+        DELEG_TOKEN=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+        SCOPE=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
+        TTL=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('expires_in', 0))" 2>/dev/null)
 
-        if echo "${SESSION_ID}" | grep -q "^sess-"; then
-            pass "Response contains session ID (${SESSION_ID})"
-        else
-            fail "Session ID format" "expected sess-*, got ${SESSION_ID}"
-        fi
+        if [ -n "${DELEG_TOKEN}" ] && [ "${DELEG_TOKEN}" != "None" ]; then
+            pass "Exchange returns delegation token (scope=${SCOPE}, ttl=${TTL}s)"
 
-        if [ -n "${DB_USERNAME}" ] && [ "${DB_USERNAME}" != "None" ]; then
-            pass "Response contains dynamic DB username (${DB_USERNAME})"
-        else
-            fail "DB username" "missing from response"
-        fi
+            # Verify act{} claim
+            ACT_SUB=$(echo "${DELEG_TOKEN}" | python3 -c "
+import sys, jwt
+token = sys.stdin.read().strip()
+claims = jwt.decode(token, options={'verify_signature': False, 'verify_aud': False})
+print(claims.get('act', {}).get('sub', ''))
+" 2>/dev/null)
 
-        if [ "${DELEG_SCOPE}" = "readonly" ]; then
-            pass "Response metadata contains correct scope"
-        else
-            fail "Delegation scope" "expected readonly, got ${DELEG_SCOPE}"
-        fi
-
-        # Verify delegated credentials work against PostgreSQL
-        if [ -n "${DB_USERNAME}" ] && [ -n "${DB_PASSWORD}" ]; then
-            DELEG_QUERY=$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p 5432 -U "${DB_USERNAME}" -d appdb -t -c "SELECT COUNT(*) FROM app.order_summary" 2>/dev/null | tr -d ' \n\r' || echo "error")
-
-            if [ "${DELEG_QUERY}" != "error" ] && [ -n "${DELEG_QUERY}" ] && [ "${DELEG_QUERY}" -gt 0 ] 2>/dev/null; then
-                pass "Delegated credentials can query database (${DELEG_QUERY} rows via order_summary view)"
+            if echo "${ACT_SUB}" | grep -q "query-agent"; then
+                pass "Delegation token has act{} claim (actor=${ACT_SUB})"
             else
-                fail "Delegated DB query" "query returned: ${DELEG_QUERY}"
+                fail "Delegation token act claim" "expected query-agent, got ${ACT_SUB}"
             fi
+
+            # Verify audience is vault
+            AUD=$(echo "${DELEG_TOKEN}" | python3 -c "
+import sys, jwt
+token = sys.stdin.read().strip()
+claims = jwt.decode(token, options={'verify_signature': False, 'verify_aud': False})
+print(claims.get('aud', ''))
+" 2>/dev/null)
+
+            if [ "${AUD}" = "vault" ]; then
+                pass "Delegation token targets Vault (aud=vault)"
+            else
+                fail "Delegation token audience" "expected vault, got ${AUD}"
+            fi
+        else
+            fail "Delegation token" "missing from exchange response"
         fi
 
-        # Revoke the delegated credentials via Vault
-        if [ -n "${DELEG_LEASE}" ] && [ "${DELEG_LEASE}" != "None" ]; then
-            curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/sys/leases/revoke" \
-                -X PUT \
-                -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "{\"lease_id\": \"${DELEG_LEASE}\"}" > /dev/null 2>&1
-
-            sleep 1
-
-            REVOKED_QUERY=$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p 5432 -U "${DB_USERNAME}" -d appdb -c "SELECT 1" 2>&1 || echo "denied")
-            if echo "${REVOKED_QUERY}" | grep -qi "denied\|FATAL\|password\|does not exist"; then
-                pass "Delegated credentials revoked successfully"
-            else
-                skip "Delegated revocation" "may need propagation time"
-            fi
+        # No db_credential in stateless response
+        HAS_DB_CRED=$(echo "${RESPONSE_BODY}" | python3 -c "import sys,json; print('yes' if 'db_credential' in json.load(sys.stdin) else 'no')" 2>/dev/null)
+        if [ "${HAS_DB_CRED}" = "no" ]; then
+            pass "Stateless response has no db_credential (agents auth to Vault directly)"
+        else
+            fail "Stateless check" "db_credential should not be in response"
         fi
     else
-        fail "Token Exchange delegation" "HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
+        fail "Token Exchange RFC 8693" "HTTP ${HTTP_CODE}: ${RESPONSE_BODY}"
     fi
 
-    # Denied delegation: alice → readwrite (data-analysts can't write)
-    DENY_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" \
+    # Denied exchange: alice → readwrite (data-analysts can't write)
+    DENY_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/token/exchange" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "{
-            \"human_token\": \"${ALICE_TOKEN}\",
-            \"agent_spiffe_id\": \"spiffe://demo.local/agent/query-agent\",
-            \"requested_scope\": \"readwrite\"
+            \"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
+            \"subject_token\": \"${ALICE_TOKEN}\",
+            \"actor_token\": \"${AGENT_SVID}\",
+            \"scope\": \"readwrite\"
         }" 2>/dev/null)
 
     DENY_CODE=$(echo "${DENY_RESP}" | tail -1)
 
-    if [ "${DENY_CODE}" = "403" ] || [ "${DENY_CODE}" = "400" ]; then
+    if [ "${DENY_CODE}" = "400" ]; then
         pass "Token Exchange denies alice readwrite (HTTP ${DENY_CODE})"
     else
-        fail "Gateway deny readwrite" "expected 400 or 403, got ${DENY_CODE}"
-    fi
-
-    # Denied delegation: untrusted agent
-    BAD_AGENT_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" \
-        -X POST \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"human_token\": \"${ALICE_TOKEN}\",
-            \"agent_spiffe_id\": \"spiffe://evil.com/agent/bad\",
-            \"requested_scope\": \"readonly\"
-        }" 2>/dev/null)
-
-    BAD_AGENT_CODE=$(echo "${BAD_AGENT_RESP}" | tail -1)
-
-    if [ "${BAD_AGENT_CODE}" = "403" ] || [ "${BAD_AGENT_CODE}" = "400" ]; then
-        pass "Token Exchange rejects untrusted agent SPIFFE ID (HTTP ${BAD_AGENT_CODE})"
-    else
-        fail "Gateway untrusted agent" "expected 400 or 403, got ${BAD_AGENT_CODE}"
+        fail "Token Exchange deny readwrite" "expected 400, got ${DENY_CODE}"
     fi
 else
     skip "Token Exchange delegation tests" "Alice authentication failed"
 fi
 
-# Bob delegation: readwrite should succeed
+# Bob exchange: readwrite should succeed
 if [ -n "${BOB_TOKEN}" ]; then
-    BOB_DELEG_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" \
+    BOB_EXCHANGE_RESP=$(curl -s -w "\n%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/token/exchange" \
         -X POST \
         -H "Content-Type: application/json" \
         -d "{
-            \"human_token\": \"${BOB_TOKEN}\",
-            \"agent_spiffe_id\": \"spiffe://demo.local/agent/query-agent\",
-            \"requested_scope\": \"readwrite\"
+            \"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
+            \"subject_token\": \"${BOB_TOKEN}\",
+            \"actor_token\": \"${AGENT_SVID}\",
+            \"scope\": \"readwrite\"
         }" 2>/dev/null)
 
-    BOB_CODE=$(echo "${BOB_DELEG_RESP}" | tail -1)
+    BOB_CODE=$(echo "${BOB_EXCHANGE_RESP}" | tail -1)
 
     if [ "${BOB_CODE}" = "200" ]; then
-        pass "Token Exchange allows bob readwrite delegation"
-
-        # Test readwrite credentials can actually write
-        BOB_BODY=$(echo "${BOB_DELEG_RESP}" | sed '$d')
-        BOB_DB_USER=$(echo "${BOB_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['username'])" 2>/dev/null)
-        BOB_DB_PASS=$(echo "${BOB_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['password'])" 2>/dev/null)
-        BOB_LEASE=$(echo "${BOB_BODY}" | python3 -c "import sys,json; print(json.load(sys.stdin)['db_credential']['lease_id'])" 2>/dev/null)
-
-        if [ -n "${BOB_DB_USER}" ] && [ "${BOB_DB_USER}" != "None" ]; then
-            # Test INSERT works for readwrite
-            WRITE_TEST=$(PGPASSWORD="${BOB_DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${BOB_DB_USER}" -d appdb -c "INSERT INTO app.products (name, category, price) VALUES ('E2E Test Product', 'test', 1.00)" 2>&1)
-            if echo "${WRITE_TEST}" | grep -qi "INSERT"; then
-                pass "Readwrite credentials can INSERT into database"
-                # Clean up test data
-                PGPASSWORD="${BOB_DB_PASS}" psql -h 127.0.0.1 -p 5432 -U "${BOB_DB_USER}" -d appdb -c "DELETE FROM app.products WHERE name='E2E Test Product'" 2>/dev/null
-            else
-                fail "Readwrite INSERT" "INSERT failed: ${WRITE_TEST}"
-            fi
-
-            # Revoke Bob's credentials
-            curl -sf "http://127.0.0.1:${MOCK_VAULT_PORT}/v1/sys/leases/revoke" \
-                -X PUT \
-                -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "{\"lease_id\": \"${BOB_LEASE}\"}" > /dev/null 2>&1 || true
-        fi
+        pass "Token Exchange allows bob readwrite exchange"
     else
-        fail "Gateway bob readwrite" "expected 200, got ${BOB_CODE}"
+        fail "Token Exchange bob readwrite" "expected 200, got ${BOB_CODE}"
     fi
 else
-    skip "Bob delegation test" "Bob authentication failed"
+    skip "Bob exchange test" "Bob authentication failed"
 fi
 
-# ─── Test 5: Gateway API Validation ─────────────────────────────
+# ─── Test 5: Token Exchange API Validation ─────────────────────
 
 echo ""
-echo "── Gateway API Validation ──"
+echo "-- Token Exchange API Validation --"
 
-# Method not allowed (service returns 404 for GET on POST-only endpoints)
-METHOD_RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" -X GET 2>/dev/null)
-if [ "${METHOD_RESP}" = "405" ] || [ "${METHOD_RESP}" = "404" ]; then
-    pass "GET /v1/delegate returns ${METHOD_RESP} (rejected)"
+# JWKS endpoint returns valid key
+JWKS_RESP=$(curl -sf "http://127.0.0.1:${TE_PORT}/.well-known/jwks.json" 2>/dev/null)
+KEY_COUNT=$(echo "${JWKS_RESP}" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('keys',[])))" 2>/dev/null)
+if [ "${KEY_COUNT}" = "1" ]; then
+    pass "JWKS endpoint returns RS256 signing key"
 else
-    fail "Method not allowed" "expected 404 or 405, got ${METHOD_RESP}"
+    fail "JWKS endpoint" "expected 1 key, got ${KEY_COUNT}"
 fi
 
-# Invalid JSON body
-INVALID_JSON_RESP=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TE_PORT}/v1/delegate" \
-    -X POST -H "Content-Type: application/json" -d "not-json" 2>/dev/null)
-if [ "${INVALID_JSON_RESP}" = "400" ]; then
-    pass "Invalid JSON body returns 400"
-else
-    fail "Invalid JSON" "expected 400, got ${INVALID_JSON_RESP}"
-fi
-
-# Health endpoint returns JSON with status
+# Health endpoint returns JSON with status and version
 HEALTH_RESP=$(curl -sf "http://127.0.0.1:${TE_PORT}/health" 2>/dev/null)
 HEALTH_STATUS=$(echo "${HEALTH_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null)
+HEALTH_VERSION=$(echo "${HEALTH_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null)
 if [ "${HEALTH_STATUS}" = "healthy" ]; then
-    pass "Health endpoint returns status=healthy"
+    pass "Health endpoint returns status=healthy (version=${HEALTH_VERSION})"
 else
     fail "Health status" "expected healthy, got ${HEALTH_STATUS}"
 fi
 
-# Audit log returns valid JSON array
-AUDIT_RESP=$(curl -sf "http://127.0.0.1:${TE_PORT}/v1/audit" 2>/dev/null)
-AUDIT_TYPE=$(echo "${AUDIT_RESP}" | python3 -c "import sys,json; data = json.load(sys.stdin); print(type(data).__name__)" 2>/dev/null)
-if [ "${AUDIT_TYPE}" = "list" ]; then
-    AUDIT_COUNT=$(echo "${AUDIT_RESP}" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null)
-    pass "Audit endpoint returns valid JSON array (${AUDIT_COUNT} entries)"
-else
-    fail "Audit endpoint" "expected JSON array, got ${AUDIT_TYPE}"
-fi
-
-# ─── Test 6: Audit Trail Completeness ────────────────────────────
-
-echo ""
-echo "── Audit Trail ──"
-
-# Verify audit entries contain required fields
-AUDIT_FIELDS=$(echo "${AUDIT_RESP}" | python3 -c "
-import sys, json
-entries = json.load(sys.stdin)
-if not entries:
-    print('empty')
-else:
-    entry = entries[0]
-    required = ['timestamp', 'action', 'result']
-    missing = [f for f in required if f not in entry]
-    if missing:
-        print('missing:' + ','.join(missing))
-    else:
-        print('complete')
-" 2>/dev/null)
-
-if [ "${AUDIT_FIELDS}" = "complete" ]; then
-    pass "Audit entries contain all required fields"
-elif [ "${AUDIT_FIELDS}" = "empty" ]; then
-    skip "Audit fields" "no entries to validate"
-else
-    fail "Audit fields" "${AUDIT_FIELDS}"
-fi
-
-# Check for both success and denied entries
-AUDIT_RESULTS=$(echo "${AUDIT_RESP}" | python3 -c "
-import sys, json
-entries = json.load(sys.stdin)
-results = set(e.get('result', '') for e in entries)
-print(','.join(sorted(results)))
-" 2>/dev/null)
-
-if echo "${AUDIT_RESULTS}" | grep -q "success" && echo "${AUDIT_RESULTS}" | grep -q "delegation_denied\|invalid_spiffe_id"; then
-    pass "Audit log captures both successful and denied delegations"
-else
-    info "Audit results: ${AUDIT_RESULTS}"
-    if echo "${AUDIT_RESULTS}" | grep -q "success"; then
-        pass "Audit log captures successful delegations"
+# Legacy endpoints should return 404
+for ENDPOINT in "/v1/delegate" "/v1/token/revoke" "/v1/audit" "/v1/delegation/chain"; do
+    LEGACY_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${TE_PORT}${ENDPOINT}" 2>/dev/null)
+    if [ "${LEGACY_CODE}" = "404" ]; then
+        pass "Legacy ${ENDPOINT} returns 404 (removed in v4.0)"
     else
-        fail "Audit trail" "no success entries found"
+        fail "Legacy ${ENDPOINT}" "expected 404, got ${LEGACY_CODE}"
     fi
-fi
+done
 
-# ─── Test 7: PostgreSQL Schema Validation ────────────────────────
+# ─── Test 6: PostgreSQL Schema Validation ────────────────────────
 
 echo ""
-echo "── PostgreSQL Schema ──"
+echo "-- PostgreSQL Schema --"
 
 # Helper: run psql query against PostgreSQL via native psql
 run_pg_query() {
@@ -633,9 +535,9 @@ fi
 # ─── Summary ─────────────────────────────────────────────────────
 
 echo ""
-echo "═══════════════════════════════════════════════════════"
+echo "================================================================="
 echo -e "  Results: ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}, ${YELLOW}${SKIP} skipped${NC}"
-echo "═══════════════════════════════════════════════════════"
+echo "================================================================="
 echo ""
 
 if [ ${FAIL} -gt 0 ]; then
